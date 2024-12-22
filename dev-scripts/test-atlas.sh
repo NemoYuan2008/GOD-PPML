@@ -12,4 +12,16 @@ for i in $(seq 0 $(($1 - 2))); do
     else
         ./atlas-party.x -pn $port -N $1 $i "${@:2}" > /dev/null 2>&1 &
     fi
+    codes[$i]=$!
+done
+
+ctrlc() {
+    pkill -P $$
+}
+trap ctrlc SIGINT
+
+for i in $(seq 0 $(($1 - 2))); do
+    if ! wait ${codes[$i]}; then
+        return 1
+    fi
 done
