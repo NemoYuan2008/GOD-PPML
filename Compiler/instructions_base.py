@@ -103,6 +103,8 @@ opcodes = dict(
     FLOORDIVC = 0x3b,
     GMULBITC = 0x136,
     GMULBITM = 0x137,
+    # My new mult-and-trunc
+    MUL_TRUNC = 0x3C,
     # Open
     OPEN = 0xA5,
     MULS = 0xA6,

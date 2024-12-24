@@ -4747,7 +4747,18 @@ class _fix(_single):
             other = self.coerce(other, equal_precision=False)
         except:
             return NotImplemented
-        if isinstance(other, (_fix, self.clear_type)):
+        if isinstance(other, _fix):
+            # TODO: change to use my new mult_trunc
+            k = max(self.k, other.k)
+            max_f = max(self.f, other.f)
+            min_f = min(self.f, other.f)
+            val = self.v.TruncMul(other.v, k + min_f, min_f,
+                                  nearest=self.round_nearest)
+            if 'vec' not in self.__dict__:
+                return self._new(val, k=k, f=max_f)
+            else:
+                return self.vec._new(val, k=k, f=max_f)
+        if isinstance(other, self.clear_type):
             k = max(self.k, other.k)
             max_f = max(self.f, other.f)
             min_f = min(self.f, other.f)

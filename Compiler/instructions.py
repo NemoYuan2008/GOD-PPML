@@ -2669,6 +2669,25 @@ class conv2ds(base.DataInstruction, base.VarArgsInstruction, base.Mergeable):
                                            args[14] * args[3] * args[4])), 1)
 
 @base.vectorize
+class mul_trunc(base.VarArgsInstruction,
+                base.DataInstruction,
+                base.Ciscable,
+                base.Mergeable):
+    """ Multiplication followed by probabilistic truncation.
+    
+    :param: number of arguments to follow (multiple of five)
+    :param: destination (sint)
+    :param: first source for multiplication (sint)
+    :param: second source for multiplication (sint)
+    :param: bit length of sources (int)
+    :param: number of bits to truncate (int)
+    """
+    __slots__ = []
+    code = base.opcodes['MUL_TRUNC']
+    arg_format = tools.cycle(['sw','s','s','int','int'])
+
+
+@base.vectorize
 class trunc_pr(base.VarArgsInstruction):
     """ Probabilistic truncation if supported by the protocol.
 
