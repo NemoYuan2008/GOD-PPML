@@ -1,7 +1,7 @@
 ROOT = .
 
 # REMEMBER TO SET THIS BACK TO -O3!!!
-OPTIM= -O0
+OPTIM= -Og
 #PROF = -pg
 #DEBUG = -DDEBUG
 GDEBUG = -g

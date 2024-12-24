@@ -36,6 +36,9 @@ tags
 ###############
 .vscode/**
 
+!.vscode/tasks.json
+!.vscode/launch.json
+
 # Temporary files #
 ###################
 *.bak

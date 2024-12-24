@@ -1,0 +1,20 @@
+{
+    "configurations": [
+      {
+        "type": "cppdbg",
+        "request": "launch",
+        "name": "Launch C++ Program",
+        "program": "${workspaceFolder}/atlas-party.x",
+        "args": ["-pn", "12345", "-N", "5", "4", "0-sfix"],
+        "preLaunchTask": "build-shamir",
+        "cwd": "${workspaceFolder}",
+      },
+      {
+        "type": "debugpy", 
+        "request": "launch",
+        "name": "Launch Python Program",
+        "program": "${workspaceFolder}/test.py",
+        "cwd": "${workspaceFolder}"
+      }
+    ],
+}
