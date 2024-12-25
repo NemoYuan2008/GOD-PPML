@@ -69,6 +69,8 @@ public:
     T finalize_dotprod(int length);
 
     T get_random();
+
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
 };
 
 #endif /* PROTOCOLS_ATLAS_H_ */

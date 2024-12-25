@@ -134,4 +134,28 @@ T Atlas<T>::get_random()
     return shamir.get_random();
 }
 
+# define VERBOSE_MUL_TRUNC
+
+template<class T>
+void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc) {
+#ifdef VERBOSE_MUL_TRUNC
+    std::cerr << "mul_trunc\n"
+            << "size: " << size << "\n"
+            << "regs.size(): " << regs.size() << "\n";
+#endif
+
+    vector<T> r_bits(31);   // TODO: 31 is a magic number
+    for (auto& r_i : r_bits) {
+        proc.DataF.get_one(DATA_BIT, r_i);
+    }
+
+    // Compose the random bits into a random number [r]
+    T r = 0;
+    for (int i = 0; (size_t)i < r_bits.size(); i++) {
+        r += r_bits[i] << i;
+    }
+
+
+}
+
 #endif /* PROTOCOLS_ATLAS_HPP_ */

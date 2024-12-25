@@ -1,20 +1,32 @@
 {
     "configurations": [
-      {
-        "type": "cppdbg",
-        "request": "launch",
-        "name": "Launch C++ Program",
-        "program": "${workspaceFolder}/atlas-party.x",
-        "args": ["-pn", "12345", "-N", "5", "4", "0-sfix"],
-        "preLaunchTask": "build-shamir",
-        "cwd": "${workspaceFolder}",
-      },
-      {
-        "type": "debugpy", 
-        "request": "launch",
-        "name": "Launch Python Program",
-        "program": "${workspaceFolder}/test.py",
-        "cwd": "${workspaceFolder}"
-      }
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "Launch C++ Program",
+            "program": "${workspaceFolder}/atlas-party.x",
+            "args": ["-pn", "12345", "-N", "3", "2", "0-sfix"],
+            "preLaunchTask": "build-shamir",
+            "cwd": "${workspaceFolder}",
+        },
+        {
+            "name": "Atlas with lldb",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/atlas-party.x",
+            "args": ["-pn", "12345", "-N", "3", "2", "0-sfix"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        },
+        {
+            "type": "debugpy",
+            "request": "launch",
+            "name": "Launch Python Program",
+            "program": "${workspaceFolder}/test.py",
+            "cwd": "${workspaceFolder}"
+        }
     ],
 }

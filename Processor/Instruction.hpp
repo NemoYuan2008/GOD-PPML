@@ -321,6 +321,7 @@ void BaseInstruction::parse_operands(istream& s, int pos, int file_pos)
       case RUN_TAPE:
       case CONV2DS:
       case MATMULS:
+      case MUL_TRUNC:
         num_var_args = get_int(s);
         get_vector(num_var_args, start, s);
         break;
@@ -742,6 +743,12 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
       offset = 1;
       size_offset = -1;
       break;
+  // TODO: I don't know how to write for MUL_TRUNC, I'll just rely on the default case
+  // case MUL_TRUNC:
+  //     skip = 6; // For format [destination, source1, source2, bit_length, k_bits]
+  //     offset = 1;
+  //     size_offset = -1;
+  //     break;
   case DOTPRODS:
   {
       int res = 0;
@@ -1175,6 +1182,9 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
         return;
       case TRUNC_PR:
         Proc.Procp.protocol.trunc_pr(start, size, Proc.Procp);
+        return;
+      case MUL_TRUNC:
+        Proc.Procp.protocol.mul_trunc(start, size, Proc.Procp);
         return;
       case SECSHUFFLE:
         Proc.Procp.secure_shuffle(*this);

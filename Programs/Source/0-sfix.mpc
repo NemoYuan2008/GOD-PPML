@@ -1,7 +1,0 @@
-# program.use_trunc_pr = True
-# sfix.round_nearest = True
-a = sfix(10)
-b = sfix(1.5)
-c = a * b
-d = c.reveal()
-print_ln('%s', d)

@@ -2685,6 +2685,12 @@ class mul_trunc(base.VarArgsInstruction,
     __slots__ = []
     code = base.opcodes['MUL_TRUNC']
     arg_format = tools.cycle(['sw','s','s','int','int'])
+    data_type = 'triple' # TODO: Check this, we also need bits
+
+    # TODO: 
+    # 1. Implement add_usage (virtual method in base.Instruction), 
+    #    maybe use shuffle_base as reference
+    # 2. Should we also inherit from base.DataInstruction?
 
 
 @base.vectorize

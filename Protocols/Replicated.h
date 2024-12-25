@@ -109,6 +109,10 @@ public:
     virtual void trunc_pr(const vector<int>& regs, int size, SubProcessor<T>& proc)
     { (void) regs, (void) size; (void) proc; throw runtime_error("trunc_pr not implemented"); }
 
+    // Newly added, only implemented in Atlas (which uses double sharing)
+    virtual void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc)
+    { (void) regs, (void) size; (void) proc; throw runtime_error("mul_trunc not implemented"); }
+
     virtual void randoms(T&, int) { throw runtime_error("randoms not implemented"); }
     virtual void randoms_inst(StackedVector<T>&, const Instruction&);
 

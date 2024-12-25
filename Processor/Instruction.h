@@ -118,6 +118,8 @@ enum
     CONV2DS = 0xAC,
     CHECK = 0xAF,
     PRIVATEOUTPUT = 0xAD,
+    // New instructions
+    MUL_TRUNC = 0x3C,
     // Shuffling
     SECSHUFFLE = 0xFA,
     GENSECSHUFFLE = 0xFB,

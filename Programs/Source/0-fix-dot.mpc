@@ -6,3 +6,4 @@ c = Matrix.create_from([
     [sfix(10), sfix(11), sfix(12)]
 ])
 res = a.to_row_matrix().dot(c).to_array()
+res = a.to_row_matrix().dot(c).to_array()

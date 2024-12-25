@@ -4748,12 +4748,10 @@ class _fix(_single):
         except:
             return NotImplemented
         if isinstance(other, _fix):
-            # TODO: change to use my new mult_trunc
             k = max(self.k, other.k)
             max_f = max(self.f, other.f)
             min_f = min(self.f, other.f)
-            val = self.v.TruncMul(other.v, k + min_f, min_f,
-                                  nearest=self.round_nearest)
+            val = self.mul_trunc(other, k + min_f, min_f)   # TODO: I don't know why it should be k + min_f
             if 'vec' not in self.__dict__:
                 return self._new(val, k=k, f=max_f)
             else:
@@ -4773,6 +4771,13 @@ class _fix(_single):
             return self * scalar_fix
         else:
             return NotImplemented
+    
+    @vectorize
+    def mul_trunc(self, other, k, f):
+        """ Secret fixed-point multiplication with truncation. (Newly added) """
+        val = sint()
+        mul_trunc(val, self.v, other.v, k, f)
+        return val
 
     @vectorize
     def __neg__(self):
