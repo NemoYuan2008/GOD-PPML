@@ -143,6 +143,9 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
             << "size: " << size << "\n"
             << "regs.size(): " << regs.size() << "\n";
 #endif
+    // Parse the arguments
+    
+
 
     vector<T> r_bits(31);   // TODO: 31 is a magic number
     for (auto& r_i : r_bits) {

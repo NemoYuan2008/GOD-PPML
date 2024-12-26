@@ -2669,10 +2669,12 @@ class conv2ds(base.DataInstruction, base.VarArgsInstruction, base.Mergeable):
                                            args[14] * args[3] * args[4])), 1)
 
 @base.vectorize
-class mul_trunc(base.VarArgsInstruction,
+class mul_trunc(
+                base.VarArgsInstruction,
                 base.DataInstruction,
                 base.Ciscable,
-                base.Mergeable):
+                base.Mergeable
+                ):
     """ Multiplication followed by probabilistic truncation.
     
     :param: number of arguments to follow (multiple of five)

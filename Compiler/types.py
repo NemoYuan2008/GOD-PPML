@@ -4775,6 +4775,13 @@ class _fix(_single):
     @vectorize
     def mul_trunc(self, other, k, f):
         """ Secret fixed-point multiplication with truncation. (Newly added) """
+        return self._mul_trunc(other, k, f)
+        val = sint()
+        mul_trunc(val, self.v, other.v, k, f)
+        return val
+    
+    @ret_cisc
+    def _mul_trunc(self, other, k, f):
         val = sint()
         mul_trunc(val, self.v, other.v, k, f)
         return val
