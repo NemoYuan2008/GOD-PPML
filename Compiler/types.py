@@ -2976,6 +2976,23 @@ class sint(_secret, _int):
             if secret:
                 return floatingpoint.Trunc(self, k, m)
             return self.TruncPr(k, m, signed=signed)
+        
+    @vectorize
+    def mul_trunc(self, other, k, f):
+        """ Multiply and truncate secret values.
+
+        :param other: secret or public integer (sint/cint/regint/int)
+        :param k: bit length of TODO
+        :param f: bit length of fractional part """
+        assert not isinstance(f, sint)
+        return self._mul_trunc(other, k, f)
+    
+    @ret_cisc
+    def _mul_trunc(self, other, k, f):
+        res = sint()
+        mul_trunc(res, self, other, k, f)
+        return res
+
 
     def __truediv__(self, other):
         """ Secret fixed-point division.
@@ -4748,10 +4765,11 @@ class _fix(_single):
         except:
             return NotImplemented
         if isinstance(other, _fix):
+            # TODO: check the k, f values
             k = max(self.k, other.k)
             max_f = max(self.f, other.f)
             min_f = min(self.f, other.f)
-            val = self.mul_trunc(other, k + min_f, min_f)   # TODO: I don't know why it should be k + min_f
+            val = self.v.mul_trunc(other.v, k + min_f, min_f)
             if 'vec' not in self.__dict__:
                 return self._new(val, k=k, f=max_f)
             else:
@@ -4771,20 +4789,6 @@ class _fix(_single):
             return self * scalar_fix
         else:
             return NotImplemented
-    
-    @vectorize
-    def mul_trunc(self, other, k, f):
-        """ Secret fixed-point multiplication with truncation. (Newly added) """
-        return self._mul_trunc(other, k, f)
-        val = sint()
-        mul_trunc(val, self.v, other.v, k, f)
-        return val
-    
-    @ret_cisc
-    def _mul_trunc(self, other, k, f):
-        val = sint()
-        mul_trunc(val, self.v, other.v, k, f)
-        return val
 
     @vectorize
     def __neg__(self):

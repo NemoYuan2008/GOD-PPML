@@ -1,10 +1,19 @@
+# program.use_trunc_pr = True
+sfix.set_precision(0)
+
 a = Array.create_from([sfix(1), sfix(2), sfix(3), sfix(4)])
 b = Array.create_from([sfix(5), sfix(6), sfix(7), sfix(8)])
 c = Array.create_from([sfix(9), sfix(10), sfix(11)])
 
-a * a
-b * b
-a * b
-c * c
+aa = a * a
+bb = b * b
+ab = a * b
+cc = c * c
 
-sfix(9) * sfix(10)
+d = sfix(9) * sfix(10)
+
+print_ln('%s', aa.reveal())
+print_ln('%s', bb.reveal())
+print_ln('%s', ab.reveal())
+print_ln('%s', cc.reveal())
+print_ln('%s', d.reveal())

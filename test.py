@@ -5,36 +5,33 @@ from Compiler.compilerLib import Compiler
 compiler = Compiler(
     custom_args=[
         # "-P 2305843009213693951", 
-        "-a debug",
+        "-a",
+        "debug",
     ]
 )
 
 
-@compiler.register_function('0-sfix-direct')
-def fix_mult():
+@compiler.register_function('0-direct')
+def run():
     program = compiler.prog
-    program.use_trunc_pr = True
+    # program.use_trunc_pr = True
 
-    a = sfix(10)
-    b = sfix(1.5)
-    c = a * b
+    a = Array.create_from([sfix(1), sfix(2), sfix(3), sfix(4)])
+    b = Array.create_from([sfix(5), sfix(6), sfix(7), sfix(8)])
+    c = Array.create_from([sfix(9), sfix(10), sfix(11)])
 
+    aa = a * a
+    bb = b * b
+    ab = a * b
+    cc = c * c
 
+    d = sfix(9) * sfix(10)
 
-# @compiler.register_function('0-sfix-dot-direct')
-# def fix_dot():
-#     program = compiler.prog
-
-#     a = Array.create_from([sfix(1), sfix(2), sfix(3), sfix(4)])
-#     c = Matrix.create_from([
-#         [sfix(1), sfix(2), sfix(3)],
-#         [sfix(4), sfix(5), sfix(6)],
-#         [sfix(7), sfix(8), sfix(9)],
-#         [sfix(10), sfix(11), sfix(12)]
-#     ])
-#     a = a.to_row_matrix()
-#     res = a.dot(c)
-#     res = res.to_array()
+    print_ln('%s', aa.reveal())
+    print_ln('%s', bb.reveal())
+    print_ln('%s', ab.reveal())
+    print_ln('%s', cc.reveal())
+    print_ln('%s', d.reveal())
 
 
 if __name__ == "__main__":

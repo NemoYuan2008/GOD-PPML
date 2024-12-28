@@ -2687,13 +2687,14 @@ class mul_trunc(
     __slots__ = []
     code = base.opcodes['MUL_TRUNC']
     arg_format = tools.cycle(['sw','s','s','int','int'])
-    data_type = 'triple' # TODO: Check this, we also need bits
 
-    # TODO: 
-    # 1. Implement add_usage (virtual method in base.Instruction), 
-    #    maybe use shuffle_base as reference
-    # 2. Should we also inherit from base.DataInstruction?
-
+    def add_usage(self, req_node):
+        # TODO: 1. check if the triple usage is correct
+        #       2. add the correct usage for bits
+        req_node.increment((self.field_type, 'triple'),
+                           self.get_size() * self.get_repeat())
+        req_node.increment((self.field_type, 'bit'),
+                            self.get_size() * self.get_repeat() * 64)
 
 @base.vectorize
 class trunc_pr(base.VarArgsInstruction):
