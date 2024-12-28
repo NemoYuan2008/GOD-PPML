@@ -6,7 +6,7 @@
             "name": "Launch C++ Program",
             "program": "${workspaceFolder}/atlas-party.x",
             "args": ["-pn", "12345", "-N", "3", "2", "0-test"],
-            "preLaunchTask": "build-shamir",
+            "preLaunchTask": "build-atlas",
             "cwd": "${workspaceFolder}",
         },
         {

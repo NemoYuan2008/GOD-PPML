@@ -71,6 +71,8 @@ public:
     T get_random();
 
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
+    void prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc);
+    void prepare_mask_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc);
 };
 
 #endif /* PROTOCOLS_ATLAS_H_ */

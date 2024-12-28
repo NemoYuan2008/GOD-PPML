@@ -11,6 +11,7 @@
 template<class T>
 Atlas<T>::~Atlas()
 {
+    // cerr << "~Atlas\n";
 #ifdef VERBOSE
     if (not double_sharings.empty())
         cerr << double_sharings.size() << " double sharings left" << endl;
@@ -55,6 +56,10 @@ void Atlas<T>::prepare_mul(const T& x, const T& y, int)
 template<class T>
 void Atlas<T>::prepare(const typename T::open_type& product)
 {
+    // Mask the product with a double sharing, then put the masked product in oss2
+    // open_type is gpf_ in our context
+    // r[0] is of degree 2t
+    // r[1] is of degree t
     auto r = get_double_sharing();
     (product + r[0]).pack(oss2[next_king]);
     next_king = (next_king + 1) % P.num_players();
@@ -138,27 +143,108 @@ T Atlas<T>::get_random()
 
 template<class T>
 void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc) {
-#ifdef VERBOSE_MUL_TRUNC
-    std::cerr << "mul_trunc\n"
-            << "size: " << size << "\n"
-            << "regs.size(): " << regs.size() << "\n";
-#endif
     // Parse the arguments
-    
+    struct MultTruncInfo {
+        int dest_base;       // Destination register
+        int x_base;         // First operand
+        int y_base;         // Second operand 
+        int k;             // Bit length
+        int f;             // Number of bits to truncate
+
+        MultTruncInfo(const vector<int>& regs, int offset)
+        {
+            dest_base = regs[offset];
+            x_base = regs[offset + 1]; 
+            y_base = regs[offset + 2];
+            k = regs[offset + 3];
+            f = regs[offset + 4];
+        }
+    };
+
+    vector<MultTruncInfo> infos;
+    for (size_t i = 0; i < regs.size(); i += 5)
+        infos.emplace_back(regs, i);
 
 
-    vector<T> r_bits(31);   // TODO: 31 is a magic number
+    // Perform the multiplicationss
+    init_mul();
+    for (const auto& info : infos)
+    {
+        for (int i = 0; i < size; i++)
+        {
+            // Get operands from registers
+            T x = proc.get_S_ref(info.x_base + i);
+            T y = proc.get_S_ref(info.y_base + i);
+            
+            // Prepare multiplication
+            // prepare_mul(x, y);
+            prepare_mul_trunc(x, y, info.k, info.f, proc);
+        }
+    }
+
+    // Single exchange for all multiplications
+    exchange();
+
+    // Finalize all multiplications
+    for (auto& info : infos)
+    {
+        for (int i = 0; i < size; i++)
+        {
+            // Get result and store in destination register
+            proc.get_S_ref(info.dest_base + i) = finalize_mul();
+        }
+    }
+}
+
+template<class T>
+void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
+{
+    // Prepare the multiplication of x and y, and truncate the result to k - f bits
+    prepare_mask_with_solved_bits(x * y, k, f, proc);
+}
+
+template<class T>
+void Atlas<T>::prepare_mask_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
+{
+    // This function deserves a better name, but I can't think of one :(
+    // This function is like prepare(), 
+    // but the random mask is from the solved bits, not from a double sharing
+
+    // TODO: the following two lines are computed every time
+    typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2);
+    // typename T::open_type two_power_k_minus_f = T::power_of_two(1, k - f);
+    // typename T::open_type two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
+
+    // get the individual bits [r_i] of the random mask r
+    vector<T> r_bits(k);
     for (auto& r_i : r_bits) {
         proc.DataF.get_one(DATA_BIT, r_i);
     }
 
     // Compose the random bits into a random number [r]
+    // r = sum_{i=0}^{k-1} r_i * 2^i
     T r = 0;
-    for (int i = 0; (size_t)i < r_bits.size(); i++) {
+    for (int i = 0; i < k; ++i) {
         r += r_bits[i] << i;
     }
 
+    T r_msb = r_bits.back();
 
+    // Compute [r']
+    // r' = sum_{i=f}^{k-1} 2^{i-f} * r_i + sum_{i=k-f}^{k-1} 2^i * r_msb
+    T r_prime = 0;
+    for (int i = f; i < k; ++i) {
+        r_prime += r_bits[i] << (i - f);
+    }
+    for (int i = k - f; i < k; ++i) {
+        r_prime += r_msb << i;
+    }
+
+    auto c = product + r + two_power_k_minus_two;
+    c.pack(oss2[next_king]);
+    next_king = (next_king + 1) % P.num_players();
+
+    masks.push_back(r_prime);
 }
 
 #endif /* PROTOCOLS_ATLAS_HPP_ */

@@ -3,11 +3,11 @@
     "tasks": [
       {
         "type": "shell",
-        "label": "build-shamir",
+        "label": "build-atlas",
         "command": "make",
         "args": [
           "-j8",
-          "shamir"
+          "atlas-party.x"
         ],
         "group": {
           "kind": "build",
