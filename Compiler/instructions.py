@@ -2694,7 +2694,7 @@ class mul_trunc(
         req_node.increment((self.field_type, 'triple'),
                            self.get_size() * self.get_repeat())
         req_node.increment((self.field_type, 'bit'),
-                            self.get_size() * self.get_repeat() * 64)
+                            self.get_size() * self.get_repeat() * self.args[3])
 
 @base.vectorize
 class trunc_pr(base.VarArgsInstruction):

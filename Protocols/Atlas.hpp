@@ -166,8 +166,8 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
         infos.emplace_back(regs, i);
 
 
-    // Perform the multiplicationss
-    init_mul();
+    // Perform the multiplications
+    init_mul_trunc();
     for (const auto& info : infos)
     {
         for (int i = 0; i < size; i++)
@@ -183,6 +183,7 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
     }
 
     // Single exchange for all multiplications
+    // TODO: in exchange, the king generates the share for the product, however, we need clear value
     exchange();
 
     // Finalize all multiplications
@@ -197,23 +198,43 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
 }
 
 template<class T>
-void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
+void Atlas<T>::init_mul_trunc()
 {
-    // Prepare the multiplication of x and y, and truncate the result to k - f bits
-    prepare_mask_with_solved_bits(x * y, k, f, proc);
+    init_mul();
 }
 
 template<class T>
-void Atlas<T>::prepare_mask_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
+void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
+{
+    // Prepare the multiplication of x and y, and truncate the result to k - f bits
+    prepare_with_solved_bits(x * y, k, f, proc);
+}
+
+template<class T>
+void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
 {
     // This function deserves a better name, but I can't think of one :(
     // This function is like prepare(), 
     // but the random mask is from the solved bits, not from a double sharing
 
-    // TODO: the following two lines are computed every time
+    // We need some type traits for characteristic 2, to avoid compilation errors
+    prepare_with_solved_bits(product, k, f, proc, T::characteristic_two);
+}
+
+template<class T>
+void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc, std::true_type)
+{
+    (void) product;
+    (void) k;
+    (void) f;
+    (void) proc;
+    throw runtime_error("mul_trunc not implemented for characteristic 2");
+}
+
+template<class T>
+void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc, std::false_type)
+{
     typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2);
-    // typename T::open_type two_power_k_minus_f = T::power_of_two(1, k - f);
-    // typename T::open_type two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
 
     // get the individual bits [r_i] of the random mask r
     vector<T> r_bits(k);
@@ -240,11 +261,38 @@ void Atlas<T>::prepare_mask_with_solved_bits(const typename T::open_type& produc
         r_prime += r_msb << i;
     }
 
+    // TODO: a zero-sharing is needed here for security
     auto c = product + r + two_power_k_minus_two;
     c.pack(oss2[next_king]);
     next_king = (next_king + 1) % P.num_players();
 
+    masks.push_back(r_msb);
+
+    // TODO: this is problematic, since in exchange() the masks.size() is used,
+    //       and this will cause an insufficient data error.
+    //       To solve this:
+    //       1. We may define a new function exchange_mul_trunc() that does not use masks.size(), or
+    //       2. We may use a different variable to store the masks.
     masks.push_back(r_prime);
+}
+
+template<class T>
+T Atlas<T>::finalize_mul_trunc(int k, int f)
+{
+    typename T::open_type two_power_k_minus_f = T::power_of_two(1, k - f);
+    typename T::open_type two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
+
+    T c = resharing.finalize(base_king);
+
+    // TODO: Check!
+    typename T::open_type c_msb = c >> (k - 1);
+    T c_trunc = c >> f;
+
+    T r_msb = masks.next();
+    T r_prime = masks.next();
+
+    T res = c_trunc - r_prime + (1 - r_msb) * c_msb;
+    return res;
 }
 
 #endif /* PROTOCOLS_ATLAS_HPP_ */

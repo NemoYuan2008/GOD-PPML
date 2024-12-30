@@ -15,6 +15,7 @@ compiler = Compiler(
 def run():
     program = compiler.prog
     # program.use_trunc_pr = True
+    sfix.set_precision(13, 31)
 
     a = Array.create_from([sfix(1), sfix(2), sfix(3), sfix(4)])
     b = Array.create_from([sfix(5), sfix(6), sfix(7), sfix(8)])

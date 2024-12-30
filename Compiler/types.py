@@ -4766,10 +4766,11 @@ class _fix(_single):
             return NotImplemented
         if isinstance(other, _fix):
             # TODO: check the k, f values
+            # I think k should be the bit length of the modulus
             k = max(self.k, other.k)
             max_f = max(self.f, other.f)
             min_f = min(self.f, other.f)
-            val = self.v.mul_trunc(other.v, k + min_f, min_f)
+            val = self.v.mul_trunc(other.v, k, min_f)   # TODO: check this
             if 'vec' not in self.__dict__:
                 return self._new(val, k=k, f=max_f)
             else:
