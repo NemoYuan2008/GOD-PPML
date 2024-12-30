@@ -142,7 +142,20 @@ T Atlas<T>::get_random()
 # define VERBOSE_MUL_TRUNC
 
 template<class T>
-void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc) {
+void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc)
+{
+    mul_trunc(regs, size, proc, T::characteristic_two);
+}
+
+template<class T>
+void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type)
+{
+    (void) regs; (void) size; (void) proc;
+    throw runtime_error("mul_trunc not implemented for characteristic 2");
+}
+
+template<class T>
+void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type) {
     // Parse the arguments
     struct MultTruncInfo {
         int dest_base;       // Destination register
@@ -165,42 +178,42 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
     for (size_t i = 0; i < regs.size(); i += 5)
         infos.emplace_back(regs, i);
 
-
-    // Perform the multiplications
-    init_mul_trunc();
+    init_mul_trunc(infos.size() * size, proc);
     for (const auto& info : infos)
     {
-        for (int i = 0; i < size; i++)
+        for (int i = 0; i < size; ++i)
         {
             // Get operands from registers
             T x = proc.get_S_ref(info.x_base + i);
             T y = proc.get_S_ref(info.y_base + i);
             
-            // Prepare multiplication
             // prepare_mul(x, y);
             prepare_mul_trunc(x, y, info.k, info.f, proc);
         }
     }
 
     // Single exchange for all multiplications
-    // TODO: in exchange, the king generates the share for the product, however, we need clear value
-    exchange();
+    exchange_mul_trunc(proc);
 
     // Finalize all multiplications
     for (auto& info : infos)
     {
-        for (int i = 0; i < size; i++)
+        for (int i = 0; i < size; ++i)
         {
             // Get result and store in destination register
-            proc.get_S_ref(info.dest_base + i) = finalize_mul();
+            proc.get_S_ref(info.dest_base + i) = finalize_mul_trunc(info.k, info.f, proc);
         }
     }
 }
 
+
 template<class T>
-void Atlas<T>::init_mul_trunc()
-{
+void Atlas<T>::init_mul_trunc(int length, SubProcessor<T>& proc)
+{   
     init_mul();
+
+    // The length is for vector::reserve, so it does not need to be very accurate
+    proc.MC.init_open(P, length);
 }
 
 template<class T>
@@ -217,23 +230,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
     // This function is like prepare(), 
     // but the random mask is from the solved bits, not from a double sharing
 
-    // We need some type traits for characteristic 2, to avoid compilation errors
-    prepare_with_solved_bits(product, k, f, proc, T::characteristic_two);
-}
-
-template<class T>
-void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc, std::true_type)
-{
-    (void) product;
-    (void) k;
-    (void) f;
-    (void) proc;
-    throw runtime_error("mul_trunc not implemented for characteristic 2");
-}
-
-template<class T>
-void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc, std::false_type)
-{
+    assert(k - f - 2 >= 0);
     typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2);
 
     // get the individual bits [r_i] of the random mask r
@@ -263,36 +260,41 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 
     // TODO: a zero-sharing is needed here for security
     auto c = product + r + two_power_k_minus_two;
-    c.pack(oss2[next_king]);
+
+    // Prepare opening the value c
+    proc.MC.prepare_open(c);
+
     next_king = (next_king + 1) % P.num_players();
 
     masks.push_back(r_msb);
-
-    // TODO: this is problematic, since in exchange() the masks.size() is used,
-    //       and this will cause an insufficient data error.
-    //       To solve this:
-    //       1. We may define a new function exchange_mul_trunc() that does not use masks.size(), or
-    //       2. We may use a different variable to store the masks.
     masks.push_back(r_prime);
 }
 
 template<class T>
-T Atlas<T>::finalize_mul_trunc(int k, int f)
+void Atlas<T>::exchange_mul_trunc(SubProcessor<T>& proc)
 {
-    typename T::open_type two_power_k_minus_f = T::power_of_two(1, k - f);
-    typename T::open_type two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
+    proc.MC.exchange(P);
+}
 
-    T c = resharing.finalize(base_king);
+template<class T>
+T Atlas<T>::finalize_mul_trunc(int k, int f, SubProcessor<T>& proc)
+{
+    typename T::clear two_power_k_minus_f = T::power_of_two(1, k - f);
+    typename T::clear two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
 
-    // TODO: Check!
-    typename T::open_type c_msb = c >> (k - 1);
-    T c_trunc = c >> f;
+    typename T::clear c = proc.MC.finalize_open();
+
+    // TODO: check c_msb and c_trunc
+    typename T::clear c_msb = c >> (k - 1);
+    typename T::clear c_trunc = c >> f;
 
     T r_msb = masks.next();
     T r_prime = masks.next();
 
-    T res = c_trunc - r_prime + (1 - r_msb) * c_msb;
-    return res;
+    T e(1);
+    e = (e - r_msb) * c_msb;
+
+    return c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
 }
 
 #endif /* PROTOCOLS_ATLAS_HPP_ */

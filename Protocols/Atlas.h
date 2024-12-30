@@ -71,13 +71,15 @@ public:
     T get_random();
 
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
-    void init_mul_trunc();
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
+
+    void init_mul_trunc(int length, SubProcessor<T>& proc);
     void prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc);
-    T finalize_mul_trunc(int k, int f);
+    void exchange_mul_trunc(SubProcessor<T>& proc);
+    T finalize_mul_trunc(int k, int f, SubProcessor<T>& proc);
 
     void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc);
-    void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc, std::true_type);
-    void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc, std::false_type);
 };
 
 #endif /* PROTOCOLS_ATLAS_H_ */
