@@ -1,12 +1,17 @@
+import sys
+sys.path.append('./')
+
 from Compiler.types import sfix, sint, cfix, Array, Matrix
 from Compiler.library import print_ln
 from Compiler.compilerLib import Compiler
 
 compiler = Compiler(
     custom_args=[
-        # "-P 2305843009213693951", 
-        "-a",
-        "debug",
+        # '--prime',
+        # '2147483647', # 2^31 - 1
+        # '2305843009213693951', # 2^61 - 1
+        '-a',
+        'debug',
     ]
 )
 
@@ -35,5 +40,5 @@ def run():
     print_ln('%s', d.reveal())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     compiler.compile_func()

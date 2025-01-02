@@ -11,10 +11,16 @@
 template<class T>
 Atlas<T>::~Atlas()
 {
-    // cerr << "~Atlas\n";
 #ifdef VERBOSE
     if (not double_sharings.empty())
         cerr << double_sharings.size() << " double sharings left" << endl;
+#endif
+#ifdef VERBOSE_MUL_CNT
+    cerr << "\n~Atlas<T>::Atlas\n"
+         << "T: " << typeid(T).name() << '\n'
+         << "T::clear: " << typeid(typename T::clear).name() << '\n'
+         << "mul_count: " << mul_count << '\n'
+         << "multrunc_count: " << multrunc_count << '\n';
 #endif
 }
 
@@ -41,6 +47,10 @@ array<T, 2> Atlas<T>::get_double_sharing()
 template<class T>
 void Atlas<T>::init_mul()
 {
+    cerr << "\nAtlas<T>::init_mul\n"
+         << "T: " << typeid(T).name() << '\n'
+         << "T::clear: " << typeid(typename T::clear).name() << '\n';
+
     oss.reset();
     oss2.reset();
     masks.clear();
@@ -50,6 +60,9 @@ void Atlas<T>::init_mul()
 template<class T>
 void Atlas<T>::prepare_mul(const T& x, const T& y, int)
 {
+#ifdef VERBOSE_MUL_CNT
+    ++mul_count;
+#endif
     prepare(x * y);
 }
 
@@ -139,7 +152,6 @@ T Atlas<T>::get_random()
     return shamir.get_random();
 }
 
-# define VERBOSE_MUL_TRUNC
 
 template<class T>
 void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc)
@@ -179,6 +191,7 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
         infos.emplace_back(regs, i);
 
     init_mul_trunc(infos.size() * size, proc);
+
     for (const auto& info : infos)
     {
         for (int i = 0; i < size; ++i)
@@ -219,7 +232,9 @@ void Atlas<T>::init_mul_trunc(int length, SubProcessor<T>& proc)
 template<class T>
 void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
 {
-    // Prepare the multiplication of x and y, and truncate the result to k - f bits
+#ifdef VERBOSE_MUL_CNT
+    ++multrunc_count;
+#endif
     prepare_with_solved_bits(x * y, k, f, proc);
 }
 
@@ -273,6 +288,9 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 template<class T>
 void Atlas<T>::exchange_mul_trunc(SubProcessor<T>& proc)
 {
+    cerr << "\nAtlas<T>::exchange_mul_trunc\n"
+            << "T: " << typeid(T).name() << '\n'
+            << "T::clear: " << typeid(typename T::clear).name() << '\n';
     proc.MC.exchange(P);
 }
 
@@ -284,7 +302,7 @@ T Atlas<T>::finalize_mul_trunc(int k, int f, SubProcessor<T>& proc)
 
     typename T::clear c = proc.MC.finalize_open();
 
-    // TODO: check c_msb and c_trunc
+    // TODO: operator>> is division for gfp_, but we need arithmetic right shift instead
     typename T::clear c_msb = c >> (k - 1);
     typename T::clear c_trunc = c >> f;
 

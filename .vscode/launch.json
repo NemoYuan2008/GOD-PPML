@@ -25,7 +25,7 @@
             "type": "debugpy",
             "request": "launch",
             "name": "Launch Python Program",
-            "program": "${workspaceFolder}/test.py",
+            "program": "${workspaceFolder}/dev-scripts/test.py",
             "cwd": "${workspaceFolder}"
         }
     ],

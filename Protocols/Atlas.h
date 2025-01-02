@@ -34,6 +34,11 @@ class Atlas : public ProtocolBase<T>
 
     array<T, 2> get_double_sharing();
 
+#ifdef VERBOSE_MUL_CNT
+    int mul_count = 0;
+    int multrunc_count = 0;
+#endif
+
 public:
     static const bool uses_triples = false;
 
@@ -43,6 +48,9 @@ public:
             shamir(P), shamir2(P, 2 * ShamirMachine::s().threshold), oss(P),
             oss2(P), next_king(0), base_king(0), resharing(0, P), P(P)
     {
+        cerr << "\nAtlas constructor\n"
+             << "T: " << typeid(T).name() << '\n'
+             << "T::clear: " << typeid(typename T::clear).name() << '\n';
     }
 
     ~Atlas();
