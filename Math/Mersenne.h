@@ -1,6 +1,9 @@
 #ifndef MATH_MERSENNE_H
 #define MATH_MERSENNE_H
 
+#include <iostream>
+#include <vector>
+
 #include "Math/ValueInterface.h"
 #include "Math/field_types.h"
 #include "Tools/octetStream.h"
@@ -102,6 +105,9 @@ public:
     inline Mersenne operator|(Mersenne rhs) const;
     inline Mersenne operator^(Mersenne rhs) const;
 
+    static inline Mersenne dot_product(
+        const vector <Mersenne>& a, const vector <Mersenne>& b);
+
     inline Mersenne invert() const;
     inline Mersenne sqrRoot() const;
     inline Mersenne truncate(int f);
@@ -140,6 +146,10 @@ public:
 
 private:
     value_type value = 0;
+
+    // Helper functions
+    static inline uint64_t modp(uint64_t x);
+    static inline uint64_t modp(__uint128_t x); 
 };
 
 template<int L>

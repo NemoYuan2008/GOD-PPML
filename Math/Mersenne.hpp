@@ -211,6 +211,45 @@ inline Mersenne<L> Mersenne<L>::operator^(Mersenne rhs) const {
 }
 
 template<int L>
+Mersenne<L> Mersenne<L>::dot_product(const vector<Mersenne<L>>& a, const vector<Mersenne<L>>& b) {
+    // Warning: we do not check for the sizes of a and b, so make sure they are the same!!
+
+    if constexpr (L == 61) {
+        static constexpr int max_batch = 63; // The maximum batch size before potential overflow
+        value_type result = 0;
+        const int size = a.size();
+        int start = 0;
+        int end;
+
+        while (start < size) {
+            end = std::min(start + max_batch, size);
+            for (int i = start; i < end; ++i) {
+                result += a[i].value * b[i].value;
+            }
+            result = modp(result);
+            start = end;
+        }
+
+        return {result};
+    } else {
+        // There are three ways for L == 31:
+        // 1. Use __uint128_t to store the result, then modp, 
+        //    the maximum size is 2^(128 - 2 * 31) - 1 = 2^66 - 1, but using __uint128_t has overhead
+        // 2. Use uint64_t to store the result, then modp, 
+        //    the maximum size is 2^(64 - 2 * 31) - 1 = 3, this is rather small, so maybe inefficient
+        // 3. Use trivial multiplication and modp
+        //
+        // We choose the third option for now, but we haven't done any benchmarking
+        
+        Mersenne result = 0;
+        for (size_t i = 0; i < a.size(); ++i) {
+            result += a[i] * b[i];
+        }
+        return result;
+    }
+}
+
+template<int L>
 Mersenne<L> Mersenne<L>::invert() const {
     value_type a = value;
     value_type b = prime;
@@ -476,6 +515,20 @@ Mersenne<L> Mersenne<L>::power_of_two(bool bit, int exp) {
     } else {
         return 0;
     }
+}
+
+template<int L>
+uint64_t Mersenne<L>::modp(uint64_t x) {
+    uint64_t res = (x >> bit_length) + (x & prime);
+    return res >= prime ? res - prime : res;
+}
+
+template<int L>
+uint64_t Mersenne<L>::modp(__uint128_t x) {
+    uint64_t upper = x >> (2 * bit_length);
+    uint64_t middle = (x >> bit_length) & prime;
+    uint64_t lower = x & prime;
+    return modp(upper + middle + lower);
 }
 
 #endif // MATH_MERSENNE_HPP

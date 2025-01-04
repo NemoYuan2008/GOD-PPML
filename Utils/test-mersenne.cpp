@@ -1,3 +1,7 @@
+/*
+ * This file is used to test the correctness of the Mersenne class.
+ */
+
 #include <cassert>
 #include <random>
 #include <iostream>
@@ -120,6 +124,25 @@ void test_bit_gen() {
         }
     }
     cout << "Bit generation: #one=" << one_cnt << ", #zero=" << zero_cnt << '\n';
+}
+
+void test_dot_product() {
+    const size_t vector_size = 1000;
+    const int num_tests = 100;
+
+    for (int test = 0; test < num_tests; ++test) {
+        vector<field> a(vector_size), b(vector_size);
+        field expected = 0;
+        
+        for (size_t i = 0; i < vector_size; ++i) {
+            a[i].randomize(G);
+            b[i].randomize(G);
+            expected += a[i] * b[i];
+        }
+
+        field result = field::dot_product(a, b);
+        assert(result == expected);
+    }
 }
 
 
