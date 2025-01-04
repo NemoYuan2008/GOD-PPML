@@ -399,6 +399,18 @@ void buffer_bits_from_squares(RingPrep<T>& prep)
     squares.clear();
     if (bits.empty())
         throw runtime_error("squares were all zero");
+
+#define DEBUG_BUFFER_BITS_FROM_SQUARES
+#ifdef DEBUG_BUFFER_BITS_FROM_SQUARES
+    cerr << "\nbuffer_bits_from_squares\n";
+    // Open all the bits
+    vector<typename T::clear> bits_open;
+    proc->MC.POpen(bits_open, bits, proc->P);
+    cerr << "bits: ";
+    for (auto bit_open : bits_open)
+        cerr << bit_open << ' ';
+    cerr << "\ntotal bits: " << bits.size() << '\n';
+#endif
 }
 
 template<class T>

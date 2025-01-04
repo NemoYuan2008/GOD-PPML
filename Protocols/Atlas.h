@@ -10,6 +10,9 @@
 
 #include "Tools/Bundle.h"
 
+// #define DEBUG_MUL_CNT
+#define DEBUG_MUL_TRUNC
+
 /**
  * ATLAS protocol (simple version).
  * Uses double sharings to reduce degree of Shamir secret sharing.
@@ -34,7 +37,10 @@ class Atlas : public ProtocolBase<T>
 
     array<T, 2> get_double_sharing();
 
-#ifdef VERBOSE_MUL_CNT
+    // ADDED: USE THIS LOCAL MAC CHECK!!!! see the comments in Atlas::init_mul_trunc
+    typename T::MAC_Check local_mc; // default initialization is fine
+
+#ifdef DEBUG_MUL_CNT
     int mul_count = 0;
     int multrunc_count = 0;
 #endif

@@ -16,6 +16,7 @@ using namespace std;
 #include "Z2k.h"
 #include "ValueInterface.h"
 #include "gf2nlong.h"
+#include "Mersenne.h"
 
 // Fix false warning
 #if __GNUC__ == 10
@@ -126,6 +127,8 @@ class Integer : public IntBase<long>
   static Integer convert_unsigned(const gfp_<X, L>& other);
   template<int K>
   static Integer convert_unsigned(const Z2<K>& other);
+  template<int L>
+  static Integer convert_unsigned(Mersenne<L> other); 
 
   Integer()                 { a = 0; }
   Integer(long a) : IntBase(a) {}
@@ -136,6 +139,8 @@ class Integer : public IntBase<long>
   Integer(const SignedZ2<K>& x);
   template<int X, int L>
   Integer(const gfp_<X, L>& x);
+  template<int L>
+  Integer(Mersenne<L> x) : Integer(x.to_signed()) {}
   Integer(int128 x) : Integer(x.get_lower()) {}
 
   Integer(const Integer& x, int n_bits);
@@ -187,7 +192,7 @@ Integer::Integer(const gfp_<X, L>& x)
 {
   to_signed_bigint(bigint::tmp, x);
   *this = bigint::tmp;
-}
+}    
 
 template<int X, int L>
 Integer Integer::convert_unsigned(const gfp_<X, L>& other)
@@ -200,6 +205,12 @@ template<int K>
 Integer Integer::convert_unsigned(const Z2<K>& other)
 {
   return other;
+}
+
+template<int L>
+Integer Integer::convert_unsigned(Mersenne<L> other)
+{
+  return other.get();
 }
 
 // slight misnomer

@@ -9,6 +9,7 @@
 #include "FieldMachine.h"
 #include "HonestMajorityMachine.h"
 #include "Math/gfp.h"
+#include "Math/Mersenne.hpp"
 #include "OnlineMachine.hpp"
 #include "OnlineOptions.hpp"
 
@@ -35,6 +36,9 @@ FieldMachine<T, V, W, X>::FieldMachine(int argc, const char** argv,
 {
     assert(nplayers or T<gfpvar>::variable_players);
     W machine(argc, argv, opt, online_opts, X(), nplayers);
+
+// This is our modification: we are using Mersenne<61> instead of gfp_
+#ifdef ORIGINAL_GFP // This is the original code
     int n_limbs = online_opts.prime_limbs();
     switch (n_limbs)
     {
@@ -55,6 +59,9 @@ FieldMachine<T, V, W, X>::FieldMachine(int argc, const char** argv,
         cerr << "Compile with -DGFP_MOD_SZ=" << n_limbs << endl;
         exit(1);
     }
+#else // This is our modification
+    machine.template run<T<Mersenne<61>>, V<X>>();
+#endif
 }
 
 #endif /* PROCESSOR_FIELDMACHINE_HPP_ */

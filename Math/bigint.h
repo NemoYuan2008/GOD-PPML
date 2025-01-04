@@ -31,6 +31,7 @@ class Integer;
 template<int K> class Z2;
 template<int K> class SignedZ2;
 template<int L> class fixint;
+template<int L> class Mersenne;
 
 namespace GC
 {
@@ -74,6 +75,9 @@ public:
   /// Convert to canonical representation as non-negative number.
   template <int K>
   bigint(const SignedZ2<K>& x);
+  /// Convert to canonical representation as non-negative number.
+  template<int L>
+  bigint(Mersenne<L> x);
   template <int L>
   bigint(const fixint<L>& x) : bigint(typename fixint<L>::super(x)) {}
   bigint(const Integer& x);
@@ -90,6 +94,8 @@ public:
   bigint& operator=(const Z2<K>& x);
   template<int K>
   bigint& operator=(const SignedZ2<K>& x);
+  template<int L>
+  bigint& operator=(Mersenne<L> x);
 
   /// Convert to signed representation in :math:`[-p/2,p/2]`.
   template<int X, int L>
@@ -197,6 +203,13 @@ bigint& bigint::operator=(const SignedZ2<K>& x)
   return *this;
 }
 
+template<int L>
+bigint& bigint::operator=(Mersenne<L> x)
+{
+  mpz_set_ui(get_mpz_t(), x.get());
+  return *this;
+}
+
 template<int X, int L>
 bigint::bigint(const gfp_<X, L>& x)
 {
@@ -214,6 +227,12 @@ bigint& bigint::operator=(const gfp_<X, L>& x)
 {
   to_bigint(*this, x);
   return *this;
+}
+
+template<int L>
+bigint::bigint(Mersenne<L> x)
+{
+  mpz_set_ui(get_mpz_t(), x.get());
 }
 
 template<class T>
