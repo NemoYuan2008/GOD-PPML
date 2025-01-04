@@ -13,6 +13,37 @@ using field = Mersenne<61>;
 using field_gfp = gfp_<0, 1>;
 SeededPRNG G;
 
+void test_conversion() {
+    std::default_random_engine eng(std::random_device{}());
+    std::uniform_int_distribution<int> dist;
+
+    for (int i = 0; i < 100; ++i) {
+        int x = dist(eng);
+        field x_field(x);
+        field_gfp x_gfp(x);
+        Integer x_integer(x);
+        
+        // Test conversion to bigint
+        assert(bigint(x_field) == bigint(x_gfp));
+
+        // Test conversion to Integer
+        assert(Integer(x_field) == Integer(x_gfp));
+
+        // Test Integer::convert_unsigned
+        assert(Integer::convert_unsigned(x_field) == Integer::convert_unsigned(x_gfp));
+
+        // Test conversion from Integer
+        assert(bigint(field(x_integer)) == bigint(field_gfp(x_integer)));
+
+        // Test convert_destroy()
+        bigint z(x);
+        x_field.convert_destroy(z);
+        z = x;
+        x_gfp.convert_destroy(z);
+        assert(bigint(x_field) == bigint(x_gfp));
+    }
+}
+
 void test_mul() {
     for (int i = 0; i < 100; ++i) {
         field x, y;
@@ -88,54 +119,19 @@ void test_bit_gen() {
             zero_cnt++;
         }
     }
-    cout << "One count: " << one_cnt << ", Zero count: " << zero_cnt << '\n';
+    cout << "Bit generation: #one=" << one_cnt << ", #zero=" << zero_cnt << '\n';
 }
 
-void test_truncate() {
-    field x;
-    x.randomize(G);
-    int f = 13;
-    field y = x.truncate(f);
-    cout << "Trunc test: " << x << ' ' << y << '\n';
-}
 
 int main() {
     field_gfp::init_field("0x1fffffffffffffff"); // 2^61 - 1
     
+    test_conversion();
     test_mul();
     test_inversion();
     test_sqrRoot();
     test_bit_gen();
-    test_truncate();
     cout << "All tests passed!\n";
-
-    field x(-1);
-    field_gfp x_gfp(-1);
-
-    cout << x << ' ' << x_gfp << '\n';
-
-    cout << Integer(x) << ' ' << Integer(x_gfp) << '\n';
-    cout << Integer::convert_unsigned(x) << ' ' << Integer::convert_unsigned(x_gfp) << '\n';
-    cout << field(Integer(-1)) << ' ' << field_gfp(Integer(-1)) << '\n';
-
-    cout << field(bigint(-1)) << ' ' << field_gfp(bigint(-1)) << '\n';
-
-    bigint z(-1);
-    x.convert_destroy(z);
-    z = -1;
-    x_gfp.convert_destroy(z);
-    cout << x << ' ' << x_gfp << '\n';
-    
-    cout << bigint(field(-1)) << ' ' << bigint(field_gfp(-1)) << '\n';
-    cout << bigint(field(-56)) << ' ' << bigint(field_gfp(-56)) << '\n';
-
-    cout << field(1).sqrRoot() << ' ' << field_gfp(1).sqrRoot() << '\n';
-    cout << field(4).sqrRoot() << ' ' << field_gfp(4).sqrRoot() << '\n';
-    cout << field(9).sqrRoot() << ' ' << field_gfp(9).sqrRoot() << '\n';
-    cout << field(16).sqrRoot() << ' ' << field_gfp(16).sqrRoot() << '\n';
-    cout << field(25).sqrRoot() << ' ' << field_gfp(25).sqrRoot() << '\n';
-    cout << field(36).sqrRoot() << ' ' << field_gfp(36).sqrRoot() << '\n';
-
 
     return 0;
 }

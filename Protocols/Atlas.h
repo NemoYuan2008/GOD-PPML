@@ -10,8 +10,9 @@
 
 #include "Tools/Bundle.h"
 
+// #define DEBUG_ATLAS
 // #define DEBUG_MUL_CNT
-#define DEBUG_MUL_TRUNC
+// #define DEBUG_MUL_TRUNC
 
 /**
  * ATLAS protocol (simple version).
@@ -54,9 +55,11 @@ public:
             shamir(P), shamir2(P, 2 * ShamirMachine::s().threshold), oss(P),
             oss2(P), next_king(0), base_king(0), resharing(0, P), P(P)
     {
+#ifdef DEBUG_ATLAS
         cerr << "\nAtlas constructor\n"
              << "T: " << typeid(T).name() << '\n'
              << "T::clear: " << typeid(typename T::clear).name() << '\n';
+#endif
     }
 
     ~Atlas();
@@ -88,10 +91,10 @@ public:
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
 
-    void init_mul_trunc(int length, SubProcessor<T>& proc);
+    void init_mul_trunc(int length);
     void prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc);
-    void exchange_mul_trunc(SubProcessor<T>& proc);
-    T finalize_mul_trunc(int k, int f, SubProcessor<T>& proc);
+    void exchange_mul_trunc();
+    T finalize_mul_trunc(int k, int f);
 
     void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc);
 };

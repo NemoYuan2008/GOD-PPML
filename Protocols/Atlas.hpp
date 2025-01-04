@@ -190,42 +190,40 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
         infos.emplace_back(regs, i);
     }
 
-    init_mul_trunc(infos.size() * size, proc);
+    init_mul_trunc(infos.size() * size);
 
     for (const auto& info : infos)
     {
         for (int i = 0; i < size; ++i)
         {
-            // Get operands from registers
             T x = proc.get_S_ref(info.x_base + i);
             T y = proc.get_S_ref(info.y_base + i);
             
-            // prepare_mul(x, y);
             prepare_mul_trunc(x, y, info.k, info.f, proc);
         }
     }
 
-    exchange_mul_trunc(proc);
+    exchange_mul_trunc();
 
     for (auto& info : infos)
     {
         for (int i = 0; i < size; ++i)
         {
-            proc.get_S_ref(info.dest_base + i) = finalize_mul_trunc(info.k, info.f, proc);
+            proc.get_S_ref(info.dest_base + i) = finalize_mul_trunc(info.k, info.f);
         }
     }
 }
 
 
 template<class T>
-void Atlas<T>::init_mul_trunc(int length, SubProcessor<T>& proc)
+void Atlas<T>::init_mul_trunc(int length)
 {   
-    (void) proc; // TODO: remove the unused parameter
     init_mul();
 
-    // The length is for vector::reserve, so it does not need to be very accurate
-    // proc.MC.init_open(P, length);
-    // TODO: add some comments here
+    // We must use local_mc here, and we must not use proc.MC
+    // Since buffer_bits_from_square uses proc.MC, 
+    // using proc.MC here will interfere with the buffer_bits_from_square.
+    // Hence we create a local instance of MAC_Check in the class.
     local_mc.init_open(P, length);
 }
 
@@ -245,8 +243,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
     // This function is like prepare(), 
     // but the random mask is from the solved bits, not from a double sharing
 
-    assert(k - f - 2 >= 0);
-    typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2);
+    typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2); // TODO: we don't need k, we can use prime length
 
 #ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_with_solved_bits(): " << "k = " << k << ' ' << "f = " << f << '\n'
@@ -280,19 +277,10 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 
     // TODO: a zero-sharing is needed here for security
     auto c = product + r + two_power_k_minus_two;
-
-    // Prepare opening the value c
-    // proc.MC.prepare_open(c);
     local_mc.prepare_open(c);
 
 #ifdef DEBUG_MUL_TRUNC
-    // Prepare opening r, r_bits, r_msb, r_prime for debugging
-    // proc.MC.prepare_open(r);
-    // for (int i = 0; i < k; ++i) {
-    //     proc.MC.prepare_open(r_bits[i]);
-    // }
-    // proc.MC.prepare_open(r_msb);
-    // proc.MC.prepare_open(r_prime);
+    // Open r, r_bits, r_msb, r_prime for debugging
     local_mc.prepare_open(r);
     for (int i = 0; i < k; ++i) {
         local_mc.prepare_open(r_bits[i]);
@@ -308,21 +296,17 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 }
 
 template<class T>
-void Atlas<T>::exchange_mul_trunc(SubProcessor<T>& proc)
+void Atlas<T>::exchange_mul_trunc()
 {
-    (void) proc; // TODO: remove the unused parameter
-    // proc.MC.exchange(P);
     local_mc.exchange(P);
 }
 
 template<class T>
-T Atlas<T>::finalize_mul_trunc(int k, int f, SubProcessor<T>& proc)
+T Atlas<T>::finalize_mul_trunc(int k, int f)
 {
-    (void) proc; // TODO: remove the unused parameter
     typename T::clear two_power_k_minus_f = T::power_of_two(1, k - f);
     typename T::clear two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
 
-    // typename T::clear c = proc.MC.finalize_open();
     typename T::clear c = local_mc.finalize_open();
 
 #ifdef DEBUG_MUL_TRUNC
@@ -332,14 +316,6 @@ T Atlas<T>::finalize_mul_trunc(int k, int f, SubProcessor<T>& proc)
          << "c = " << c << '\n';
         
     // Finalize opening r, r_bits, r_msb, r_prime for debugging
-    // T r_open = proc.MC.finalize_open();
-    // vector<T> r_bits_open(k);
-    // for (int i = 0; i < k; ++i) {
-    //     r_bits_open[i] = proc.MC.finalize_open();
-    // }
-    // T r_msb_open = proc.MC.finalize_open();
-    // T r_prime_open = proc.MC.finalize_open();
-
     T r_open = local_mc.finalize_open();
     vector<T> r_bits_open(k);
     for (int i = 0; i < k; ++i) {
@@ -347,7 +323,6 @@ T Atlas<T>::finalize_mul_trunc(int k, int f, SubProcessor<T>& proc)
     }
     T r_msb_open = local_mc.finalize_open();
     T r_prime_open = local_mc.finalize_open();
-
 
     // Compose the bits
     T r_composed = 0;
@@ -365,7 +340,6 @@ T Atlas<T>::finalize_mul_trunc(int k, int f, SubProcessor<T>& proc)
     cerr << "r_prime = " << r_prime_open << '\n';
 #endif
 
-    // TODO: operator>> is division for gfp_, but we need arithmetic right shift instead
     typename T::clear c_msb = c >> (k - 1);
     typename T::clear c_trunc = c.truncate(f);
 
