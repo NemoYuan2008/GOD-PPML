@@ -617,6 +617,52 @@ void SubProcessor<T>::matmuls(const StackedVector<T>& source,
 
 
 template<class T>
+void SubProcessor<T>::matmuls_trunc(const StackedVector<T>& source,
+        const Instruction& instruction)
+{
+    static constexpr int instruction_size = 8;
+
+    protocol.init_dotprod_trunc();
+
+    auto& start = instruction.get_start();
+    // TODO: maybe change parameters in the instruction
+    assert(start.size() % instruction_size == 0);
+
+    for(auto it = start.begin(); it < start.end(); it += instruction_size)
+    {
+        auto dim = it + 3;
+        auto A = source.begin() + *(it + 1);
+        auto B = source.begin() + *(it + 2);
+        assert(A + dim[0] * dim[1] <= source.end());
+        assert(B + dim[1] * dim[2] <= source.end());
+
+        for (int i = 0; i < dim[0]; i++)
+            for (int j = 0; j < dim[2]; j++)
+            {
+                for (int k = 0; k < dim[1]; k++)
+                    protocol.prepare_dotprod_trunc(*(A + i * dim[1] + k),
+                            *(B + k * dim[2] + j));
+                protocol.next_dotprod_trunc(it[6], it[7], *this);
+            }
+    }
+
+    protocol.exchange_dotprod_trunc();
+
+    for(auto it = start.begin(); it < start.end(); it += instruction_size)
+    {
+        auto C = S.begin() + *it;
+        auto dim = it + 3;
+        assert(C + dim[0] * dim[2] <= S.end());
+        for (int i = 0; i < dim[0]; i++)
+            for (int j = 0; j < dim[2]; j++)
+                *(C + i * dim[2] + j) = protocol.finalize_dotprod_trunc(dim[1], it[6], it[7]);
+    }
+
+    maybe_check();
+}
+
+
+template<class T>
 void SubProcessor<T>::matmulsm(const MemoryPart<T>& source,
         const vector<int>& start)
 {

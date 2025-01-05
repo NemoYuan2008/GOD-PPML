@@ -2211,6 +2211,18 @@ class _secret(_arithmetic_register, _secret_structure):
         n_cols = len(B) // n
         matmuls(res, A, B, n_rows, n, n_cols)
         return res
+    
+    @classmethod
+    @set_instruction_type
+    def matrix_mul_trunc(cls, A, B, n, k, f):
+        assert len(A) % n == 0
+        assert len(B) % n == 0
+        size = len(A) * len(B) // n**2
+        res = cls(size=size) # should be an sint
+        n_rows = len(A) // n
+        n_cols = len(B) // n
+        matmuls_trunc(res, A, B, n_rows, n, n_cols, k, f)
+        return res
 
     @staticmethod
     def _new(self):
@@ -4476,9 +4488,14 @@ class _single(_number, _secret_structure):
     def matrix_mul(cls, A, B, n, res_params=None):
         AA = A.pre_mul()
         BB = B.pre_mul()
-        CC = cls.int_type.matrix_mul(AA, BB, n)
-        res = A.unreduced(CC, B, res_params, n).reduce_after_mul()
-        return res
+        # TODO: we are assuming A and B have the same k and f
+        res = cls.int_type.matrix_mul_trunc(AA, BB, n, A.k, A.f)
+        return sfix._new(res, k=A.k, f=A.f)
+
+        ## Below is the original code:
+        # CC = cls.int_type.matrix_mul(AA, BB, n)
+        # res = A.unreduced(CC, B, res_params, n).reduce_after_mul()
+        # return res
 
     @classmethod
     def read_from_file(cls, *args, **kwargs):

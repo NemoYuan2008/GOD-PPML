@@ -2696,6 +2696,32 @@ class mul_trunc(
         req_node.increment((self.field_type, 'bit'),
                             self.get_size() * self.get_repeat() * self.args[3])
 
+class matmuls_trunc(matmul_base, base.Mergeable):
+    """ Secret matrix multiplication from registers followed by probabilistic truncation.
+
+    :param: result (sint vector)
+    :param: first factor (sint vector)
+    :param: second factor (sint vector)
+    :param: number of rows in first factor and result (int)
+    :param: number of columns in first factor and rows in second factor (int)
+    :param: number of columns in second factor and result (int)
+    :param: bit length of sources (int)
+    :param: number of bits to truncate (int)
+    """
+    code = base.opcodes['MATMULS_TRUNC']
+    arg_format = itertools.cycle(['sw','s','s','int','int','int','int','int'])
+
+    # TODO: check get_repeat
+    def get_repeat(self):
+        return sum(reduce(operator.mul, self.args[i + 3:i + 6])
+                   for i in range(0, len(self.args), 8))
+    
+    def add_usage(self, req_node):
+        super(matmuls_trunc, self).add_usage(req_node)
+        req_node.increment((self.field_type, 'bit'),
+                            # size * bit_length * dim_rows * dim_cols
+                            self.get_size() * self.args[6] * self.args[3] * self.args[5])
+
 @base.vectorize
 class trunc_pr(base.VarArgsInstruction):
     """ Probabilistic truncation if supported by the protocol.

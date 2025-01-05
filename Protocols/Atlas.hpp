@@ -3,6 +3,15 @@
  *
  */
 
+/* 
+ * TODO: Some Optimizations that can be done:
+ *
+ * 1. Use lazy mod for prepare_dotprod_trunc and prepare_dotprod
+ * 2. Pass-by-value for T
+ * 3. In mul_trunc and dotprod_trunc, the k and f are fixed, maybe omit them both here and in the instruction, and add an instruction to set them
+ */
+
+
 #ifndef PROTOCOLS_ATLAS_HPP_
 #define PROTOCOLS_ATLAS_HPP_
 
@@ -236,18 +245,26 @@ void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProces
     prepare_with_solved_bits(x * y, k, f, proc);
 }
 
+/*
+ * prepare_with_solved_bits()
+ * 
+ * This function is like prepare(),
+ * but the random mask is from the solved bits, 
+ * not from a double sharing.
+ */
 template<class T>
 void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
 {
-    // This function deserves a better name, but I can't think of one :(
-    // This function is like prepare(), 
-    // but the random mask is from the solved bits, not from a double sharing
-
     typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2); // TODO: we don't need k, we can use prime length
 
 #ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_with_solved_bits(): " << "k = " << k << ' ' << "f = " << f << '\n'
          << "two_power_k_minus_two = " << two_power_k_minus_two << '\n';
+
+    // Open the product for debugging
+    typename T::MAC_Check mc; // Use a separate MAC_Check for opening the product
+    auto product_open = mc.POpen(product, P);
+    cerr << "product being truncated: " << product_open << '\n';
 #endif
 
     // get the individual bits [r_i] of the random mask r
@@ -351,5 +368,39 @@ T Atlas<T>::finalize_mul_trunc(int k, int f)
 
     return c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
 }
+
+template<class T>
+void Atlas<T>::init_dotprod_trunc()
+{
+    // TODO: Check the parameter to init_mul_trunc
+    init_mul_trunc(1); // We only need one opening
+    dotprod_share = 0;
+}
+
+template<class T>
+void Atlas<T>::prepare_dotprod_trunc(const T& x, const T& y)
+{
+    dotprod_share += x * y;
+}
+
+template<class T>
+void Atlas<T>::next_dotprod_trunc(int k, int f, SubProcessor<T>& proc)
+{
+    prepare_with_solved_bits(dotprod_share, k, f, proc);
+    dotprod_share = 0;
+}
+
+template<class T>
+void Atlas<T>::exchange_dotprod_trunc()
+{
+    exchange_mul_trunc();
+}
+
+template<class T>
+T Atlas<T>::finalize_dotprod_trunc(int, int k, int f)
+{
+    return finalize_mul_trunc(k, f);
+}
+
 
 #endif /* PROTOCOLS_ATLAS_HPP_ */

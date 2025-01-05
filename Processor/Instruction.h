@@ -118,8 +118,10 @@ enum
     CONV2DS = 0xAC,
     CHECK = 0xAF,
     PRIVATEOUTPUT = 0xAD,
-    // New instructions
+    // My new mult-and-trunc
     MUL_TRUNC = 0x3C,
+    MATMULS_TRUNC = 0x3D,
+    MATMULSM_TRUNC = 0x3E,
     // Shuffling
     SECSHUFFLE = 0xFA,
     GENSECSHUFFLE = 0xFB,

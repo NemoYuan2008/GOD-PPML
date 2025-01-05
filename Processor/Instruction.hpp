@@ -322,6 +322,7 @@ void BaseInstruction::parse_operands(istream& s, int pos, int file_pos)
       case CONV2DS:
       case MATMULS:
       case MUL_TRUNC:
+      case MATMULS_TRUNC:
         num_var_args = get_int(s);
         get_vector(num_var_args, start, s);
         break;
@@ -763,6 +764,7 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
       return res;
   }
   case MATMULS:
+  case MATMULS_TRUNC: // TODO: I'm not sure
   {
       int res = 0;
       for (auto it = start.begin(); it < start.end(); it += 6)
@@ -1173,6 +1175,9 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
         return;
       case MATMULS:
         Proc.Procp.matmuls(Proc.Procp.get_S(), *this);
+        return;
+      case MATMULS_TRUNC:
+        Proc.Procp.matmuls_trunc(Proc.Procp.get_S(), *this);
         return;
       case MATMULSM:
         Proc.Procp.protocol.matmulsm(Proc.Procp, Proc.machine.Mp.MS, *this);

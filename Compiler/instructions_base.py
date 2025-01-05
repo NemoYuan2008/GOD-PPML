@@ -105,6 +105,8 @@ opcodes = dict(
     GMULBITM = 0x137,
     # My new mult-and-trunc
     MUL_TRUNC = 0x3C,
+    MATMULS_TRUNC = 0x3D,
+    MATMULSM_TRUNC = 0x3E,
     # Open
     OPEN = 0xA5,
     MULS = 0xA6,

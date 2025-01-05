@@ -85,6 +85,7 @@ public:
   void mulrs(const vector<int>& reg);
   void dotprods(const vector<int>& reg, int size);
   void matmuls(const StackedVector<T>& source, const Instruction& instruction);
+  void matmuls_trunc(const StackedVector<T>& source, const Instruction& instruction);
   void matmulsm(const MemoryPart<T>& source, const vector<int>& args);
 
   void matmulsm_finalize_batch(vector<int>::const_iterator startMatmul, int startI, int startJ,
