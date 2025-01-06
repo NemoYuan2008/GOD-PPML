@@ -2772,6 +2772,27 @@ class sint(_secret, _int):
                  second_factor_base_addresses=second_factor_base_addresses,
                  indices_values=indices_values)
         return res
+    
+    @classmethod
+    def direct_matrix_mul_trunc(cls, A, B, n, m, l, k, f, reduce=None, indices=None, indices_values=None):
+        if indices is None:
+            indices = [regint.inc(i) for i in (n, m, m, l)]
+            indices_values = [list(range(i)) for i in (n, m, m, l)]
+        res = cls(size=indices[0].size * indices[3].size)
+
+        if isinstance(A, int) and isinstance(B, int):
+            first_factor_base_addresses = [A]
+            second_factor_base_addresses = [B]
+        else:
+            first_factor_base_addresses = None
+            second_factor_base_addresses = None
+
+        matmulsm_trunc(res, regint(A), regint(B), len(indices[0]), len(indices[1]),
+                       len(indices[3]), *(list(indices) + [m, l, k, f]),
+                       first_factor_base_addresses=first_factor_base_addresses,
+                       second_factor_base_addresses=second_factor_base_addresses,
+                       indices_values=indices_values)
+        return res
 
     @vectorize_init
     def __init__(self, val=None, size=None):
@@ -4976,12 +4997,21 @@ class sfix(_fix):
 
     @classmethod
     def direct_matrix_mul(cls, A, B, n, m, l, reduce=True, indices=None):
-        # pre-multiplication must be identity
-        tmp = cls.int_type.direct_matrix_mul(A, B, n, m, l, indices=indices)
-        res = unreduced_sfix._new(tmp)
+        assert(reduce) # I'm not sure about reduce=False
+        
         if reduce:
-            res = res.reduce_after_mul()
-        return res
+            res = cls.int_type.direct_matrix_mul_trunc(A, B, n, m, l, cls.k, cls.f, indices=indices)
+            return sfix._new(res, k=cls.k, f=cls.f)
+        else:
+            tmp = cls.int_type.direct_matrix_mul(A, B, n, m, l, indices=indices)
+            return unreduced_sfix._new(tmp)
+        ## Below is the original code:
+        # pre-multiplication must be identity
+        # tmp = cls.int_type.direct_matrix_mul(A, B, n, m, l, indices=indices)
+        # res = unreduced_sfix._new(tmp)
+        # if reduce:
+        #     res = res.reduce_after_mul()
+        # return res
 
     @classmethod
     def dot_product(cls, x, y, res_params=None):

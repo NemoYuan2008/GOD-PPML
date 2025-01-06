@@ -87,10 +87,15 @@ public:
   void matmuls(const StackedVector<T>& source, const Instruction& instruction);
   void matmuls_trunc(const StackedVector<T>& source, const Instruction& instruction);
   void matmulsm(const MemoryPart<T>& source, const vector<int>& args);
+  void matmulsm_trunc(const MemoryPart<T>& source, const vector<int>& args);
 
   void matmulsm_finalize_batch(vector<int>::const_iterator startMatmul, int startI, int startJ,
                                vector<int>::const_iterator endMatmul,
                                int endI, int endJ);
+
+  void matmulsm_trunc_finalize_batch(vector<int>::const_iterator startMatmul, int startI, int startJ,
+                                     vector<int>::const_iterator endMatmul,
+                                     int endI, int endJ);
 
   void conv2ds(const Instruction& instruction);
 

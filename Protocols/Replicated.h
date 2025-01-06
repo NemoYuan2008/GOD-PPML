@@ -122,6 +122,11 @@ public:
     { proc.matmulsm(source, instruction.get_start()); }
 
     template<int = 0>
+    void matmulsm_trunc(SubProcessor<T> & proc, MemoryPart<T>& source,
+            const Instruction& instruction)
+    { proc.matmulsm_trunc(source, instruction.get_start()); }
+
+    template<int = 0>
     void conv2ds(SubProcessor<T>& proc, const Instruction& instruction)
     { proc.conv2ds(instruction); }
 

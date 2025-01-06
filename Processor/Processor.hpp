@@ -737,6 +737,8 @@ void SubProcessor<T>::matmulsm(const MemoryPart<T>& source,
     maybe_check();
 }
 
+
+
 template<class T>
 void SubProcessor<T>::matmulsm_finalize_batch(vector<int>::const_iterator startMatmul, int startI, int startJ,
     vector<int>::const_iterator endMatmul, int endI, int endJ) {
@@ -1194,6 +1196,139 @@ void Processor<sint, sgf2n>::call_tape(int tape_number, int arg,
   PC_stack.pop_back();
   this->arg = arg_stack.back();
   arg_stack.pop_back();
+}
+
+template<class T>
+void SubProcessor<T>::matmulsm_trunc(const MemoryPart<T>& source,
+        const vector<int>& start)
+{
+    assert(Proc);
+
+    auto batchStartMatrix = start.begin();
+    int batchStartI = 0;
+    int batchStartJ = 0;
+
+    size_t sourceSize = source.size();
+    const T* sourceData = source.data();
+
+    protocol.init_dotprod_trunc();
+    for (auto matmulArgs = start.begin(); matmulArgs < start.end(); matmulArgs += 14) {
+        auto output = S.begin() + matmulArgs[0];
+        size_t firstFactorBase  = Proc->get_Ci().at(matmulArgs[1]).get();
+        size_t secondFactorBase = Proc->get_Ci().at(matmulArgs[2]).get();
+        auto resultNumberOfRows = matmulArgs[3];
+        auto usedNumberOfFirstFactorColumns = matmulArgs[4];
+        auto resultNumberOfColumns = matmulArgs[5];
+        auto firstFactorTotalNumberOfColumns = matmulArgs[10];
+        auto secondFactorTotalNumberOfColumns = matmulArgs[11];
+        auto k = matmulArgs[12];
+        auto m = matmulArgs[13];
+
+        assert(output + resultNumberOfRows * resultNumberOfColumns <= S.end());
+
+        for (int i = 0; i < resultNumberOfRows; i += 1) {
+            auto actualFirstFactorRow = Proc->get_Ci().at(matmulArgs[6] + i).get();
+
+            for (int j = 0; j < resultNumberOfColumns; j += 1) {
+                auto actualSecondFactorColumn = Proc->get_Ci().at(matmulArgs[9] + j).get();
+
+                for (int k = 0; k < usedNumberOfFirstFactorColumns; k += 1) {
+                    auto actualFirstFactorColumn = Proc->get_Ci().at(matmulArgs[7] + k).get();
+                    auto actualSecondFactorRow = Proc->get_Ci().at(matmulArgs[8] + k).get();
+
+                    auto firstAddress = firstFactorBase + actualFirstFactorRow * firstFactorTotalNumberOfColumns + actualFirstFactorColumn;
+                    auto secondAddress = secondFactorBase + actualSecondFactorRow * secondFactorTotalNumberOfColumns + actualSecondFactorColumn;
+
+                    assert(firstAddress < sourceSize);
+                    assert(secondAddress < sourceSize);
+
+                    protocol.prepare_dotprod_trunc(sourceData[firstAddress], sourceData[secondAddress]);
+                }
+                protocol.next_dotprod_trunc(k, m, *this);
+
+                if (protocol.get_buffer_size() > OnlineOptions::singleton.batch_size) {
+                    protocol.exchange_dotprod_trunc();
+
+                    matmulsm_trunc_finalize_batch(batchStartMatrix, batchStartI, batchStartJ,
+                        matmulArgs, i, j);
+                    batchStartMatrix = matmulArgs;
+                    batchStartI = i;
+                    batchStartJ = j + 1;
+
+                    protocol.init_dotprod_trunc();
+                }
+            }
+        }
+    }
+
+    protocol.exchange_dotprod_trunc();
+    auto lastMatmulsArgs = start.end() - 14;
+    auto lastMatrixRows = lastMatmulsArgs[3];
+    auto lastMatrixColumns = lastMatmulsArgs[5];
+    matmulsm_trunc_finalize_batch(batchStartMatrix, batchStartI, batchStartJ,
+                        lastMatmulsArgs, lastMatrixRows - 1, lastMatrixColumns - 1);
+
+    maybe_check();
+}
+
+template<class T>
+void SubProcessor<T>::matmulsm_trunc_finalize_batch(vector<int>::const_iterator startMatmul, int startI, int startJ,
+    vector<int>::const_iterator endMatmul, int endI, int endJ) {
+
+    for (auto matmulArgs = startMatmul; matmulArgs <= endMatmul; matmulArgs += 14) {
+        auto output = S.begin() + matmulArgs[0];
+        auto resultNumberOfRows = matmulArgs[3];
+        auto usedNumberOfFirstFactorColumns = matmulArgs[4];
+        auto resultNumberOfColumns = matmulArgs[5];
+        auto k = matmulArgs[12];
+        auto m = matmulArgs[13];
+
+        assert(output + resultNumberOfRows * resultNumberOfColumns <= S.end());
+
+        // Finish the first unfinished row in the current matrix.
+        int firstRowEndJ = resultNumberOfColumns - 1;
+        if (matmulArgs == endMatmul && startI == endI) // For the case that the batch covers only a part of the first row of current matrix or only part of a single row.
+            firstRowEndJ = endJ;
+        for (int j = startJ; j <= firstRowEndJ; j += 1) {
+            *(output + startI * resultNumberOfColumns + j) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns, k, m);
+        }
+        if (firstRowEndJ == resultNumberOfColumns - 1) {
+            startJ = 0;
+            startI += 1;
+        }
+        else {
+            // The whole batch covers only a part of a single row.
+            startJ = endJ + 1;
+        }
+
+        // Determine the point up until which the batch runs in the current matrix.
+        int currentMatrixEndI = resultNumberOfRows - 1;
+        int currentMatrixEndJ = resultNumberOfColumns - 1;
+        if (matmulArgs == endMatmul) {
+            currentMatrixEndI = endI;
+            currentMatrixEndJ = endJ;
+        }
+
+        // Finish the rows that always are complete, i.e., the second to the "second to last" row.
+        for (; startI <= currentMatrixEndI - 1; startI += 1) {
+            for (int j = 0; j < resultNumberOfColumns; j += 1) {
+                *(output + startI * resultNumberOfColumns + j) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns, k, m);
+            }
+        }
+
+        // (Partially) finish the last row.
+        if (startI == currentMatrixEndI) {
+            for (; startJ <= currentMatrixEndJ; startJ += 1) {
+                *(output + startI * resultNumberOfColumns + startJ) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns, k, m);
+            }
+        }
+
+        if (matmulArgs < endMatmul) {
+            // Reset startI and startJ to the beginning of the matrix.
+            startI = 0;
+            startJ = 0;
+        }
+    }
 }
 
 #endif

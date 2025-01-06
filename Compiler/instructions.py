@@ -2722,6 +2722,64 @@ class matmuls_trunc(matmul_base, base.Mergeable):
                             # size * bit_length * dim_rows * dim_cols
                             self.get_size() * self.args[6] * self.args[3] * self.args[5])
 
+class matmulsm_trunc(matmul_base, base.Mergeable):
+    """ Secret matrix multiplication reading directly from memory followed by probabilistic truncation.
+
+    :param: result (sint vector in row-first order)
+    :param: base address of first factor (regint value)
+    :param: base address of second factor (regint value)
+    :param: number of rows in first factor and result (int)
+    :param: number of columns in first factor and rows in second factor (int)
+    :param: number of columns in second factor and result (int)
+    :param: rows of first factor to use (regint vector, length as number of rows in first factor)
+    :param: columns of first factor to use (regint vector, length as number of columns in the first factor)
+    :param: rows of second factor to use (regint vector, length as number of columns in the first factor)
+    :param: columns of second factor to use (regint vector, length as number of columns in the second factor)
+    :param: total number of columns in the first factor, equal to used number of columns when all columns are used (int)
+    :param: total number of columns in the second factor, equal to used number of columns when all columns are used (int)
+    :param: bit length of sources (int)
+    :param: number of bits to truncate (int)
+    """
+
+    code = base.opcodes['MATMULSM_TRUNC']
+    arg_format = itertools.cycle(['sw','ci','ci','int','int','int','ci','ci','ci','ci',
+                                  'int','int','int','int'])
+
+    def __init__(self, *args,
+                 first_factor_base_addresses=None,
+                 second_factor_base_addresses=None,
+                 indices_values=None,
+                 **kwargs):
+        matmul_base.__init__(self, *args, **kwargs)
+        for matmul_index in range(len(args) // 14):
+            for i in range(2):
+                assert args[14 * matmul_index + 6 + i].size == args[14 * matmul_index + 3 + i]
+            for i in range(2):
+                assert args[14 * matmul_index + 8 + i].size == args[14 * matmul_index + 4 + i]
+
+        # These are used to reconstruct that accessed memory addresses in the allocator.
+        self.first_factor_base_addresses = first_factor_base_addresses
+        self.second_factor_base_addresses = second_factor_base_addresses
+        self.indices_values = indices_values
+
+        if first_factor_base_addresses is not None:
+            assert len(first_factor_base_addresses) == len(second_factor_base_addresses)
+            if indices_values is not None:
+                assert len(indices_values) == 4 * len(first_factor_base_addresses)
+
+    # TODO: check get_repeat and add_usage
+    def add_usage(self, req_node):
+        super(matmulsm_trunc, self).add_usage(req_node)
+        for i in range(0, len(self.args), 14):
+            req_node.increment(('matmul', (self.args[i + 3], self.args[i + 4], self.args[i + 5])), 1)
+            req_node.increment((self.field_type, 'bit'),
+                            # size * bit_length * dim_rows * dim_cols
+                            self.get_size() * self.args[i + 12] * self.args[i + 3] * self.args[i + 5])
+
+    def get_repeat(self):
+        return sum(reduce(operator.mul, self.args[i + 3:i + 6])
+                   for i in range(0, len(self.args), 14))
+
 @base.vectorize
 class trunc_pr(base.VarArgsInstruction):
     """ Probabilistic truncation if supported by the protocol.
