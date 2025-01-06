@@ -379,29 +379,18 @@ void Atlas<T>::prepare_dotprod_trunc(const T& x, const T& y)
          << "dotprod_share (pre addition): " << dotprod_share << '\n';
 
     typename T::MAC_Check debug_mc;
-    debug_mc.init_open(P, 4);
-    debug_mc.prepare_open(x);
-    debug_mc.prepare_open(y);
-    debug_mc.prepare_open(dotprod_share);
-#endif
+    typename T::MAC_Check_2t debug_mc_2t;
 
-    dotprod_share += x * y;
-
-#ifdef DEBUG_DOTPROD
-    cerr << "dotprod_share (post addition): " << dotprod_share << '\n';
-
-    debug_mc.prepare_open(dotprod_share);
-    debug_mc.exchange(P);
-    auto x_open = debug_mc.finalize_open();
-    auto y_open = debug_mc.finalize_open();
-    auto dotprod_share_open_pre = debug_mc.finalize_open();
-    auto dotprod_share_open_post = debug_mc.finalize_open();
+    auto x_open = debug_mc.POpen(x, P);
+    auto y_open = debug_mc.POpen(y, P);
+    auto dotprod_share_open = debug_mc_2t.POpen(dotprod_share, P);
 
     cerr << "x_open = " << x_open << '\n'
          << "y_open = " << y_open << '\n'
-         << "dotprod_share_open_pre = " << dotprod_share_open_pre << '\n'
-         << "dotprod_share_open_post = " << dotprod_share_open_post << '\n';
+         << "dotprod_share_open (pre addition) = " << dotprod_share_open << '\n';
 #endif
+
+    dotprod_share += x * y;
 }
 
 template<class T>
@@ -409,9 +398,10 @@ void Atlas<T>::next_dotprod_trunc(int k, int f, SubProcessor<T>& proc)
 {
 #ifdef DEBUG_DOTPROD
     // Open the product for debugging
-    typename T::MAC_Check debug_mc;
-    auto dotprod_open = debug_mc.POpen(dotprod_share, P);
-    cerr << "next_dotprod_trunc(): Opened dotprod (pre truncation):\n" << dotprod_open << "\n\n";
+    typename T::MAC_Check_2t debug_mc_2t;
+    auto dotprod_open = debug_mc_2t.POpen(dotprod_share, P);
+    cerr << "\nnext_dotprod_trunc()\n"
+         << "dotprod_open:\n" << dotprod_open << "\n\n";
 #endif
 
     prepare_with_solved_bits(dotprod_share, k, f, proc);
