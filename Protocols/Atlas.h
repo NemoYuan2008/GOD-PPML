@@ -12,7 +12,9 @@
 
 // #define DEBUG_ATLAS
 // #define DEBUG_MUL_CNT
-// #define DEBUG_MUL_TRUNC
+#define DEBUG_SOLVED_BITS
+#define DEBUG_MUL_TRUNC
+#define DEBUG_DOTPROD
 
 /**
  * ATLAS protocol (simple version).
@@ -38,8 +40,7 @@ class Atlas : public ProtocolBase<T>
 
     array<T, 2> get_double_sharing();
 
-    // ADDED: USE THIS LOCAL MAC CHECK!!!! see the comments in Atlas::init_mul_trunc
-    typename T::MAC_Check local_mc; // default initialization is fine
+    typename T::MAC_Check_2t local_mc_2t; // default initialization
 
 #ifdef DEBUG_MUL_CNT
     int mul_count = 0;

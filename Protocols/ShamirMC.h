@@ -17,12 +17,27 @@
 template<class T>
 class IndirectShamirMC : public MAC_Check_Base<T>
 {
+protected: // (Modified, we need these in IndirectShamirMC_2t)
     vector<octetStream> oss;
     octetStream os;
 
 public:
     IndirectShamirMC(typename T::mac_key_type = {}, int = 0, int = 0) {}
     ~IndirectShamirMC() {}
+
+    virtual void exchange(const Player& P);
+};
+
+/**
+ * Degree-2t Shamir secret sharing opening protocol (indirect communication)
+ * 
+ */
+template<class T>
+class IndirectShamirMC_2t : public IndirectShamirMC<T>
+{
+public:
+    IndirectShamirMC_2t(typename T::mac_key_type = {}, int = 0, int = 0) {}
+    ~IndirectShamirMC_2t() {}
 
     virtual void exchange(const Player& P);
 };

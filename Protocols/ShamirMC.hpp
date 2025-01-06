@@ -193,4 +193,44 @@ void IndirectShamirMC<T>::exchange(const Player& P)
         this->values.push_back(os.get<T>());
 }
 
+template<class T>
+void IndirectShamirMC_2t<T>::exchange(const Player& P)
+{
+    this->oss.resize(P.num_players());
+    int threshold = P.num_players() - 1;
+    int required_players = threshold + 1;
+
+    if (P.my_num() < required_players)
+    {
+        this->oss[0].reset_write_head();
+        auto rec_factor = Shamir<T>::get_rec_factor(P.my_num(), required_players);
+        for (auto& x : this->secrets)
+            (x * rec_factor).pack(this->oss[0]);
+        vector<vector<bool>> channels(P.num_players(),
+                vector<bool>(P.num_players()));
+        for (int i = 0; i < required_players; i++)
+            channels[i][0] = true;
+        P.send_receive_all(channels, this->oss, this->oss);
+    }
+
+    if (P.my_num() == 0)
+    {
+        this->os.reset_write_head();
+        while (this->oss[0].left())
+        {
+            T sum;
+            for (int i = 0; i < required_players; i++)
+                sum += this->oss[i].template get<T>();
+            sum.pack(this->os);
+        }
+        P.send_all(this->os);
+    }
+
+    if (P.my_num() != 0)
+        P.receive_player(0, this->os);
+
+    while (this->os.left())
+        this->values.push_back(this->os.template get<T>());
+}
+
 #endif

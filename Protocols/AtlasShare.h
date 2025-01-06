@@ -7,6 +7,7 @@
 #define PROTOCOLS_ATLASSHARE_H_
 
 #include "ShamirShare.h"
+#include "ShamirMC.h"
 
 template<class T> class Atlas;
 template<class T> class AtlasPrep;
@@ -26,6 +27,7 @@ public:
     typedef Atlas<This> Protocol;
     typedef ShamirInput<This> Input;
     typedef IndirectShamirMC<This> MAC_Check;
+    typedef IndirectShamirMC_2t<This> MAC_Check_2t; // Added
     typedef ShamirMC<This> Direct_MC;
     typedef ::PrivateOutput<This> PrivateOutput;
     typedef AtlasPrep<This> LivePrep;

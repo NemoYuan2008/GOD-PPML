@@ -68,18 +68,12 @@ void Atlas<T>::prepare_mul(const T& x, const T& y, int)
 #ifdef DEBUG_MUL_CNT
     ++mul_count;
 #endif
-#ifdef DEBUG_MUL_TRUNC
-    // cerr << "\nprepare_mul(): " << "x = " << x << ' ' << "y = " << y << '\n';
-#endif
     prepare(x * y);
 }
 
 template<class T>
 void Atlas<T>::prepare(const typename T::open_type& product)
 {
-// #ifdef DEBUG_MUL_TRUNC
-    // cerr << "\nprepare(): " << "product = " << product << '\n';
-// #endif
     auto r = get_double_sharing();
     (product + r[0]).pack(oss2[next_king]);
     next_king = (next_king + 1) % P.num_players();
@@ -228,12 +222,7 @@ template<class T>
 void Atlas<T>::init_mul_trunc(int length)
 {   
     init_mul();
-
-    // We must use local_mc here, and we must not use proc.MC
-    // Since buffer_bits_from_square uses proc.MC, 
-    // using proc.MC here will interfere with the buffer_bits_from_square.
-    // Hence we create a local instance of MAC_Check in the class.
-    local_mc.init_open(P, length);
+    local_mc_2t.init_open(P, length);
 }
 
 template<class T>
@@ -242,10 +231,19 @@ void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProces
 #ifdef DEBUG_MUL_CNT
     ++multrunc_count;
 #endif
+#ifdef DEBUG_MUL_TRUNC
+    cerr << "\nprepare_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'
+         << "x = " << x << ", y = " << y << '\n';
+    
+    typename T::MAC_Check debug_mc;
+    cerr << "x_open = " << debug_mc.POpen(x, P) << ' ' 
+         << "y_open = " << debug_mc.POpen(y, P) << '\n';
+#endif
+
     prepare_with_solved_bits(x * y, k, f, proc);
 }
 
-/*
+/**
  * prepare_with_solved_bits()
  * 
  * This function is like prepare(),
@@ -257,23 +255,23 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 {
     typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2); // TODO: we don't need k, we can use prime length
 
-#ifdef DEBUG_MUL_TRUNC
-    cerr << "\nprepare_with_solved_bits(): " << "k = " << k << ' ' << "f = " << f << '\n'
-         << "two_power_k_minus_two = " << two_power_k_minus_two << '\n';
+#ifdef DEBUG_SOLVED_BITS
+    cerr << "\nprepare_with_solved_bits(): \n"
+         << "product = " << product << '\n';
 
     // Open the product for debugging
-    typename T::MAC_Check mc; // Use a separate MAC_Check for opening the product
-    auto product_open = mc.POpen(product, P);
-    cerr << "product being truncated: " << product_open << '\n';
+    typename T::MAC_Check_2t debug_mc_2t;
+    auto product_open = debug_mc_2t.POpen(product, P);
+    cerr << "product_open = " << product_open << '\n';
 #endif
 
-    // get the individual bits [r_i] of the random mask r
+    // get the individual bits [r_i]
     vector<T> r_bits(k);
     for (auto& r_i : r_bits) {
         proc.DataF.get_one(DATA_BIT, r_i);
     }
 
-    // Compose the random bits into a random number [r]
+    // Compose [r_i] into [r]
     // r = sum_{i=0}^{k-1} r_i * 2^i
     T r = 0;
     for (int i = 0; i < k; ++i) {
@@ -282,7 +280,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 
     T r_msb = r_bits.back();
 
-    // Compute [r']
+    // Compute [r'] from [r_i]
     // r' = sum_{i=f}^{k-1} 2^{i-f} * r_i + sum_{i=k-f}^{k-1} 2^i * r_msb
     T r_prime = 0;
     for (int i = f; i < k; ++i) {
@@ -294,16 +292,35 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 
     // TODO: a zero-sharing is needed here for security
     auto c = product + r + two_power_k_minus_two;
-    local_mc.prepare_open(c);
+    local_mc_2t.prepare_open(c);
 
-#ifdef DEBUG_MUL_TRUNC
+#ifdef DEBUG_SOLVED_BITS
     // Open r, r_bits, r_msb, r_prime for debugging
-    local_mc.prepare_open(r);
+    typename T::MAC_Check debug_mc;
+
+    auto r_open = debug_mc.POpen(r, P);
+    auto r_msb_open = debug_mc.POpen(r_msb, P);
+    auto r_prime_open = debug_mc.POpen(r_prime, P);
+
+    vector<typename T::open_type> r_bits_open;
+    debug_mc.POpen(r_bits_open, r_bits, P);
+
+    // Compose the bits
+    T r_composed = 0;
     for (int i = 0; i < k; ++i) {
-        local_mc.prepare_open(r_bits[i]);
+        r_composed += r_bits_open[i] << i;
     }
-    local_mc.prepare_open(r_msb);
-    local_mc.prepare_open(r_prime);
+
+    // Print the values for debugging
+    cerr << "r_open= " << r_open << '\n'
+         << "r_composed = " << r_composed << '\n'
+         << "r_bits_open = ";
+    for (int i = 0; i < k; ++i) {
+        cerr << r_bits_open[i] << ' ';
+    }
+    cerr << '\n'
+         << "r_msb_open = " << r_msb_open << '\n'
+         << "r_prime_open = " << r_prime_open << '\n';
 #endif
 
     next_king = (next_king + 1) % P.num_players();
@@ -315,7 +332,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 template<class T>
 void Atlas<T>::exchange_mul_trunc()
 {
-    local_mc.exchange(P);
+    local_mc_2t.exchange(P);
 }
 
 template<class T>
@@ -324,37 +341,13 @@ T Atlas<T>::finalize_mul_trunc(int k, int f)
     typename T::clear two_power_k_minus_f = T::power_of_two(1, k - f);
     typename T::clear two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
 
-    typename T::clear c = local_mc.finalize_open();
+    typename T::clear c = local_mc_2t.finalize_open();
 
-#ifdef DEBUG_MUL_TRUNC
+#ifdef DEBUG_SOLVED_BITS
     cerr << "\nfinalize_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'
          << "two_power_k_minus_f = " << two_power_k_minus_f << '\n'
          << "two_power_k_minus_f_minus_two = " << two_power_k_minus_f_minus_two << '\n'
          << "c = " << c << '\n';
-        
-    // Finalize opening r, r_bits, r_msb, r_prime for debugging
-    T r_open = local_mc.finalize_open();
-    vector<T> r_bits_open(k);
-    for (int i = 0; i < k; ++i) {
-        r_bits_open[i] = local_mc.finalize_open();
-    }
-    T r_msb_open = local_mc.finalize_open();
-    T r_prime_open = local_mc.finalize_open();
-
-    // Compose the bits
-    T r_composed = 0;
-    for (int i = 0; i < k; ++i) {
-        r_composed += r_bits_open[i] << i;
-    }
-
-    // Print the values for debugging
-    cerr << "r = " << r_open << '\n';
-    cerr << "r_composed = " << r_composed << '\n';
-    for (int i = 0; i < k; ++i) {
-        cerr << "r_bits[" << i << "] = " << r_bits_open[i] << '\n';
-    }
-    cerr << "r_msb = " << r_msb_open << '\n';
-    cerr << "r_prime = " << r_prime_open << '\n';
 #endif
 
     typename T::clear c_msb = c >> (k - 1);
@@ -380,12 +373,47 @@ void Atlas<T>::init_dotprod_trunc()
 template<class T>
 void Atlas<T>::prepare_dotprod_trunc(const T& x, const T& y)
 {
+#ifdef DEBUG_DOTPROD
+    cerr << "\nprepare_dotprod()\n"
+         << "x = " << x << ", y = " << y << '\n'
+         << "dotprod_share (pre addition): " << dotprod_share << '\n';
+
+    typename T::MAC_Check debug_mc;
+    debug_mc.init_open(P, 4);
+    debug_mc.prepare_open(x);
+    debug_mc.prepare_open(y);
+    debug_mc.prepare_open(dotprod_share);
+#endif
+
     dotprod_share += x * y;
+
+#ifdef DEBUG_DOTPROD
+    cerr << "dotprod_share (post addition): " << dotprod_share << '\n';
+
+    debug_mc.prepare_open(dotprod_share);
+    debug_mc.exchange(P);
+    auto x_open = debug_mc.finalize_open();
+    auto y_open = debug_mc.finalize_open();
+    auto dotprod_share_open_pre = debug_mc.finalize_open();
+    auto dotprod_share_open_post = debug_mc.finalize_open();
+
+    cerr << "x_open = " << x_open << '\n'
+         << "y_open = " << y_open << '\n'
+         << "dotprod_share_open_pre = " << dotprod_share_open_pre << '\n'
+         << "dotprod_share_open_post = " << dotprod_share_open_post << '\n';
+#endif
 }
 
 template<class T>
 void Atlas<T>::next_dotprod_trunc(int k, int f, SubProcessor<T>& proc)
 {
+#ifdef DEBUG_DOTPROD
+    // Open the product for debugging
+    typename T::MAC_Check debug_mc;
+    auto dotprod_open = debug_mc.POpen(dotprod_share, P);
+    cerr << "next_dotprod_trunc(): Opened dotprod (pre truncation):\n" << dotprod_open << "\n\n";
+#endif
+
     prepare_with_solved_bits(dotprod_share, k, f, proc);
     dotprod_share = 0;
 }

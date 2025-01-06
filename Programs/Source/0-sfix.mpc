@@ -1,3 +1,0 @@
-sfix.set_precision(13, 61)
-a = sfix(2) * sfix(2)
-print_ln('%s', a.reveal())
