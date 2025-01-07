@@ -1,45 +1,62 @@
+''' 
+This file is used for our internal testing purposes.
+
+Check that:
+1. The program produces the expected output.
+2. In the assembly code, the matmuls_trunc instruction is merged.
+3. In the assembly code, the mul_trunc instruction is vectorized, merged, and CISC'ed.
+4. The sint multiplication is not affected by the truncation.
+'''
+
 from Compiler.types import sfix, sint, Array, Matrix
 from Compiler.library import print_ln
 
-
 sfix.set_precision(16, 61)
 
-# sint * sint, size: 1x4 * 4x1, no truncation, matmuls
-a_sint = Array.create_from([sint(1), sint(2), sint(3), sint(4)])
-res = a_sint.dot(a_sint)
-print_ln('%s', res.reveal()) # [30]
-
-# sfix * sfix, size: 1x4 * 4x1, with truncation, matmuls_trunc
-a = Array.create_from([sfix(1), sfix(2), sfix(3), sfix(4)])
-res = a.dot(a)
-print_ln('%s', res.reveal()) # [30]
-
-# sfix * sint, size: 1x4 * 4x1, no truncation, matmulsm
-res = a.dot(a_sint)
-print_ln('%s', res.reveal()) # [30]
-
-# sint * sfix, size: 1x4 * 4x1, no truncation, matmulsm
-res = a_sint.dot(a)
-print_ln('%s', res.reveal()) # [30]
-
-# sfix * sfix, size: 1x4 * 4x3, with truncation, matmuls_trunc
-b = Matrix.create_from([
+sint_1_4 = Array.create_from([sint(1), sint(2), sint(3), sint(4)])
+sfix_1_4 = Array.create_from([sfix(1), sfix(2), sfix(3), sfix(4)])
+sfix_4_3 = Matrix.create_from([
     [sfix(1), sfix(2), sfix(3)],
     [sfix(4), sfix(5), sfix(6)],
     [sfix(7), sfix(8), sfix(9)],
     [sfix(10), sfix(11), sfix(12)]
 ])
-res = a.to_row_matrix().dot(b).to_array()
-print_ln('%s', res.reveal()) # [70, 80, 90]
-
-# sfix * sfix, size: 1x3 * 3x3, with truncation, matmuls_trunc
-a = Array.create_from([sfix(1), sfix(2), sfix(3)])
-b = Matrix.create_from([
+sfix_1_3 = Array.create_from([sfix(1), sfix(2), sfix(3)])
+sfix_3_3 = Matrix.create_from([
     [sfix(1), sfix(2), sfix(3)],
     [sfix(4), sfix(5), sfix(6)],
-    [sfix(7), sfix(8), sfix(9)],
+    [sfix(7), sfix(8), sfix(9)]
 ])
-res = a.to_row_matrix().dot(b).to_array()
-print_ln('%s', res.reveal()) # [30, 36, 42]
 
-print_ln('%s', (a * a).reveal())
+# sint * sint, size: 1x4 * 4x1, no truncation, matmuls
+res1 = sint_1_4.dot(sint_1_4)
+
+# sfix * sint, size: 1x4 * 4x1, no truncation, matmulsm
+res2 = sfix_1_4.dot(sint_1_4)
+
+# sint * sfix, size: 1x4 * 4x1, no truncation, matmulsm
+res3 = sint_1_4.dot(sfix_1_4)
+
+# sfix * sfix, size: 1x4 * 4x1, with truncation, matmuls_trunc
+res4 = sfix_1_4.dot(sfix_1_4)
+
+# sfix * sfix, size: 1x4 * 4x3, with truncation, matmuls_trunc
+res5 = sfix_1_4.to_row_matrix().dot(sfix_4_3).to_array()
+
+# sfix * sfix, size: 1x3 * 3x3, with truncation, matmuls_trunc
+res6 = sfix_1_3.to_row_matrix().dot(sfix_3_3).to_array()
+
+# sfix * sfix, element-wise, with truncation, mul_trunc
+res7 = sfix_1_4 * sfix_1_4
+
+# sfix * sfix, element-wise, with truncation, mul_trunc
+res8 = sfix_1_3 * sfix_1_3
+
+print_ln('%s', res1.reveal()) # [30]
+print_ln('%s', res2.reveal()) # [30]
+print_ln('%s', res3.reveal()) # [30]
+print_ln('%s', res4.reveal()) # [30]
+print_ln('%s', res5.reveal()) # [70, 80, 90]
+print_ln('%s', res6.reveal()) # [30, 36, 42]
+print_ln('%s', res7.reveal()) # [1, 4, 9, 16]
+print_ln('%s', res8.reveal()) # [1, 4, 9]
