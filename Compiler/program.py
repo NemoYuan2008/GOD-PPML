@@ -52,6 +52,7 @@ class defaults:
     binary = 0
     garbled = False
     prime = None
+    mersenne = 61 # Newly Added
     galois = 40
     budget = 1000
     mixed = False

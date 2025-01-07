@@ -2,6 +2,7 @@
 This file is used for our internal testing purposes.
 '''
 
+
 from Compiler.types import sfix
 from Compiler import ml
 from Compiler.library import print_ln
@@ -12,7 +13,6 @@ sfix.set_precision(16, 61)
 input_size = 5
 output_size = 5
 batch_size = 1
-
 
 input_data = np.array( # batch_size x input_size
     [[1, 0, 1, 0, 1]]
@@ -37,14 +37,19 @@ dense_layer.X = input_data_secret
 dense_layer.W = weights_secret
 dense_layer.b = biases_secret
 
-layers = [dense_layer]
+relu_layer = ml.Relu(shape=(1, 5))
+
+layers = [dense_layer, relu_layer]
 optimizer = ml.Optimizer(layers)
 
 optimizer.forward(1)
-res = dense_layer.Y.reveal()
+dense_output = dense_layer.Y.reveal()
+relu_output = relu_layer.Y.reveal()
 
 '''
 Expected output: 
 [[[-8, 38, -4, 46, 0]]]
+[[[0, 38, 0, 46, 0]]]
 '''
-print_ln('res = %s', res)
+print_ln('dense_output = %s', dense_output)
+print_ln('relu_output = %s', relu_output)

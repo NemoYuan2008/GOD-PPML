@@ -351,13 +351,14 @@ T Atlas<T>::finalize_mul_trunc(int k, int f)
     typename T::clear e(1);
     e = (e - r_msb) * c_msb;
 
-    T res = c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
 
 #ifdef DEBUG_MUL_TRUNC
     typename T::MAC_Check debug_mc;
     auto r_msb_open = debug_mc.POpen(r_msb, P);
     auto r_prime_open = debug_mc.POpen(r_prime, P);
     auto e_open = debug_mc.POpen(e, P);
+
+    T res = c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
     auto res_open = debug_mc.POpen(res, P);
 
     cerr << "\nfinalize_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'

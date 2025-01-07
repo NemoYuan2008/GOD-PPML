@@ -178,6 +178,14 @@ class Compiler:
             "for non-linear computation (default: use the masking approach). "
             "Don't use this unless you're certain that you need it.",
         )
+        # Newly Added
+        parser.add_option(
+            "--mersenne",
+            dest="mersenne",
+            default=defaults.mersenne,
+            help="Specify Mersenne prime modulus, only 61 and 31 are supported "
+            "(default: 61)",
+        )
         parser.add_option(
             "-I",
             "--insecure",

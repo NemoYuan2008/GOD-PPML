@@ -68,6 +68,7 @@ from Compiler.instructions import *
 from Compiler.instructions_base import *
 from .floatingpoint import two_power
 from . import comparison, floatingpoint
+from . import comparison_mersenne
 import math
 from . import util
 from . import instructions
@@ -2829,18 +2830,16 @@ class sint(_secret, _int):
         :param other: sint/cint/regint/int
         :param bit_length: bit length of input (default: global bit length)
         :return: 0/1 (sintbit) """
-        res = sintbit()
-        comparison.LTZ(res, self - other,
-                       (bit_length or program.bit_length) + 1)
+        # Modified: we use comparison_mersenne
+        res = comparison_mersenne.LTZ(self - other)
         return res
-
+    
     @read_mem_value
     @type_comp
     @vectorize
     def __gt__(self, other, bit_length=None):
-        res = sintbit()
-        comparison.LTZ(res, other - self,
-                       (bit_length or program.bit_length) + 1)
+        # Modified: we use comparison_mersenne
+        res = comparison_mersenne.LTZ(other - self)
         return res
 
     @read_mem_value
