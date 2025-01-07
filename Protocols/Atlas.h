@@ -12,8 +12,7 @@
 
 // #define DEBUG_ATLAS
 // #define DEBUG_MUL_CNT
-// #define DEBUG_SOLVED_BITS
-// #define DEBUG_MUL_TRUNC
+#define DEBUG_MUL_TRUNC
 // #define DEBUG_DOTPROD
 
 /**

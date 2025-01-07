@@ -255,7 +255,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 {
     typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2); // TODO: we don't need k, we can use prime length
 
-#ifdef DEBUG_SOLVED_BITS
+#ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_with_solved_bits(): \n"
          << "product = " << product << '\n';
 
@@ -294,7 +294,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
     auto c = product + r + two_power_k_minus_two;
     local_mc_2t.prepare_open(c);
 
-#ifdef DEBUG_SOLVED_BITS
+#ifdef DEBUG_MUL_TRUNC
     // Open r, r_bits, r_msb, r_prime for debugging
     typename T::MAC_Check debug_mc;
 
@@ -342,22 +342,34 @@ T Atlas<T>::finalize_mul_trunc(int k, int f)
     typename T::clear two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
 
     typename T::clear c = local_mc_2t.finalize_open();
-
-#ifdef DEBUG_SOLVED_BITS
-    cerr << "\nfinalize_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'
-         << "two_power_k_minus_f = " << two_power_k_minus_f << '\n'
-         << "two_power_k_minus_f_minus_two = " << two_power_k_minus_f_minus_two << '\n'
-         << "c = " << c << '\n';
-#endif
-
     typename T::clear c_msb = c >> (k - 1);
     typename T::clear c_trunc = c.truncate(f);
 
     T r_msb = masks.next();
     T r_prime = masks.next();
 
-    T e(1);
+    typename T::clear e(1);
     e = (e - r_msb) * c_msb;
+
+    T res = c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
+
+#ifdef DEBUG_MUL_TRUNC
+    typename T::MAC_Check debug_mc;
+    auto r_msb_open = debug_mc.POpen(r_msb, P);
+    auto r_prime_open = debug_mc.POpen(r_prime, P);
+    auto e_open = debug_mc.POpen(e, P);
+    auto res_open = debug_mc.POpen(res, P);
+
+    cerr << "\nfinalize_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'
+         << "two_power_k_minus_f = " << two_power_k_minus_f << '\n'
+         << "two_power_k_minus_f_minus_two = " << two_power_k_minus_f_minus_two << '\n'
+         << "c = " << c << '\n'
+         << "c_trunc = " << c_trunc << '\n'
+         << "r_msb_open = " << r_msb_open << '\n'
+         << "r_prime_open = " << r_prime_open << '\n'
+         << "e_open = " << e_open << '\n'
+         << "res_open = " << res_open << '\n';
+#endif
 
     return c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
 }

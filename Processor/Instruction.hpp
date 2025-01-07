@@ -1262,7 +1262,7 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
           }
         return;
       case PRINTFLOATPLAIN:
-        print(Proc.out, &Proc.read_Cp(start[0]), &Proc.read_Cp(start[1]),
+        print_mersenne(Proc.out, &Proc.read_Cp(start[0]), &Proc.read_Cp(start[1]),
             &Proc.read_Cp(start[2]), &Proc.read_Cp(start[3]),
             &Proc.read_Cp(start[4]));
         return;
@@ -1566,6 +1566,25 @@ void Instruction::print(SwitchableOutput& out, T* v, T* p, T* s, T* z, T* nan) c
           bigint::output_float(out, bigint::get_float(v[i], p[i], s[i], z[i]),
               nan[i]);
         }
+      if (i < size - 1)
+        out << ", ";
+    }
+  if (size > 1)
+    out << "]";
+}
+
+template<class T>
+void Instruction::print_mersenne(SwitchableOutput& out, T* v, T* p, T* s, T* z, T* nan) const
+{
+  (void)s; (void)z; (void)nan;
+  if (size > 1)
+    out << "[";
+  for (int i = 0; i < size; i++)
+    {
+      auto v_signed = v[i].to_signed();
+      auto p_signed = p[i].to_signed(); // p is negative
+      v_signed >>= (-p_signed); // Assuming arithmetic shift
+      out << v_signed;
       if (i < size - 1)
         out << ", ";
     }

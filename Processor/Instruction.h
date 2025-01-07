@@ -418,6 +418,10 @@ public:
   template<class T>
   void print(SwitchableOutput& out, T* v, T* p = 0, T* s = 0, T* z = 0,
       T* nan = 0) const;
+  
+  template<class T>
+  void print_mersenne(SwitchableOutput& out, T* v, T* p, T* s, T* z,
+      T* nan) const;
 
   template<class T>
   typename T::clear sanitize(SubProcessor<T>& proc, int reg) const;
