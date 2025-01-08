@@ -12,6 +12,9 @@
 
 #include "Protocols/Atlas.hpp"
 
+#include "Protocols/AtlasGsz.hpp"
+#include "Protocols/AtlasGszShare.h"
+
 #include "Shamir.hpp"
 
 #endif /* MACHINES_ATLAS_HPP_ */

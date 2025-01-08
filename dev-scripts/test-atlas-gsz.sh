@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+# A helper script only for development purposes
+
+port=12345
+
+# Runs all but the last party
+for i in $(seq 0 $(($1 - 2))); do
+    echo ./atlas-gsz-party.x -pn $port -N $1 $i "${@:2}"
+    if [ $i -eq $(($1 - 2)) ]; then
+        ./atlas-gsz-party.x -pn $port -N $1 $i "${@:2}"
+    else
+        ./atlas-gsz-party.x -pn $port -N $1 $i "${@:2}" > /dev/null 2>&1 &
+    fi
+    codes[$i]=$!
+done
+
+ctrlc() {
+    pkill -P $$
+}
+trap ctrlc SIGINT
+
+for i in $(seq 0 $(($1 - 2))); do
+    if ! wait ${codes[$i]}; then
+        return 1
+    fi
+done
