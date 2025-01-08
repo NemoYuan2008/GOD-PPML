@@ -179,10 +179,12 @@ class Compiler:
             "Don't use this unless you're certain that you need it.",
         )
         # Newly Added
+        # TODO: Check validity of the specified prime bit length
         parser.add_option(
             "--mersenne",
             dest="mersenne",
             default=defaults.mersenne,
+            type="int",
             help="Specify Mersenne prime modulus, only 61 and 31 are supported "
             "(default: 61)",
         )

@@ -5,9 +5,12 @@ from Compiler.types import sfix, sint, cfix, Array, Matrix
 from Compiler.library import print_ln
 from Compiler.compilerLib import Compiler
 
+
 compiler = Compiler(
     custom_args=[
         '-a', 'debug',
+        '-c', 'inv',
+        '--mersenne', '61'
     ]
 )
 
