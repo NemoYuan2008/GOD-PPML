@@ -11,9 +11,9 @@
 
 #include "AtlasGsz.h"
 
-#define DEBUG_CHECK
-#define DEBUG_DE_LINEARIZATION
-#define DEBUG_DIM_REDUCTION
+// #define DEBUG_CHECK
+// #define DEBUG_DE_LINEARIZATION
+// #define DEBUG_DIM_REDUCTION
 
 
 template<class T>
@@ -98,14 +98,12 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     return res;
 }
 
-// Copied from the class Atlas to avoid making the *_mul_trunc functions virtual
 template<class T>
 void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc)
 {
     mul_trunc(regs, size, proc, T::characteristic_two);
 }
 
-// Copied from the class Atlas to avoid making the *_mul_trunc functions virtual
 template<class T>
 void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type)
 {
@@ -113,10 +111,21 @@ void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& 
     throw runtime_error("mul_trunc not implemented for characteristic 2");
 }
 
-// Copied from the class Atlas to avoid making the *_mul_trunc functions virtual
+/**
+ * @brief Multiplycation with truncation, called by the instruction mul_trunc
+ */
 template<class T>
 void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type)
 {
+    /*
+     * We do not call honest.mul_trunc, 
+     * because we need the intermediate results for verification.
+     * Hence, we copied the code from honest.mul_trunc
+     * to call the *_mul_trunc functions defined in this class.
+     * These functions in turn call the corresponding functions in honest,
+     * and store the intermediate results for verification.
+     */
+
     // Parse the arguments
     struct MultTruncInfo {
         int dest_base;       // Destination register
@@ -175,6 +184,8 @@ void AtlasGsz<T>::init_mul_trunc(int length)
 template<class T>
 void AtlasGsz<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
 {
+    x_verify.push_back(x);
+    y_verify.push_back(y);
     honest.prepare_mul_trunc(x, y, k, f, proc);
 }
 
@@ -187,7 +198,11 @@ void AtlasGsz<T>::exchange_mul_trunc()
 template<class T>
 T AtlasGsz<T>::finalize_mul_trunc(int k, int f)
 {
-    return honest.finalize_mul_trunc(k, f);
+    T pre_trunc;
+    T res = honest.finalize_mul_trunc(k, f, &pre_trunc);
+    z_verify.push_back(pre_trunc);
+
+    return res;
 }
 
 
@@ -201,6 +216,8 @@ void AtlasGsz<T>::init_dotprod_trunc()
 template<class T>
 void AtlasGsz<T>::prepare_dotprod_trunc(const T& x, const T& y)
 {
+    x_verify.push_back(x);
+    y_verify.push_back(y);
     honest.prepare_dotprod_trunc(x, y);
 }
 
@@ -219,7 +236,13 @@ void AtlasGsz<T>::exchange_dotprod_trunc()
 template<class T>
 T AtlasGsz<T>::finalize_dotprod_trunc(int length, int k, int f)
 {
-    return honest.finalize_dotprod_trunc(length, k, f);
+    dotprod_info[z_verify.size()] = length;
+    T pre_trunc;
+    T res = honest.finalize_dotprod_trunc(length, k, f, &pre_trunc);
+    z_verify.push_back(pre_trunc);
+    z_verify.insert(z_verify.end(), length - 1, T{0});
+
+    return res;
 }
 
 template<class T>
@@ -230,8 +253,9 @@ void AtlasGsz<T>::prepare_with_solved_bits(const typename T::open_type& product,
 
 
 /**
- * Verification protocol in GSZ20
+ * @brief Verification protocol in GSZ20
  * 
+ * @details
  * We only implement compression factor 2, 
  * i.e., the vector is divided into two parts in each iteration.
  * 

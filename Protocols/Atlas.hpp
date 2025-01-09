@@ -3,7 +3,7 @@
  *
  */
 
-/* 
+/**
  * TODO: Some Optimizations that can be done:
  *
  * 1. Use lazy mod for prepare_dotprod_trunc and prepare_dotprod
@@ -18,7 +18,6 @@
 #include "Atlas.h"
 
 // #define DEBUG_ATLAS
-// #define DEBUG_MUL_CNT
 // #define DEBUG_MUL_TRUNC
 // #define DEBUG_DOTPROD
 
@@ -29,13 +28,6 @@ Atlas<T>::~Atlas()
 #ifdef VERBOSE
     if (not double_sharings.empty())
         cerr << double_sharings.size() << " double sharings left" << endl;
-#endif
-#ifdef DEBUG_MUL_CNT
-    cerr << "\n~Atlas<T>::Atlas\n"
-         << "T: " << typeid(T).name() << '\n'
-         << "T::clear: " << typeid(typename T::clear).name() << '\n'
-         << "mul_count: " << mul_count << '\n'
-         << "multrunc_count: " << multrunc_count << '\n';
 #endif
 }
 
@@ -71,9 +63,6 @@ void Atlas<T>::init_mul()
 template<class T>
 void Atlas<T>::prepare_mul(const T& x, const T& y, int)
 {
-#ifdef DEBUG_MUL_CNT
-    ++mul_count;
-#endif
     prepare(x * y);
 }
 
@@ -234,9 +223,8 @@ void Atlas<T>::init_mul_trunc(int length)
 template<class T>
 void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
 {
-#ifdef DEBUG_MUL_CNT
-    ++multrunc_count;
-#endif
+    prepare_with_solved_bits(x * y, k, f, proc);
+    
 #ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'
          << "x = " << x << ", y = " << y << '\n';
@@ -245,8 +233,6 @@ void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProces
     cerr << "x_open = " << debug_mc.POpen(x, P) << ' ' 
          << "y_open = " << debug_mc.POpen(y, P) << '\n';
 #endif
-
-    prepare_with_solved_bits(x * y, k, f, proc);
 }
 
 /**
@@ -259,8 +245,6 @@ void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProces
 template<class T>
 void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
 {
-    typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2); // TODO: we don't need k, we can use prime length
-
 #ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_with_solved_bits(): \n"
          << "product = " << product << '\n';
@@ -297,7 +281,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
     }
 
     // TODO: a zero-sharing is needed here for security
-    auto c = product + r + two_power_k_minus_two;
+    auto c = product + r;
     local_mc_2t.prepare_open(c);
 
 #ifdef DEBUG_MUL_TRUNC
@@ -333,6 +317,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
 
     masks.push_back(r_msb);
     masks.push_back(r_prime);
+    masks.push_back(r); // This is needed for verification in the maliciously secure version
 }
 
 template<class T>
@@ -341,22 +326,36 @@ void Atlas<T>::exchange_mul_trunc()
     local_mc_2t.exchange(P);
 }
 
+/**
+ * @brief Finalize the multiplication with truncation
+ * 
+ * @param k the bit length
+ * @param f the number of bits to truncate
+ * @param pre_trunc the pointer used to return the pre-truncation share (optional)
+ * @return T the truncated share
+ */
 template<class T>
-T Atlas<T>::finalize_mul_trunc(int k, int f)
+T Atlas<T>::finalize_mul_trunc(int k, int f, T* pre_trunc)
 {
+    typename T::open_type two_power_k_minus_two = T::power_of_two(1, k - 2);
     typename T::clear two_power_k_minus_f = T::power_of_two(1, k - f);
     typename T::clear two_power_k_minus_f_minus_two = T::power_of_two(1, k - f - 2);
 
     typename T::clear c = local_mc_2t.finalize_open();
+    T r_msb = masks.next();
+    T r_prime = masks.next();
+    T r = masks.next();
+
+    if (pre_trunc != nullptr) {
+        *pre_trunc = c - r; // This is needed for verification in the maliciously secure version
+    }
+
+    c += two_power_k_minus_two;
     typename T::clear c_msb = c >> (k - 1);
     typename T::clear c_trunc = c.truncate(f);
 
-    T r_msb = masks.next();
-    T r_prime = masks.next();
-
     typename T::clear e(1);
     e = (e - r_msb) * c_msb;
-
 
 #ifdef DEBUG_MUL_TRUNC
     typename T::MAC_Check debug_mc;
@@ -384,8 +383,7 @@ T Atlas<T>::finalize_mul_trunc(int k, int f)
 template<class T>
 void Atlas<T>::init_dotprod_trunc()
 {
-    // TODO: Check the parameter to init_mul_trunc
-    init_mul_trunc(1); // We only need one opening
+    init_mul_trunc(100); // We don't know the length yet, but it is only used for vector::reserve
     dotprod_share = 0;
 }
 
@@ -433,10 +431,20 @@ void Atlas<T>::exchange_dotprod_trunc()
     exchange_mul_trunc();
 }
 
+/**
+ * @brief Finalize the dot product with truncation
+ * 
+ * @param length Unused 
+ * @param k 
+ * @param f 
+ * @param pre_trunc 
+ * @return T 
+ */
 template<class T>
-T Atlas<T>::finalize_dotprod_trunc(int, int k, int f)
+T Atlas<T>::finalize_dotprod_trunc(int length, int k, int f, T* pre_trunc)
 {
-    return finalize_mul_trunc(k, f);
+    (void) length;
+    return finalize_mul_trunc(k, f, pre_trunc);
 }
 
 

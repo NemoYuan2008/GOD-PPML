@@ -23,6 +23,7 @@ private:
     Atlas<T> honest;
 
     typename T::MAC_Check local_mc;
+    typename T::MAC_Check_2t local_mc_2t;
 
     vector<T> x_verify;
     vector<T> y_verify;
@@ -53,7 +54,6 @@ public:
 
     void init_mul();
     void prepare_mul(const T& x, const T& y, int n = -1);
-    // void prepare(const typename T::open_type& product);
     void exchange();
     T finalize_mul(int n = -1);
 
