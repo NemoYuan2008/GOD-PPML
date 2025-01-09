@@ -13,36 +13,47 @@
  * Use GSZ20 for verification
  */
 template<class T>
-class AtlasGsz : public Atlas<T>
+class AtlasGsz : public ProtocolBase<T>
 {
-    typedef Atlas<T> super;
+private:
+    Atlas<T> honest;
+    vector<T> x_verify;
+    vector<T> y_verify;
+    T z_verify = 0;
+
+    typename T::MAC_Check local_mc;
+    // typename T::MAC_Check_2t local_mc_2t;
 
 public:
     static const bool uses_triples = false;
 
-    AtlasGsz(Player& P) : super(P)
-    {
-    }
+    Player& P;
+
+    AtlasGsz(Player& P);
+
+    ~AtlasGsz();
 
     AtlasGsz branch()
     {
-        return this->P;
+        return P;
     }
 
-    // Core multiplication operations
+    int get_n_relevant_players()
+    {
+        return honest.get_n_relevant_players();
+    }
+
     void init_mul();
     void prepare_mul(const T& x, const T& y, int n = -1);
-    void prepare(const typename T::open_type& product);
+    // void prepare(const typename T::open_type& product);
     void exchange();
     T finalize_mul(int n = -1);
 
-    // Dot product operations
     void init_dotprod();
     void prepare_dotprod(const T& x, const T& y);
     void next_dotprod();
     T finalize_dotprod(int length);
 
-    // Truncated multiplication operations
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
@@ -52,7 +63,6 @@ public:
     void exchange_mul_trunc();
     T finalize_mul_trunc(int k, int f);
 
-    // Truncated dot product operations
     void init_dotprod_trunc();
     void prepare_dotprod_trunc(const T& x, const T& y);
     void next_dotprod_trunc(int k, int f, SubProcessor<T>& proc);
@@ -60,6 +70,11 @@ public:
     T finalize_dotprod_trunc(int length, int k, int f);
 
     void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc);
+
+    // GSZ20 verification
+    void check();
+    void dimension_reduction();
+    void randomization();
 };
 
 #endif /* PROTOCOLS_ATLASGSZ_H_ */

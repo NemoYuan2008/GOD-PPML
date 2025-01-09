@@ -10,10 +10,6 @@
 
 #include "Tools/Bundle.h"
 
-// #define DEBUG_ATLAS
-// #define DEBUG_MUL_CNT
-// #define DEBUG_MUL_TRUNC
-// #define DEBUG_DOTPROD
 
 /**
  * ATLAS protocol (simple version).
@@ -22,6 +18,7 @@
 template<class T>
 class Atlas : public ProtocolBase<T>
 {
+private:
     Shamir<T> shamir, shamir2;
 
     Bundle<octetStream> oss, oss2;
@@ -39,12 +36,10 @@ class Atlas : public ProtocolBase<T>
 
     array<T, 2> get_double_sharing();
 
+
+protected:
     typename T::MAC_Check_2t local_mc_2t; // default initialization
 
-#ifdef DEBUG_MUL_CNT
-    int mul_count = 0;
-    int multrunc_count = 0;
-#endif
 
 public:
     static const bool uses_triples = false;
@@ -78,7 +73,7 @@ public:
     void init_dotprod();
     void prepare_dotprod(const T& x, const T& y);
     void next_dotprod();
-    T finalize_dotprod(int length);
+    T finalize_dotprod(int = 0);
 
     T get_random();
 

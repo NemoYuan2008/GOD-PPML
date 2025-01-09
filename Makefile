@@ -127,7 +127,7 @@ ifeq ($(ARM), 1)
 $(patsubst %.cpp,%.o,$(wildcard */*.cpp */*/*.cpp)): deps/simde/simde deps/sse2neon/sse2neon.h
 endif
 
-shamir: shamir-party.x malicious-shamir-party.x atlas-party.x galois-degree.x
+shamir: shamir-party.x malicious-shamir-party.x atlas-party.x galois-degree.x atlas-gsz-party.x
 
 sy: sy-rep-field-party.x sy-rep-ring-party.x sy-shamir-party.x
 
