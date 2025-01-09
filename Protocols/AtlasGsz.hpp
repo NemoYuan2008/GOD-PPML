@@ -12,6 +12,8 @@
 #include "AtlasGsz.h"
 
 #define DEBUG_CHECK
+#define DEBUG_DE_LINEARIZATION
+#define DEBUG_DIM_REDUCTION
 
 
 template<class T>
@@ -73,6 +75,8 @@ void AtlasGsz<T>::init_dotprod()
 template<class T>
 void AtlasGsz<T>::prepare_dotprod(const T& x, const T& y)
 {
+    x_verify.push_back(x);
+    y_verify.push_back(y);
     honest.prepare_dotprod(x, y);
 }
 
@@ -85,7 +89,13 @@ void AtlasGsz<T>::next_dotprod()
 template<class T>
 T AtlasGsz<T>::finalize_dotprod(int length)
 {
-    return honest.finalize_dotprod(length);
+    dotprod_info[z_verify.size()] = length;
+
+    T res = honest.finalize_dotprod(length);
+    
+    z_verify.push_back(res);
+    z_verify.insert(z_verify.end(), length - 1, T{0});
+    return res;
 }
 
 // Copied from the class Atlas to avoid making the *_mul_trunc functions virtual
@@ -265,7 +275,7 @@ void AtlasGsz<T>::check()
     
     x_verify.clear();
     y_verify.clear();
-    z_verify.clear();
+    // z_verify and dotprod_info are cleared in de_linearization
 }
 
 template<class T>
@@ -273,14 +283,32 @@ void AtlasGsz<T>::de_linearization()
 {
     z_de_linearized = 0;
 
-    typename T::open_type r = 100;  // TODO: r should be a random number
+    typename T::open_type r = 2;  // TODO: r should be a random number
     vector<typename T::open_type> random_coeffs(x_verify.size());
     random_coeffs[0] = r;
 
-    // We store the random coefficients, not compute it on the fly, 
+    // We compute and store the random coefficients, not compute it on the fly, 
     // to enable the use of std algorithms, which may be faster
-    for (size_t i = 1; i < x_verify.size(); ++i) {
-        random_coeffs[i] = random_coeffs[i - 1] * r;
+    
+    // Special case for the first element
+    int i;
+    if (const auto it = dotprod_info.find(0); it != dotprod_info.end()) {
+        // Use the same random coefficient for one dot product
+        std::fill_n(random_coeffs.begin(), it->second, r);
+        i = it->second;
+    } else {
+        i = 1;
+    }
+    // Compute the rest of the coefficients
+    for (; i < static_cast<int>(x_verify.size()); ++i) {
+        auto it = dotprod_info.find(i);
+        if (it != dotprod_info.end()) {
+            // Use the same random coefficient for one dot product
+            std::fill_n(random_coeffs.begin() + i, it->second, random_coeffs[i - 1] * r);
+            i += it->second - 1;
+        } else {
+            random_coeffs[i] = random_coeffs[i - 1] * r;
+        }
     }
 
     // x_verify = (x_0 r^0, x_1 r^1, ..., x_n r^n); y_verify is unchanged
@@ -288,8 +316,31 @@ void AtlasGsz<T>::de_linearization()
                     std::multiplies<typename T::open_type>());
     // z_de_linearized = z_0 r^0 + z_1 r^1 + ... + z_n r^n
     z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
-
+    
     z_verify.clear();
+    dotprod_info.clear();
+
+#ifdef DEBUG_DE_LINEARIZATION
+    typename T::MAC_Check debug_mc;
+    vector<typename T::open_type> x_verify_open, y_verify_open;
+    debug_mc.POpen(x_verify_open, x_verify, this->P);
+    debug_mc.POpen(y_verify_open, y_verify, this->P);
+    
+    cerr << "\nDe-linearization\n";
+    cerr << "random_coeffs: ";
+    for (auto c: random_coeffs) {
+        cerr << c << " ";
+    }
+    cerr << "\nx_verify: ";
+    for (auto x: x_verify_open) {
+        cerr << x << " ";
+    }
+    cerr << "\ny_verify: ";
+    for (auto y: y_verify_open) {
+        cerr << y << " ";
+    }
+    cerr << "\nz_de_linearized: " << debug_mc.POpen(z_de_linearized, this->P) << '\n';
+#endif
 }
 
 /**
@@ -363,7 +414,7 @@ void AtlasGsz<T>::dimension_reduction()
     z_de_linearized = h_coeffs[0] + h_coeffs[1] * random_point + h_coeffs[2] * random_point * random_point;
 
 
-#ifdef DEBUG_CHECK
+#ifdef DEBUG_DIM_REDUCTION
     typename T::MAC_Check debug_mc;
     for (int i = 0; i < half_size; ++i) {
         auto f_0_open = debug_mc.POpen(f_coeffs[i][0], this->P);

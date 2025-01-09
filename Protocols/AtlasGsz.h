@@ -6,10 +6,14 @@
 #ifndef PROTOCOLS_ATLASGSZ_H_
 #define PROTOCOLS_ATLASGSZ_H_
 
+#include <unordered_map>
+
 #include "Atlas.h"
 
 /**
- * ATLAS-GSZ protocol 
+ * Maliciously secure ATLAS protocol
+ * 
+ * t-wise independence only
  * Use GSZ20 for verification
  */
 template<class T>
@@ -17,13 +21,16 @@ class AtlasGsz : public ProtocolBase<T>
 {
 private:
     Atlas<T> honest;
+
+    typename T::MAC_Check local_mc;
+
     vector<T> x_verify;
     vector<T> y_verify;
     vector<T> z_verify;
     T z_de_linearized;
 
-    typename T::MAC_Check local_mc;
-    // typename T::MAC_Check_2t local_mc_2t;
+    // (index in x_verify) -> length, used in de-linearization
+    std::unordered_map<int, int> dotprod_info; 
 
 public:
     static const bool uses_triples = false;
