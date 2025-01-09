@@ -127,9 +127,11 @@ ifeq ($(ARM), 1)
 $(patsubst %.cpp,%.o,$(wildcard */*.cpp */*/*.cpp)): deps/simde/simde deps/sse2neon/sse2neon.h
 endif
 
-shamir: shamir-party.x malicious-shamir-party.x atlas-party.x galois-degree.x atlas-gsz-party.x
+shamir: shamir-party.x malicious-shamir-party.x galois-degree.x atlas
 
 sy: sy-rep-field-party.x sy-rep-ring-party.x sy-shamir-party.x
+
+atlas: atlas-party.x atlas-gsz-party.x
 
 ecdsa: $(patsubst ECDSA/%.cpp,%.x,$(wildcard ECDSA/*-ecdsa-party.cpp)) Fake-ECDSA.x
 ecdsa-static: static-dir $(patsubst ECDSA/%.cpp,static/%.x,$(wildcard ECDSA/*-ecdsa-party.cpp))

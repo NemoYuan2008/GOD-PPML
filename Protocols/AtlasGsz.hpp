@@ -6,10 +6,12 @@
 #ifndef PROTOCOLS_ATLASGSZ_HPP_
 #define PROTOCOLS_ATLASGSZ_HPP_
 
+#include "AtlasGsz.h"
+
 #include <algorithm>
 #include <numeric>
 
-#include "AtlasGsz.h"
+#include "BufferScope.h"
 
 // #define DEBUG_CHECK
 // #define DEBUG_DE_LINEARIZATION
@@ -290,6 +292,9 @@ void AtlasGsz<T>::check()
     }
     cerr << '\n';
 #endif
+
+    // Not sure if this will increase performance
+    // BufferScope _(honest, 2 * x_verify.size());
 
     de_linearization();
     while (x_verify.size() > 1) {
