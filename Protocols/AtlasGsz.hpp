@@ -6,6 +6,7 @@
 #ifndef PROTOCOLS_ATLASGSZ_HPP_
 #define PROTOCOLS_ATLASGSZ_HPP_
 
+#include <algorithm>
 #include <numeric>
 
 #include "AtlasGsz.h"
@@ -37,7 +38,7 @@ void AtlasGsz<T>::init_mul()
 template<class T>
 void AtlasGsz<T>::prepare_mul(const T& x, const T& y, int)
 {
-    x_verify.push_back(x); // TODO: a random coefficient is needed
+    x_verify.push_back(x);
     y_verify.push_back(y);
     honest.prepare_mul(x, y);
 }
@@ -58,7 +59,7 @@ template<class T>
 T AtlasGsz<T>::finalize_mul(int)
 {
     T res = honest.finalize_mul();
-    z_verify += res; // TODO: a random coefficient is needed
+    z_verify.push_back(res);
     return res;
 }
 
@@ -235,11 +236,11 @@ void AtlasGsz<T>::check()
 
 #ifdef DEBUG_CHECK
     typename T::MAC_Check debug_mc;
-    vector<typename T::open_type> x_open;
-    vector<typename T::open_type> y_open;
+    vector<typename T::open_type> x_open, y_open, z_open;
+    
     debug_mc.POpen(x_open, x_verify, this->P);
     debug_mc.POpen(y_open, y_verify, this->P);
-    auto z_open = debug_mc.POpen(z_verify, this->P);
+    debug_mc.POpen(z_open, z_verify, this->P);
 
     cerr << "\nCheck\n" << "x_verify: ";
     for (auto x: x_open) {
@@ -249,9 +250,14 @@ void AtlasGsz<T>::check()
     for (auto y: y_open) {
         cerr << y << " ";
     }
-    cerr << '\n' << "z_verify: " << z_open << '\n';
+    cerr << '\n' << "z_verify: ";
+    for (auto z: z_open) {
+        cerr << z << " ";
+    }
+    cerr << '\n';
 #endif
 
+    de_linearization();
     while (x_verify.size() > 1) {
         dimension_reduction();
     }
@@ -259,9 +265,32 @@ void AtlasGsz<T>::check()
     
     x_verify.clear();
     y_verify.clear();
-    z_verify = 0;
+    z_verify.clear();
 }
 
+template<class T>
+void AtlasGsz<T>::de_linearization()
+{
+    z_de_linearized = 0;
+
+    typename T::open_type r = 100;  // TODO: r should be a random number
+    vector<typename T::open_type> random_coeffs(x_verify.size());
+    random_coeffs[0] = r;
+
+    // We store the random coefficients, not compute it on the fly, 
+    // to enable the use of std algorithms, which may be faster
+    for (size_t i = 1; i < x_verify.size(); ++i) {
+        random_coeffs[i] = random_coeffs[i - 1] * r;
+    }
+
+    // x_verify = (x_0 r^0, x_1 r^1, ..., x_n r^n); y_verify is unchanged
+    std::transform(x_verify.begin(), x_verify.end(), random_coeffs.begin(), x_verify.begin(),
+                    std::multiplies<typename T::open_type>());
+    // z_de_linearized = z_0 r^0 + z_1 r^1 + ... + z_n r^n
+    z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
+
+    z_verify.clear();
+}
 
 /**
  * Protocol 14 and 12 in https://ia.cr/2020/134
@@ -312,7 +341,7 @@ void AtlasGsz<T>::dimension_reduction()
     honest.exchange();
 
     T c_0 = honest.finalize_dotprod();
-    T c_1 = z_verify - c_0;
+    T c_1 = z_de_linearized - c_0;
     T c_2 = honest.finalize_dotprod();
 
     // Let h(0) = c_0, h(1) = c_1, h(2) = c_2, we compute the coefficients
@@ -330,8 +359,8 @@ void AtlasGsz<T>::dimension_reduction()
         x_verify.push_back(f_coeffs[i][0] + f_coeffs[i][1] * random_point);
         y_verify.push_back(g_coeffs[i][0] + g_coeffs[i][1] * random_point);
     }
-    // Evaluate h(random_point), put it in z_verify
-    z_verify = h_coeffs[0] + h_coeffs[1] * random_point + h_coeffs[2] * random_point * random_point;
+    // Evaluate h(random_point), put it in z_de_linearized
+    z_de_linearized = h_coeffs[0] + h_coeffs[1] * random_point + h_coeffs[2] * random_point * random_point;
 
 
 #ifdef DEBUG_CHECK
@@ -366,7 +395,7 @@ void AtlasGsz<T>::dimension_reduction()
     for (auto y: y_verify_open) {
         cerr << y << " ";
     }
-    cerr << '\n' << "z_verify: " << debug_mc.POpen(z_verify, this->P) << '\n';
+    cerr << '\n' << "z_de_linearized: " << debug_mc.POpen(z_de_linearized, this->P) << '\n';
 #endif
 }
 
@@ -382,7 +411,7 @@ void AtlasGsz<T>::randomization()
     // TODO: need another triple to randomize
     local_mc.prepare_open(x_verify[0]);
     local_mc.prepare_open(y_verify[0]);
-    local_mc.prepare_open(z_verify);
+    local_mc.prepare_open(z_de_linearized);
     local_mc.exchange(P);
     auto x_open = local_mc.finalize_open();
     auto y_open = local_mc.finalize_open();

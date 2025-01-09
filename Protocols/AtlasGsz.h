@@ -19,7 +19,8 @@ private:
     Atlas<T> honest;
     vector<T> x_verify;
     vector<T> y_verify;
-    T z_verify = 0;
+    vector<T> z_verify;
+    T z_de_linearized;
 
     typename T::MAC_Check local_mc;
     // typename T::MAC_Check_2t local_mc_2t;
@@ -73,6 +74,7 @@ public:
 
     // GSZ20 verification
     void check();
+    void de_linearization();
     void dimension_reduction();
     void randomization();
 };
