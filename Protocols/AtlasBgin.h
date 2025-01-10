@@ -1,23 +1,18 @@
 /*
- * AtlasGsz.h
- *
+ * AtlasBgin.h
  */
 
-#ifndef PROTOCOLS_ATLASGSZ_H_
-#define PROTOCOLS_ATLASGSZ_H_
+#ifndef PROTOCOLS_ATLASBGIN_H_
+#define PROTOCOLS_ATLASBGIN_H_
 
 #include <unordered_map>
-
 #include "Atlas.h"
 
 /**
- * Maliciously secure ATLAS protocol
- * 
- * t-wise independence only
- * Use GSZ20 for verification
+ * Maliciously secure ATLAS protocol using BGIN verification
  */
 template<class T>
-class AtlasGsz : public ProtocolBase<T>
+class AtlasBgin : public ProtocolBase<T>
 {
 private:
     Atlas<T> honest;
@@ -40,11 +35,10 @@ public:
 
     Player& P;
 
-    AtlasGsz(Player& P);
+    AtlasBgin(Player& P);
+    ~AtlasBgin();
 
-    ~AtlasGsz();
-
-    AtlasGsz branch()
+    AtlasBgin branch()
     {
         return P;
     }
@@ -83,11 +77,11 @@ public:
 
     void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc);
 
-    // GSZ20 verification
+    // BGIN20 verification 
     void check();
     void de_linearization();
     void dimension_reduction();
     void randomization();
 };
 
-#endif /* PROTOCOLS_ATLASGSZ_H_ */
+#endif

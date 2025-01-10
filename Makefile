@@ -131,7 +131,7 @@ shamir: shamir-party.x malicious-shamir-party.x galois-degree.x atlas
 
 sy: sy-rep-field-party.x sy-rep-ring-party.x sy-shamir-party.x
 
-atlas: atlas-party.x atlas-gsz-party.x
+atlas: atlas-party.x atlas-gsz-party.x atlas-bgin-party.x
 
 ecdsa: $(patsubst ECDSA/%.cpp,%.x,$(wildcard ECDSA/*-ecdsa-party.cpp)) Fake-ECDSA.x
 ecdsa-static: static-dir $(patsubst ECDSA/%.cpp,static/%.x,$(wildcard ECDSA/*-ecdsa-party.cpp))
@@ -251,6 +251,7 @@ lowgear-party.x: $(FHEOFFLINE) $(TINIER) Protocols/CowGearOptions.o Protocols/Lo
 highgear-party.x: $(FHEOFFLINE) $(TINIER) Protocols/CowGearOptions.o Protocols/HighGearKeyGen.o
 atlas-party.x: GC/AtlasSecret.o
 atlas-gsz-party.x: GC/AtlasSecret.o
+atlas-bgin-party.x: GC/AtlasSecret.o
 static/hemi-party.x: $(FHEOBJS)
 static/temi-party.x: $(FHEOBJS)
 static/soho-party.x: $(FHEOBJS)

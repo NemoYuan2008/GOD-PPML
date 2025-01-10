@@ -52,12 +52,6 @@ void AtlasGsz<T>::prepare_mul(const T& x, const T& y, int)
     honest.prepare_mul(x, y);
 }
 
-// template<class T>
-// void AtlasGsz<T>::prepare(const typename T::open_type& product)
-// {
-//     honest.prepare(product);
-// }
-
 template<class T>
 void AtlasGsz<T>::exchange()
 {
@@ -72,7 +66,6 @@ T AtlasGsz<T>::finalize_mul(int)
     return res;
 }
 
-// Dot product operations
 template<class T>
 void AtlasGsz<T>::init_dotprod()
 {
@@ -99,8 +92,11 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     dotprod_info[z_verify.size()] = length;
 
     T res = honest.finalize_dotprod(length);
-    
     z_verify.push_back(res);
+
+    // The dot product result is stored in the first element,
+    // the rest are padded with zeros to maintain 
+    // z_verify is of the same length as x_verify and y_verify
     z_verify.insert(z_verify.end(), length - 1, T{0});
     return res;
 }
@@ -212,8 +208,6 @@ T AtlasGsz<T>::finalize_mul_trunc(int k, int f)
     return res;
 }
 
-
-// Truncated dot product operations
 template<class T>
 void AtlasGsz<T>::init_dotprod_trunc()
 {
@@ -346,15 +340,15 @@ void AtlasGsz<T>::de_linearization()
             random_coeffs[i] = random_coeffs[i - 1] * r;
         }
     }
+    dotprod_info.clear();
 
     // x_verify = (x_0 r^0, x_1 r^1, ..., x_n r^n); y_verify is unchanged
     std::transform(x_verify.begin(), x_verify.end(), random_coeffs.begin(), x_verify.begin(),
                     std::multiplies<typename T::open_type>());
+    
     // z_de_linearized = z_0 r^0 + z_1 r^1 + ... + z_n r^n
     z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
-    
     z_verify.clear();
-    dotprod_info.clear();
 
 #ifdef DEBUG_DE_LINEARIZATION
     typename T::MAC_Check debug_mc;

@@ -15,6 +15,9 @@
 #include "Protocols/AtlasGsz.hpp"
 #include "Protocols/AtlasGszShare.h"
 
+#include "Protocols/AtlasBgin.hpp"
+#include "Protocols/AtlasBginShare.h"
+
 #include "Shamir.hpp"
 
 #endif /* MACHINES_ATLAS_HPP_ */
