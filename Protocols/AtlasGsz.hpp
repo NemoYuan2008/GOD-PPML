@@ -26,11 +26,16 @@ AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
     y_verify.reserve(OnlineOptions::singleton.batch_size);
 }
 
-
 template<class T>
 AtlasGsz<T>::~AtlasGsz()
 {
     check();
+}
+
+template<class T>
+T AtlasGsz<T>::get_random()
+{
+    return honest.get_random();
 }
 
 template<class T>
@@ -312,7 +317,9 @@ void AtlasGsz<T>::de_linearization()
 {
     z_de_linearized = 0;
 
-    typename T::open_type r = 2;  // TODO: r should be a random number
+    // Random coin
+    typename T::open_type r = local_mc.POpen(get_random(), this->P);
+
     vector<typename T::open_type> random_coeffs(x_verify.size());
     random_coeffs[0] = r;
 
@@ -432,7 +439,7 @@ void AtlasGsz<T>::dimension_reduction()
     h_coeffs[2] = (c_0 + c_2) * two_inverse - c_1;
 
 
-    T random_point = 100; // TODO: get a random point
+    T random_point = local_mc.POpen(get_random(), this->P);
 
     // Evaluate f_i(random_point) and g_i(random_point), just put them in x_verify and y_verify
     for (int i = 0; i < half_size; ++i) {
@@ -480,24 +487,36 @@ void AtlasGsz<T>::dimension_reduction()
 }
 
 /**
- * Protocol 15 in https://ia.cr/2020/134
+ * Verify the last triple from dimension_reduction
  * 
+ * Since we have only one triple left,
+ * we use the triple sacrifice technique instead of
+ * the original protocol in https://ia.cr/2020/134.
  */
 template<class T>
 void AtlasGsz<T>::randomization()
 {
-    local_mc.init_open(P, 3);
 
-    // TODO: need another triple to randomize
-    local_mc.prepare_open(x_verify[0]);
-    local_mc.prepare_open(y_verify[0]);
-    local_mc.prepare_open(z_de_linearized);
+    T a = get_random();
+    T b = get_random();
+    T c = this->mul(a, b);
+
+    typename T::clear alpha = local_mc.POpen(get_random(), P);
+    T rho = alpha * x_verify[0] + a;
+    T sigma = y_verify[0] + b;
+
+    local_mc.init_open(P, 2);
+    local_mc.prepare_open(rho);
+    local_mc.prepare_open(sigma);
     local_mc.exchange(P);
-    auto x_open = local_mc.finalize_open();
-    auto y_open = local_mc.finalize_open();
-    auto z_open = local_mc.finalize_open();
-    if (x_open * y_open != z_open) {
-        throw mac_fail("Incorrect multiplication result");
+    auto rho_open = local_mc.finalize_open();
+    auto sigma_open = local_mc.finalize_open();
+
+    T v = alpha * z_de_linearized - c + sigma_open * a + rho_open * b - rho_open * sigma_open;
+    auto v_open = local_mc.POpen(v, P);
+
+    if (v_open != 0) {
+        throw mac_fail("AtlasGsz: Verification failed");
     }
 }
 

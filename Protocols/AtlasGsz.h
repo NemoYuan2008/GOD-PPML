@@ -52,6 +52,8 @@ public:
         return honest.get_n_relevant_players();
     }
 
+    T get_random();
+
     void init_mul();
     void prepare_mul(const T& x, const T& y, int n = -1);
     void exchange();
