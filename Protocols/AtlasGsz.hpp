@@ -33,9 +33,8 @@ AtlasGsz<T>::~AtlasGsz()
 }
 
 template<class T>
-T AtlasGsz<T>::get_random()
-{
-    return honest.get_random();
+void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
+    honest.init(prep, MC);
 }
 
 template<class T>
@@ -64,6 +63,12 @@ T AtlasGsz<T>::finalize_mul(int)
     T res = honest.finalize_mul();
     z_verify.push_back(res);
     return res;
+}
+
+template<class T>
+T AtlasGsz<T>::get_random()
+{
+    return honest.get_random();
 }
 
 template<class T>
@@ -162,7 +167,7 @@ void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& 
             T x = proc.get_S_ref(info.x_base + i);
             T y = proc.get_S_ref(info.y_base + i);
             
-            prepare_mul_trunc(x, y, info.k, info.f, proc);
+            prepare_mul_trunc(x, y, info.k, info.f);
         }
     }
 
@@ -185,11 +190,11 @@ void AtlasGsz<T>::init_mul_trunc(int length)
 }
 
 template<class T>
-void AtlasGsz<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
+void AtlasGsz<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f)
 {
     x_verify.push_back(x);
     y_verify.push_back(y);
-    honest.prepare_mul_trunc(x, y, k, f, proc);
+    honest.prepare_mul_trunc(x, y, k, f);
 }
 
 template<class T>
@@ -223,9 +228,9 @@ void AtlasGsz<T>::prepare_dotprod_trunc(const T& x, const T& y)
 }
 
 template<class T>
-void AtlasGsz<T>::next_dotprod_trunc(int k, int f, SubProcessor<T>& proc)
+void AtlasGsz<T>::next_dotprod_trunc(int k, int f)
 {
-    honest.next_dotprod_trunc(k, f, proc);
+    honest.next_dotprod_trunc(k, f);
 }
 
 template<class T>
@@ -247,9 +252,9 @@ T AtlasGsz<T>::finalize_dotprod_trunc(int length, int k, int f)
 }
 
 template<class T>
-void AtlasGsz<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
+void AtlasGsz<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f)
 {
-    honest.prepare_with_solved_bits(product, k, f, proc);
+    honest.prepare_with_solved_bits(product, k, f);
 }
 
 

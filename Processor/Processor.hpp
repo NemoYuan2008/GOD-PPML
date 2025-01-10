@@ -642,7 +642,7 @@ void SubProcessor<T>::matmuls_trunc(const StackedVector<T>& source,
                 for (int k = 0; k < dim[1]; k++)
                     protocol.prepare_dotprod_trunc(*(A + i * dim[1] + k),
                             *(B + k * dim[2] + j));
-                protocol.next_dotprod_trunc(it[6], it[7], *this);
+                protocol.next_dotprod_trunc(it[6], it[7]);
             }
     }
 
@@ -1244,7 +1244,7 @@ void SubProcessor<T>::matmulsm_trunc(const MemoryPart<T>& source,
 
                     protocol.prepare_dotprod_trunc(sourceData[firstAddress], sourceData[secondAddress]);
                 }
-                protocol.next_dotprod_trunc(k, m, *this);
+                protocol.next_dotprod_trunc(k, m);
 
                 if (protocol.get_buffer_size() > OnlineOptions::singleton.batch_size) {
                     protocol.exchange_dotprod_trunc();

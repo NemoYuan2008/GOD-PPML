@@ -52,6 +52,13 @@ array<T, 2> Atlas<T>::get_double_sharing()
 }
 
 template<class T>
+void Atlas<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC)
+{
+    this->prep = &prep;
+    (void) MC;
+}
+
+template<class T>
 void Atlas<T>::init_mul()
 {
     oss.reset();
@@ -197,7 +204,7 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
             T x = proc.get_S_ref(info.x_base + i);
             T y = proc.get_S_ref(info.y_base + i);
             
-            prepare_mul_trunc(x, y, info.k, info.f, proc);
+            prepare_mul_trunc(x, y, info.k, info.f);
         }
     }
 
@@ -221,9 +228,9 @@ void Atlas<T>::init_mul_trunc(int length)
 }
 
 template<class T>
-void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc)
+void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f)
 {
-    prepare_with_solved_bits(x * y, k, f, proc);
+    prepare_with_solved_bits(x * y, k, f);
     
 #ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_mul_trunc(): " << "k = " << k << ' ' << "f = " << f << '\n'
@@ -243,7 +250,7 @@ void Atlas<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProces
  * not from a double sharing.
  */
 template<class T>
-void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc)
+void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f)
 {
 #ifdef DEBUG_MUL_TRUNC
     cerr << "\nprepare_with_solved_bits(): \n"
@@ -258,7 +265,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product, in
     // get the individual bits [r_i]
     vector<T> r_bits(k);
     for (auto& r_i : r_bits) {
-        proc.DataF.get_one(DATA_BIT, r_i);
+        prep->get_one(DATA_BIT, r_i);
     }
 
     // Compose [r_i] into [r]
@@ -411,7 +418,7 @@ void Atlas<T>::prepare_dotprod_trunc(const T& x, const T& y)
 }
 
 template<class T>
-void Atlas<T>::next_dotprod_trunc(int k, int f, SubProcessor<T>& proc)
+void Atlas<T>::next_dotprod_trunc(int k, int f)
 {
 #ifdef DEBUG_DOTPROD
     // Open the product for debugging
@@ -421,7 +428,7 @@ void Atlas<T>::next_dotprod_trunc(int k, int f, SubProcessor<T>& proc)
          << "dotprod_open:\n" << dotprod_open << "\n\n";
 #endif
 
-    prepare_with_solved_bits(dotprod_share, k, f, proc);
+    prepare_with_solved_bits(dotprod_share, k, f);
     dotprod_share = 0;
 }
 

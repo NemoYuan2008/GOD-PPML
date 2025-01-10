@@ -34,6 +34,8 @@ private:
 
     typename T::open_type dotprod_share;
 
+    Preprocessing<T>* prep = nullptr;
+
     array<T, 2> get_double_sharing();
 
 
@@ -64,6 +66,8 @@ public:
         return shamir.get_n_relevant_players();
     }
 
+    void init(Preprocessing<T>& prep, typename T::MAC_Check& MC);
+
     void init_mul();
     void prepare_mul(const T& x, const T& y, int n = -1);
     void prepare(const typename T::open_type& product);
@@ -82,17 +86,17 @@ public:
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
 
     void init_mul_trunc(int length);
-    void prepare_mul_trunc(const T& x, const T& y, int k, int f, SubProcessor<T>& proc);
+    void prepare_mul_trunc(const T& x, const T& y, int k, int f);
     void exchange_mul_trunc();
     T finalize_mul_trunc(int k, int f, T* pre_trunc = nullptr);
 
     void init_dotprod_trunc();
     void prepare_dotprod_trunc(const T& x, const T& y);
-    void next_dotprod_trunc(int k, int f, SubProcessor<T>& proc);
+    void next_dotprod_trunc(int k, int f);
     void exchange_dotprod_trunc();
     T finalize_dotprod_trunc(int length, int k, int f, T* pre_trunc = nullptr);
 
-    void prepare_with_solved_bits(const typename T::open_type& product, int k, int f, SubProcessor<T>& proc);
+    void prepare_with_solved_bits(const typename T::open_type& product, int k, int f);
 };
 
 #endif /* PROTOCOLS_ATLAS_H_ */
