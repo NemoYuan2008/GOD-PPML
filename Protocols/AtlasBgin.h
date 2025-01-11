@@ -88,9 +88,9 @@ public:
     void prove_deg2_rel();
 
     // Helper function for BGIN20 verification
-    inline static std::pair<T, T> interpolate_0_1(T x_0, T x_1);
-    inline static T interpolate_0_1_x(T x_0, T x_1, T x);
-    inline static T interpolate_0_1_2_x(T x_0, T x_1, T x_2, T x);
+    inline static T interpolate_degree_1(T x_0, T x_1, T x);
+    inline static T interpolate_degree_2(T x_0, T x_1, T x_2, T x);
+    inline static T interpolate_degree_4(const array<T, 5>& points, T x);
 };
 
 #endif

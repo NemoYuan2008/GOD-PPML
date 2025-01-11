@@ -5,9 +5,11 @@
 #ifndef PROTOCOLS_ATLASBGIN_HPP_
 #define PROTOCOLS_ATLASBGIN_HPP_
 
+#include <cmath>
+
 #include "AtlasBgin.h"
 
-// #define DEBUG_CHECK
+#define DEBUG_CHECK
 #define DEBUG_DE_LINEARIZATION
 #define DEBUG_PROVE_DEG2_REL
 
@@ -258,10 +260,6 @@ void AtlasBgin<T>::check()
     if (x_verify.empty())
         return;
 
-    for (int i = 0; i < P.num_players(); ++i) {
-        cerr << "Reconstruction factor for P_" << i << ": " << Shamir<T>::get_rec_factor(i, P.num_players()) << '\n';
-    }
-
     // Not sure if this will increase performance
     // BufferScope _(honest, 2 * x_verify.size());
 
@@ -273,7 +271,6 @@ void AtlasBgin<T>::check()
     // z_verify and dotprod_info are cleared in de_linearization       
 }
 
-
 template<class T>
 void AtlasBgin<T>::de_linearization()
 {
@@ -281,7 +278,6 @@ void AtlasBgin<T>::de_linearization()
 
     // Random coin
     typename T::open_type r = local_mc.POpen(get_random(), this->P);
-    r = 1;  // TODO: debug only, remove
 
     vector<typename T::open_type> random_coeffs(x_verify.size());
     random_coeffs[0] = r;
@@ -357,21 +353,37 @@ void AtlasBgin<T>::de_linearization()
  */
 template<class T>
 void AtlasBgin<T>::prove_deg2_rel() {
-    // x_verify corresponds to a in the paper, y_verify corresponds to b, 
-    // and psi[i] corresponds to c for P_i's proof
+    /**
+     * Notes on the notation:
+     * 
+     * x_verify corresponds to a in the paper, 
+     * y_verify corresponds to b, 
+     * psi[i] corresponds to c in P_i's proof.
+     * 
+     * In the original paper, the values c - q(1) - q(2) is also called b_l,
+     * which clashes with the variable 'b' in the paper.
+     * we use the variable name 'to_check' for this value.
+     */
+    
+    const int computed_round_count = static_cast<int>(std::ceil(std::log2(x_verify.size())));
+    int round_count = 0; // For debugging purposes. TODO: remove
 
-    // Vector 'to_check' stores c - q(1) - q(2) values in each round, for each party
     // to_check[i][j] corresponds to the j-th round's value for P_i
-    vector<vector<T>> to_check(P.num_players()); // TODO: determine round count in advance
+    vector<vector<T>> to_check(P.num_players()); 
+    std::for_each(to_check.begin(), to_check.end(), 
+                  [computed_round_count](auto& v) { v.reserve(computed_round_count + 2); });
 
-    while (x_verify.size() > 1) {
+    /*********************************** Step 2 in the paper ***********************************/
+    while (x_verify.size() > 2) {
+        ++round_count;
+
         if (x_verify.size() & 1) { // odd length, pad with a zero
             x_verify.emplace_back(0);
             y_verify.emplace_back(0);
         }
         int half_size = x_verify.size() / 2;
 
-        /************************* Compute q(0), q(1), q(2) *************************/
+        /************************* Compute f_e(2), h_e(2) for all e *************************/
         // We do not follow the paper's notation for the polynomial 'f'
         // We define f_e(x) such that f_e(0) = x[e], f_e(1) = x[half_size + e]
         // and h_e(x) such that h_e(0) = y[e], h_e(1) = y[half_size + e]
@@ -383,19 +395,21 @@ void AtlasBgin<T>::prove_deg2_rel() {
         std::transform(x_verify.begin(), x_verify.begin() + half_size,
                        x_verify.begin() + half_size,
                        f_2.begin(),
-                       [](const auto& a, const auto& b) { return interpolate_0_1_x(a, b, 2); });
+                       [](auto a, auto b) { return interpolate_degree_1(a, b, 2); });
 
         vector<T> h_2(half_size); // store h_e(2) for each e
         std::transform(y_verify.begin(), y_verify.begin() + half_size,
                        y_verify.begin() + half_size,
                        h_2.begin(),
-                       [](const auto& a, const auto& b) { return interpolate_0_1_x(a, b, 2); });
+                       [](auto a, auto b) { return interpolate_degree_1(a, b, 2); });
 
+        /************************* Compute q(0), q(1), q(2) *************************/
         // The definition of q(x) becomes q(x) = sum_{e=0}^{L/2-1} f_e(x) h_e(x)
-        T q_2 = std::inner_product(f_2.begin(), f_2.end(), h_2.begin(), T{0});
-        T q_0 = std::inner_product(
+        T q_2 = std::inner_product( // q(2) = sum_{e=0}^{L/2-1} f_e(2) h_e(2)
+            f_2.begin(), f_2.end(), h_2.begin(), T{0}); // Compute q(2) first since h_2 maybe in cache
+        T q_0 = std::inner_product( // q(0) = sum_{e=0}^{L/2-1} f_e(0) h_e(0) (first half)
             x_verify.begin(), x_verify.begin() + half_size, y_verify.begin(), T{0});
-        T q_1 = std::inner_product(
+        T q_1 = std::inner_product( // q(1) = sum_{e=0}^{L/2-1} f_e(1) h_e(1) (second half)
             x_verify.begin() + half_size, x_verify.end(), y_verify.begin() + half_size, T{0});
         
         /************************* Each party shares q(0), q(1), q(2) *************************/
@@ -405,9 +419,9 @@ void AtlasBgin<T>::prove_deg2_rel() {
         shamir_input.add_from_all(q_2);
         shamir_input.exchange();
 
-        /************************* Evaluate q at random point *************************/
-        // TODO: the random point is currently 0, should be random
-        vector<typename T::open_type> random_points(P.num_players(), 100); // One random point for each party's proof
+        /************************* Compute c - q(0) - q(1) and q(r) *************************/
+        // TODO: random_points should be random, not fixed
+        vector<typename T::open_type> random_points{432, 1234, 5463}; // One random point for each party's proof
         for (int party_i = 0; party_i < P.num_players(); ++party_i) {
             T q_0_share = shamir_input.finalize(party_i);
             T q_1_share = shamir_input.finalize(party_i);
@@ -416,11 +430,11 @@ void AtlasBgin<T>::prove_deg2_rel() {
             // Store the c - q(1) - q(2) values for each party for later verification
             to_check[party_i].push_back(psi[party_i] - q_0_share - q_1_share);
             
-            // evaluate q at the random point, and use them for the next round
-            psi[party_i] = interpolate_0_1_2_x(q_0_share, q_1_share, q_2_share, random_points[party_i]);
+            // Compute q(r)'s for each parties' proof, and use them for the next round
+            psi[party_i] = interpolate_degree_2(q_0_share, q_1_share, q_2_share, random_points[party_i]);
         }
 
-        /************************* Evaluate f_e and h_e at the random point *************************/
+        /************************* Compute f_e(r) and h_e(r) for all e *************************/
         // Evaluate f_e and h_e at the random point, and store them in x_verify and y_verify
         // Note that each party only needs to evaluate f_e and h_e for its own random point,
         // it does not need to evaluate f_e and h_e for other parties' random points
@@ -429,23 +443,102 @@ void AtlasBgin<T>::prove_deg2_rel() {
         std::transform(x_verify.begin(), x_verify.begin() + half_size, // f_e(0) = x_verify[i]
                        x_verify.begin() + half_size, // f_e(1) = x_verify[i + half_size]
                        x_verify.begin(), // store f_e(random_point)
-                       [random_point](auto a, auto b) { return interpolate_0_1_x(a, b, random_point); });
+                       [random_point](auto a, auto b) { return interpolate_degree_1(a, b, random_point); });
         x_verify.resize(half_size);
         
         std::transform(y_verify.begin(), y_verify.begin() + half_size, // h_e(0) = y_verify[i]
                        y_verify.begin() + half_size, // h_e(1) = y_verify[i + half_size]
                        y_verify.begin(), // store h_e(random_point)
-                       [random_point](auto a, auto b) { return interpolate_0_1_x(a, b, random_point); });
+                       [random_point](auto a, auto b) { return interpolate_degree_1(a, b, random_point); });
         y_verify.resize(half_size);
     }
 
+    /*********************************** Step 3 in the paper ***********************************/
+    // The last round, where we have only two elements left
 #ifdef DEBUG_PROVE_DEG2_REL
     typename T::MAC_Check debug_mc;
+    cerr << "x[0] = " << debug_mc.POpen(x_verify[0], this->P) << '\n'
+         << "x[1] = " << debug_mc.POpen(x_verify[1], this->P) << '\n'
+         << "y[0] = " << debug_mc.POpen(y_verify[0], this->P) << '\n'
+         << "y[1] = " << debug_mc.POpen(y_verify[1], this->P) << '\n';
+    
+    cerr << "The shares:\n"
+         << "x[0] = " << x_verify[0] << '\n'
+         << "x[1] = " << x_verify[1] << '\n'
+         << "y[0] = " << y_verify[0] << '\n'
+         << "y[1] = " << y_verify[1] << '\n';
+    
+    vector<typename T::open_type> psi_open;
+    debug_mc.POpen(psi_open, psi, this->P);
+    cerr << "psi: ";
+    for (auto p: psi_open) {
+        cerr << p << " ";
+    }
+    cerr << '\n';
+#endif
+
+    /************************* Compute f, h at 0, 1, 2, 3, 4 *************************/
+    // Note that the order of the points are sightly different from the paper
+    array<T, 5> f = {
+        x_verify[0], // f(0)
+        x_verify[1], // f(1)
+        get_random(), // f(2) = random point (w_1 in the paper)
+    };
+    f[3] = interpolate_degree_2(f[0], f[1], f[2], 3);
+    f[4] = interpolate_degree_2(f[0], f[1], f[2], 4);
+
+    array<T, 5> h = {
+        y_verify[0], // h(0)
+        y_verify[1], // h(1)
+        get_random(), // h(2) = random point (w_2 in the paper)
+    };
+    h[3] = interpolate_degree_2(h[0], h[1], h[2], 3);
+    h[4] = interpolate_degree_2(h[0], h[1], h[2], 4);
+    
+    /************************* Compute q(0), ..., q(4) *************************/
+    array<T, 5> q;
+    std::transform(f.begin(), f.end(), h.begin(), q.begin(), std::multiplies<T>());
+
+    /************************* Each party shares q(0), ..., q(4) *************************/
+    shamir_input.reset_all(P);
+    for (auto q_i: q) {
+        shamir_input.add_from_all(q_i);
+    }
+    shamir_input.exchange();
+
+    /************************* Compute c - q(0) - q(1) and q(r) *************************/
+    // TODO: random
+    vector<typename T::open_type> random_points(P.num_players(), 100); // One random point for each party's proof
+    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+        array<T, 5> q_share;
+        for (int i = 0; i < 5; ++i) {
+            q_share[i] = shamir_input.finalize(party_i);
+        }
+        
+        // Store the c - q(0) - q(1) values for each party for later verification
+        to_check[party_i].push_back(psi[party_i] - q_share[0] - q_share[1]);
+
+        // Compute q(r)'s for each parties' proof, for later triple verification
+        psi[party_i] = interpolate_degree_4(q_share, random_points[party_i]);
+    }
+    
+    /************************* Compute f(r) and h(r) *************************/
+    T random_point = random_points[P.my_num()];
+    T f_r = interpolate_degree_4(f, random_point);
+    T h_r = interpolate_degree_4(h, random_point);
+
+    
+
+#ifdef DEBUG_PROVE_DEG2_REL
+    cerr << "Round count: " << round_count << '\n';
+    cerr << "Computed round count: " << computed_round_count << '\n';
+
+    // typename T::MAC_Check debug_mc;
     vector<vector<typename T::open_type>> to_check_open(P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
         debug_mc.POpen(to_check_open[party_i], to_check[party_i], this->P);
     }
-    cerr << "to_check: ";
+    cerr << "to_check: \n";
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
         cerr << "P_" << party_i << ": ";
         for (auto t: to_check_open[party_i]) {
@@ -453,20 +546,18 @@ void AtlasBgin<T>::prove_deg2_rel() {
         }
         cerr << '\n';
     }
-#endif
-}
 
-/**
- * An internal helper function
- * 
- * Let f be a linear function, f(0) = x_0, f(1) = x_1
- * Returns a pair (a, b) such that f(x) = a + bx
- */
-template<class T>
-inline
-std::pair<T, T> AtlasBgin<T>::interpolate_0_1(T x_0, T x_1)
-{
-    return {x_0, x_1 - x_0};
+    // vector<typename T::open_type> psi_open;
+    debug_mc.POpen(psi_open, psi, this->P);
+    cerr << "psi: ";
+    for (auto p: psi_open) {
+        cerr << p << " ";
+    }
+    cerr << '\n';
+
+    // cerr << "f_r: " << debug_mc.POpen(f_r, this->P) << '\n';
+    // cerr << "h_r: " << debug_mc.POpen(h_r, this->P) << '\n';
+#endif
 }
 
 /**
@@ -477,7 +568,7 @@ std::pair<T, T> AtlasBgin<T>::interpolate_0_1(T x_0, T x_1)
  */
 template<class T>
 inline
-T AtlasBgin<T>::interpolate_0_1_x(T x_0, T x_1, T x)
+T AtlasBgin<T>::interpolate_degree_1(T x_0, T x_1, T x)
 {
     return x_0 + (x_1 - x_0) * x;
 }
@@ -490,10 +581,32 @@ T AtlasBgin<T>::interpolate_0_1_x(T x_0, T x_1, T x)
  */
 template<class T>
 inline
-T AtlasBgin<T>::interpolate_0_1_2_x(T x_0, T x_1, T x_2, T x)
+T AtlasBgin<T>::interpolate_degree_2(T x_0, T x_1, T x_2, T x)
 {
     static const typename T::clear two_inverse = (typename T::clear(2)).invert();
     return x_0 + (x_1 * 2 - two_inverse * (x_0 * 3 + x_2)) * x + (two_inverse * (x_0 + x_2) - x_1) * x * x;
+}
+
+/**
+ * An internal helper function
+ * 
+ * Let f be degree-4 polynomial, and given f(0), f(1), f(2), f(3), f(4)
+ * Returns the value of f(x) at x
+ */
+template <class T>
+inline T AtlasBgin<T>::interpolate_degree_4(const array<T, 5> &points, T x)
+{
+    T res = 0;
+    for (int i = 0; i < 5; ++i) {
+        T prod = points[i];
+        for (int j = 0; j < 5; ++j) {
+            if (j != i) {
+                prod *= (x - j) / (i - j);
+            }
+        }
+        res += prod;
+    }
+    return res;
 }
 
 #endif /* PROTOCOLS_ATLASBGIN_HPP_ */
