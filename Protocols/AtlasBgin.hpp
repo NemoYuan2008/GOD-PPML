@@ -9,9 +9,11 @@
 
 // #define DEBUG_CHECK
 #define DEBUG_DE_LINEARIZATION
+#define DEBUG_PROVE_DEG2_REL
 
 template<class T>
-AtlasBgin<T>::AtlasBgin(Player& P) : honest(P), P(P)
+AtlasBgin<T>::AtlasBgin(Player& P) 
+    : honest(P), shamir_input(nullptr, P), P(P)
 {
     x_verify.reserve(OnlineOptions::singleton.batch_size);
     y_verify.reserve(OnlineOptions::singleton.batch_size);
@@ -244,39 +246,27 @@ void AtlasBgin<T>::prepare_with_solved_bits(const typename T::open_type& product
     honest.prepare_with_solved_bits(product, k, f);
 }
 
+
+/**
+ * Verification protocol in BGIN20
+ * 
+ * See https://ia.cr/2020/1451 Protocol 4.2
+ */
 template<class T>
 void AtlasBgin<T>::check()
 {
     if (x_verify.empty())
         return;
 
-#ifdef DEBUG_CHECK
-    typename T::MAC_Check debug_mc;
-    vector<typename T::open_type> x_open, y_open, z_open;
-    
-    debug_mc.POpen(x_open, x_verify, this->P);
-    debug_mc.POpen(y_open, y_verify, this->P);
-    debug_mc.POpen(z_open, z_verify, this->P);
-
-    cerr << "\nCheck\n" << "x_verify: ";
-    for (auto x: x_open) {
-        cerr << x << " ";
+    for (int i = 0; i < P.num_players(); ++i) {
+        cerr << "Reconstruction factor for P_" << i << ": " << Shamir<T>::get_rec_factor(i, P.num_players()) << '\n';
     }
-    cerr << '\n' << "y_verify: ";
-    for (auto y: y_open) {
-        cerr << y << " ";
-    }
-    cerr << '\n' << "z_verify: ";
-    for (auto z: z_open) {
-        cerr << z << " ";
-    }
-    cerr << '\n';
-#endif
 
     // Not sure if this will increase performance
     // BufferScope _(honest, 2 * x_verify.size());
 
     de_linearization();
+    prove_deg2_rel();
     
     x_verify.clear();
     y_verify.clear();
@@ -291,6 +281,7 @@ void AtlasBgin<T>::de_linearization()
 
     // Random coin
     typename T::open_type r = local_mc.POpen(get_random(), this->P);
+    r = 1;  // TODO: debug only, remove
 
     vector<typename T::open_type> random_coeffs(x_verify.size());
     random_coeffs[0] = r;
@@ -329,19 +320,180 @@ void AtlasBgin<T>::de_linearization()
                     std::multiplies<typename T::open_type>());
     
     T psi_2t = std::inner_product(x_verify.begin(), x_verify.end(), y_verify.begin(), T{0});
-    auto rec_factor = Shamir<T>::get_rec_factor(P.my_num(), P.num_players());
-    T psi_additive = rec_factor * psi_2t;
+
+    // Each party Shamir-shares its degree-2t share of psi, not additive share as in the paper
+    psi.resize(P.num_players());
+    shamir_input.reset_all(P);
+    shamir_input.add_from_all(psi_2t);
+    shamir_input.exchange();
+    for (int i = 0; i < P.num_players(); ++i) {
+        psi[i] = shamir_input.finalize(i);
+    }
+
 
 #ifdef DEBUG_DE_LINEARIZATION
     typename T::MAC_Check debug_mc;
     typename T::MAC_Check_2t debug_mc_2t;
 
     cerr << "\nz_de_linearized: " << debug_mc.POpen(z_de_linearized, this->P) << '\n';
-    cerr << "psi_2t: " << debug_mc_2t.POpen(psi_2t, this->P) << '\n';
-    cerr << "psi_additive: " << psi_additive << '\n';
+    cerr << "psi (degree 2t share): " << psi_2t << '\n';
+    cerr << "psi (clear): " << debug_mc_2t.POpen(psi_2t, this->P) << '\n';
+
+    vector<typename T::open_type> psi_open;
+    debug_mc.POpen(psi_open, psi, this->P);
+    cerr << "psi: ";
+    for (auto p: psi_open) {
+        cerr << p << " ";
+    }
+    cerr << '\n';
 #endif
 }
 
+/**
+ * Protocol 3.3 in BGIN20
+ * 
+ * Note that the protocol in the paper is for a single party,
+ * but here we execute the protocol for in parallel for all parties.
+ */
+template<class T>
+void AtlasBgin<T>::prove_deg2_rel() {
+    // x_verify corresponds to a in the paper, y_verify corresponds to b, 
+    // and psi[i] corresponds to c for P_i's proof
 
+    // Vector 'to_check' stores c - q(1) - q(2) values in each round, for each party
+    // to_check[i][j] corresponds to the j-th round's value for P_i
+    vector<vector<T>> to_check(P.num_players()); // TODO: determine round count in advance
 
+    while (x_verify.size() > 1) {
+        if (x_verify.size() & 1) { // odd length, pad with a zero
+            x_verify.emplace_back(0);
+            y_verify.emplace_back(0);
+        }
+        int half_size = x_verify.size() / 2;
+
+        /************************* Compute q(0), q(1), q(2) *************************/
+        // We do not follow the paper's notation for the polynomial 'f'
+        // We define f_e(x) such that f_e(0) = x[e], f_e(1) = x[half_size + e]
+        // and h_e(x) such that h_e(0) = y[e], h_e(1) = y[half_size + e]
+        // i.e., we separate the original L polynomials f into L/2 pairs of f_e and h_e
+        // Also, the indices and the evaluation points start from 0, not 1.
+        // This is done to simplify the implementation and for better cache performance
+
+        vector<T> f_2(half_size); // store f_e(2) for each e
+        std::transform(x_verify.begin(), x_verify.begin() + half_size,
+                       x_verify.begin() + half_size,
+                       f_2.begin(),
+                       [](const auto& a, const auto& b) { return interpolate_0_1_x(a, b, 2); });
+
+        vector<T> h_2(half_size); // store h_e(2) for each e
+        std::transform(y_verify.begin(), y_verify.begin() + half_size,
+                       y_verify.begin() + half_size,
+                       h_2.begin(),
+                       [](const auto& a, const auto& b) { return interpolate_0_1_x(a, b, 2); });
+
+        // The definition of q(x) becomes q(x) = sum_{e=0}^{L/2-1} f_e(x) h_e(x)
+        T q_2 = std::inner_product(f_2.begin(), f_2.end(), h_2.begin(), T{0});
+        T q_0 = std::inner_product(
+            x_verify.begin(), x_verify.begin() + half_size, y_verify.begin(), T{0});
+        T q_1 = std::inner_product(
+            x_verify.begin() + half_size, x_verify.end(), y_verify.begin() + half_size, T{0});
+        
+        /************************* Each party shares q(0), q(1), q(2) *************************/
+        shamir_input.reset_all(P);
+        shamir_input.add_from_all(q_0);
+        shamir_input.add_from_all(q_1);
+        shamir_input.add_from_all(q_2);
+        shamir_input.exchange();
+
+        /************************* Evaluate q at random point *************************/
+        // TODO: the random point is currently 0, should be random
+        vector<typename T::open_type> random_points(P.num_players(), 100); // One random point for each party's proof
+        for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+            T q_0_share = shamir_input.finalize(party_i);
+            T q_1_share = shamir_input.finalize(party_i);
+            T q_2_share = shamir_input.finalize(party_i);
+            
+            // Store the c - q(1) - q(2) values for each party for later verification
+            to_check[party_i].push_back(psi[party_i] - q_0_share - q_1_share);
+            
+            // evaluate q at the random point, and use them for the next round
+            psi[party_i] = interpolate_0_1_2_x(q_0_share, q_1_share, q_2_share, random_points[party_i]);
+        }
+
+        /************************* Evaluate f_e and h_e at the random point *************************/
+        // Evaluate f_e and h_e at the random point, and store them in x_verify and y_verify
+        // Note that each party only needs to evaluate f_e and h_e for its own random point,
+        // it does not need to evaluate f_e and h_e for other parties' random points
+        const auto random_point = random_points[P.my_num()];
+
+        std::transform(x_verify.begin(), x_verify.begin() + half_size, // f_e(0) = x_verify[i]
+                       x_verify.begin() + half_size, // f_e(1) = x_verify[i + half_size]
+                       x_verify.begin(), // store f_e(random_point)
+                       [random_point](auto a, auto b) { return interpolate_0_1_x(a, b, random_point); });
+        x_verify.resize(half_size);
+        
+        std::transform(y_verify.begin(), y_verify.begin() + half_size, // h_e(0) = y_verify[i]
+                       y_verify.begin() + half_size, // h_e(1) = y_verify[i + half_size]
+                       y_verify.begin(), // store h_e(random_point)
+                       [random_point](auto a, auto b) { return interpolate_0_1_x(a, b, random_point); });
+        y_verify.resize(half_size);
+    }
+
+#ifdef DEBUG_PROVE_DEG2_REL
+    typename T::MAC_Check debug_mc;
+    vector<vector<typename T::open_type>> to_check_open(P.num_players());
+    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+        debug_mc.POpen(to_check_open[party_i], to_check[party_i], this->P);
+    }
+    cerr << "to_check: ";
+    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+        cerr << "P_" << party_i << ": ";
+        for (auto t: to_check_open[party_i]) {
+            cerr << t << " ";
+        }
+        cerr << '\n';
+    }
 #endif
+}
+
+/**
+ * An internal helper function
+ * 
+ * Let f be a linear function, f(0) = x_0, f(1) = x_1
+ * Returns a pair (a, b) such that f(x) = a + bx
+ */
+template<class T>
+inline
+std::pair<T, T> AtlasBgin<T>::interpolate_0_1(T x_0, T x_1)
+{
+    return {x_0, x_1 - x_0};
+}
+
+/**
+ * An internal helper function
+ * 
+ * Let f be a linear function, and f(0) = x_0, f(1) = x_1
+ * Returns the value of f(x) at x
+ */
+template<class T>
+inline
+T AtlasBgin<T>::interpolate_0_1_x(T x_0, T x_1, T x)
+{
+    return x_0 + (x_1 - x_0) * x;
+}
+
+/**
+ * An internal helper function
+ * 
+ * Let f be a quadratic function, and f(0) = x_0, f(1) = x_1, f(2) = x_2
+ * Returns the value of f(x) at x
+ */
+template<class T>
+inline
+T AtlasBgin<T>::interpolate_0_1_2_x(T x_0, T x_1, T x_2, T x)
+{
+    static const typename T::clear two_inverse = (typename T::clear(2)).invert();
+    return x_0 + (x_1 * 2 - two_inverse * (x_0 * 3 + x_2)) * x + (two_inverse * (x_0 + x_2) - x_1) * x * x;
+}
+
+#endif /* PROTOCOLS_ATLASBGIN_HPP_ */

@@ -21,10 +21,12 @@ private:
     typename T::MAC_Check local_mc;
     typename T::MAC_Check_2t local_mc_2t;
 
+    ShamirInput<T> shamir_input;
     vector<T> x_verify;
     vector<T> y_verify;
     vector<T> z_verify;
     T z_de_linearized;
+    vector<T> psi;
 
     // The dot product results are stored flattened in *_verify,
     // so we need to know where each dot product begins and ends,
@@ -83,8 +85,12 @@ public:
     // BGIN20 verification 
     void check();
     void de_linearization();
-    void dimension_reduction();
-    void randomization();
+    void prove_deg2_rel();
+
+    // Helper function for BGIN20 verification
+    inline static std::pair<T, T> interpolate_0_1(T x_0, T x_1);
+    inline static T interpolate_0_1_x(T x_0, T x_1, T x);
+    inline static T interpolate_0_1_2_x(T x_0, T x_1, T x_2, T x);
 };
 
 #endif
