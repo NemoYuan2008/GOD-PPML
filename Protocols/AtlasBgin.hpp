@@ -349,7 +349,8 @@ void AtlasBgin<T>::de_linearization()
  * Protocol 3.3 in BGIN20
  * 
  * Note that the protocol in the paper is for a single party,
- * but here we execute the protocol for in parallel for all parties.
+ * but here we execute the protocol for in parallel for all parties,
+ * i.e., this function is the batched version of the protocol.
  */
 template<class T>
 void AtlasBgin<T>::prove_deg2_rel() {
@@ -508,7 +509,7 @@ void AtlasBgin<T>::prove_deg2_rel() {
 
     /************************* Compute c - q(0) - q(1) and q(r) *************************/
     // TODO: random
-    vector<typename T::open_type> random_points(P.num_players(), 100); // One random point for each party's proof
+    vector<typename T::open_type> random_points{431, 345, 789}; // One random point for each party's proof
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
         array<T, 5> q_share;
         for (int i = 0; i < 5; ++i) {
@@ -523,10 +524,40 @@ void AtlasBgin<T>::prove_deg2_rel() {
     }
     
     /************************* Compute f(r) and h(r) *************************/
+    // This is tricky. 
+    // Although there is one pair of f(r) and h(r) in each party's proof,
+    // i.e., there should be n pairs of f(r) and h(r) in total,
+    // we only need to compute f(r) and h(r) for the random point of the current party.
+    // This is because all the f(r) computed by all the parties 
+    // actually forms a degree-t Shamir sharing,
+    // where the share held by party i is f(r) for the random point of party i.
+    // The same applies to h(r).
+    // Hence, for the check, we only need to reconstruct f(r), h(r), q(r), 
+    // and check the final multiplication triple.
+    // WTF, this is so confusing.
+    
+    // f_r and h_r computed by party i should satisfy f_r * h_r = q_r[i] (q_r is actually psi)
+    // TODO
     T random_point = random_points[P.my_num()];
     T f_r = interpolate_degree_4(f, random_point);
     T h_r = interpolate_degree_4(h, random_point);
+    cerr << "f_r: " << f_r << '\n';
+    cerr << "h_r: " << h_r << '\n';
 
+    /************************* Check if to_check opens to 0 *************************/
+    T coin = local_mc.POpen(get_random(), this->P);
+    T random_coefficient = coin;
+    T to_check_combined = 0;
+    for (const auto& v: to_check) {
+        for (const auto& t: v) {
+            to_check_combined += t * random_coefficient;
+            random_coefficient *= coin;
+        }
+    }
+    T to_check_combined_open = local_mc.POpen(to_check_combined, this->P);
+    if (to_check_combined_open != 0) {
+        throw mac_fail("prove_deg2_rel failed");
+    }
     
 
 #ifdef DEBUG_PROVE_DEG2_REL
@@ -555,8 +586,8 @@ void AtlasBgin<T>::prove_deg2_rel() {
     }
     cerr << '\n';
 
-    // cerr << "f_r: " << debug_mc.POpen(f_r, this->P) << '\n';
-    // cerr << "h_r: " << debug_mc.POpen(h_r, this->P) << '\n';
+    cerr << "f_r: " << debug_mc.POpen(f_r, this->P) << '\n';
+    cerr << "h_r: " << debug_mc.POpen(h_r, this->P) << '\n';
 #endif
 }
 
