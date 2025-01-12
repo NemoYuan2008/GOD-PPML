@@ -34,6 +34,8 @@ private:
     std::unordered_map<int, int> dotprod_info; 
 
 public:
+    static constexpr true_type use_fiat_shamir; 
+
     static const bool uses_triples = false;
 
     Player& P;
@@ -85,7 +87,10 @@ public:
     // BGIN20 verification 
     void check();
     void de_linearization();
-    void prove_deg2_rel();
+    void prove_deg2_rel(false_type); // No Fiat-Shamir heuristic
+    void prove_deg2_rel(true_type); // With Fiat-Shamir heuristic
+
+    void get_input_masks(int round_count, vector<vector<T>>& masks, vector<T>& masks_open);
 
     // Helper function for BGIN20 verification
     inline static T interpolate_degree_1(T x_0, T x_1, T x);

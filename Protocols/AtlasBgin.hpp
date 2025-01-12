@@ -5,13 +5,16 @@
 #ifndef PROTOCOLS_ATLASBGIN_HPP_
 #define PROTOCOLS_ATLASBGIN_HPP_
 
-#include <cmath>
 
 #include "AtlasBgin.h"
+
+#include <cmath>
+#include <Tools/Hash.h>
 
 // #define DEBUG_CHECK
 // #define DEBUG_DE_LINEARIZATION
 #define DEBUG_PROVE_DEG2_REL
+#define DEBUG_GET_INPUT_MASKS
 
 template<class T>
 AtlasBgin<T>::AtlasBgin(Player& P) 
@@ -264,7 +267,7 @@ void AtlasBgin<T>::check()
     // BufferScope _(honest, 2 * x_verify.size());
 
     de_linearization();
-    prove_deg2_rel();
+    prove_deg2_rel(AtlasBgin<T>::use_fiat_shamir);
     
     x_verify.clear();
     y_verify.clear();
@@ -346,20 +349,25 @@ void AtlasBgin<T>::de_linearization()
 }
 
 /**
- * Protocol 3.3 in BGIN20
+ * Protocol 3.3 in BGIN20 (No Fiat-Shamir heuristic)
  * 
  * Note that the protocol in the paper is for a single party,
  * but here we execute the protocol for in parallel for all parties,
  * i.e., this function is the batched version of the protocol.
  */
 template<class T>
-void AtlasBgin<T>::prove_deg2_rel() {
-    /**
+void AtlasBgin<T>::prove_deg2_rel(false_type) {
+    /*
      * Notes on the notation:
      * 
-     * x_verify corresponds to a in the paper, 
-     * y_verify corresponds to b, 
-     * psi[i] corresponds to c in P_i's proof.
+     * x_verify is the initial input of a in the paper, 
+     * y_verify is the initial input of b, 
+     * psi[i] is the initial input of c in P_i's proof.
+     * 
+     * a, b, c will be overwritten in each round.
+     * Also note that in every party's proof, there are corresponding a, b, c,
+     * so we use a_all_players, b_all_players, c_all_players to store them.
+     * a_all_players[i] is the share of a in P_i's proof, and so on.
      * 
      * In the original paper, the values c - q(1) - q(2) is also called b_l,
      * which clashes with the variable 'b' in the paper.
@@ -472,7 +480,7 @@ void AtlasBgin<T>::prove_deg2_rel() {
                 std::transform(x_verify.begin(), x_verify.begin() + half_size, // f_e(0) = x_verify[i]
                     x_verify.begin() + half_size, // f_e(1) = x_verify[i + half_size]
                     a_party.begin(), // store f_e(random_point)
-                    [random_point](auto a, auto b) { return interpolate_degree_1(a, b, random_point); });
+                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
                 
                 auto& b_party = b_all_players[party_i];
                 b_party.resize(half_size);
@@ -480,14 +488,14 @@ void AtlasBgin<T>::prove_deg2_rel() {
                 std::transform(y_verify.begin(), y_verify.begin() + half_size, // h_e(0) = y_verify[i]
                     y_verify.begin() + half_size, // h_e(1) = y_verify[i + half_size]
                     b_party.begin(), // store h_e(random_point)
-                    [random_point](auto a, auto b) { return interpolate_degree_1(a, b, random_point); });
+                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
             } else {
                 auto& a_party = a_all_players[party_i];
                 // Compute f_e(r) for each e via Lagrange interpolation
                 std::transform(a_party.begin(), a_party.begin() + half_size, // f_e(0) = x_verify[i]
                     a_party.begin() + half_size, // f_e(1) = x_verify[i + half_size]
                     a_party.begin(), // store f_e(random_point)
-                    [random_point](auto a, auto b) { return interpolate_degree_1(a, b, random_point); });
+                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
 
                 a_party.resize(half_size);
                 a_party.shrink_to_fit();
@@ -497,7 +505,7 @@ void AtlasBgin<T>::prove_deg2_rel() {
                 std::transform(b_party.begin(), b_party.begin() + half_size, // h_e(0) = y_verify[i]
                     b_party.begin() + half_size, // h_e(1) = y_verify[i + half_size]
                     b_party.begin(), // store h_e(random_point)
-                    [random_point](auto a, auto b) { return interpolate_degree_1(a, b, random_point); });
+                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
 
                 b_party.resize(half_size);
                 b_party.shrink_to_fit();
@@ -563,7 +571,7 @@ void AtlasBgin<T>::prove_deg2_rel() {
         // Compute q(r)'s for each parties' proof, for later triple verification
         c_all_players[party_i] = interpolate_degree_4(q_share, random_point);
 
-        /************************* Compute f(r) and h(r) *************************/
+        /************************* Compute [f(r)] and [h(r)] *************************/
         // Same as above, stored in a_all_players and b_all_players, now we have only one element
         a_all_players[party_i][0] = interpolate_degree_4(f, random_point);
         a_all_players[party_i].resize(1);
@@ -628,6 +636,399 @@ void AtlasBgin<T>::prove_deg2_rel() {
     cerr << "Shares of b:\n";
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
         cerr << "In P_" << party_i << "'s proof: " << b_all_players[party_i][0] << '\n';
+    }
+#endif
+}
+
+/**
+ * Protocol 3.3 in BGIN20 (with Fiat-Shamir heuristic)
+ * 
+ * Note that the protocol in the paper is for a single party,
+ * but here we execute the protocol for in parallel for all parties,
+ * i.e., this function is the batched version of the protocol.
+ */
+template<class T>
+void AtlasBgin<T>::prove_deg2_rel(true_type) {
+    /*
+     * Notes on the notation:
+     * 
+     * x_verify is the initial input of a in the paper, 
+     * y_verify is the initial input of b, 
+     * psi[i] is the initial input of c in P_i's proof.
+     * 
+     * a, b, c will be overwritten in each round.
+     * Also note that in every party's proof, there are corresponding a, b, c,
+     * so we use a_all_players, b_all_players, c_all_players to store them.
+     * a_all_players[i] is the share of a in P_i's proof, and so on.
+     * 
+     * In the original paper, the values c - q(1) - q(2) is also called b_l,
+     * which clashes with the variable 'b' in the paper.
+     * we use the variable name 'to_check' for this value.
+     */
+    vector<vector<T>> a_all_players(P.num_players());
+    vector<vector<T>> b_all_players(P.num_players());
+    auto& c_all_players = psi; // just for keeping the notation consistent with the paper
+
+    // vector<T> a, b;
+    // T& c = psi[P.my_num()];
+
+    // round_count equals ceil(log(L))
+    const int round_count = static_cast<int>(std::ceil(std::log2(x_verify.size())));
+
+    // to_check[i][j] is the share of c - q(0) - q(1) for party j in round i
+    vector<vector<T>> to_check(round_count, vector<T>(P.num_players()));
+
+    vector<vector<T>> masks;
+    vector<T> masks_open;
+    get_input_masks(round_count, masks, masks_open);
+
+    octetStream os;
+
+    // vector<vector<typename T::open_type>> random_points(P.num_players(), vector<typename T::open_type>(round_count));
+
+    /*********************************** Step 2, before communication ***********************************/
+    // A total of log(L) - 1 rounds in step 2
+    for (int round_i = 0; round_i < round_count - 1; ++round_i) {
+        // In the first round, all players use the same original values (use it's own share)
+        // In the subsequent rounds, they use the values computed in the previous round
+        vector<T>& a = round_i == 0 ? x_verify : a_all_players[P.my_num()];
+        vector<T>& b = round_i == 0 ? y_verify : b_all_players[P.my_num()];
+
+        if (a.size() & 1) { // odd length, pad with a zero
+            a.emplace_back(0);
+            b.emplace_back(0);
+        }
+        int half_size = a.size() / 2;
+
+        /************************* Compute f_e(2), h_e(2) for all e *************************/
+        /*
+         * We do not follow the paper's notation for the polynomial 'f'
+         * We define f_e(x) such that f_e(0) = x[e], f_e(1) = x[half_size + e]
+         * and h_e(x) such that h_e(0) = y[e], h_e(1) = y[half_size + e]
+         * i.e., we separate the original L polynomials f into L/2 pairs of f_e and h_e
+         * Also, the indices and the evaluation points start from 0, not 1.
+         * This is done to simplify the implementation and for better cache performance
+         */
+        vector<T> f_2(half_size); // store f_e(2) for each e
+        std::transform(a.begin(), a.begin() + half_size,
+                       a.begin() + half_size,
+                       f_2.begin(),
+                       [](auto x_0, auto x_1) { return interpolate_degree_1(x_0, x_1, 2); });
+
+        vector<T> h_2(half_size); // store h_e(2) for each e
+        std::transform(b.begin(), b.begin() + half_size,
+                       b.begin() + half_size,
+                       h_2.begin(),
+                       [](auto x_0, auto x_1) { return interpolate_degree_1(x_0, x_1, 2); });
+
+        /************************* Compute q(0), q(1), q(2) *************************/
+        /*
+         * The definition of q(x) becomes q(x) = sum_{e=0}^{L/2-1} f_e(x) h_e(x)
+         * 
+         * q(2) = sum_{e=0}^{L/2-1} f_e(2) h_e(2)
+         * q(0) = sum_{e=0}^{L/2-1} f_e(0) h_e(0) (first half of a and b)
+         * q(1) = sum_{e=0}^{L/2-1} f_e(1) h_e(1) (second half of a and b)
+         */
+
+        T q_2 = std::inner_product(f_2.begin(), f_2.end(), h_2.begin(), T{0});
+        
+        f_2.clear();
+        f_2.shrink_to_fit();
+        h_2.clear();
+        h_2.shrink_to_fit();
+
+        T q_0 = std::inner_product(a.begin(), a.begin() + half_size, b.begin(), T{0});
+        T q_1 = std::inner_product(a.begin() + half_size, a.end(), b.begin() + half_size, T{0});
+        
+        /************************* Each party shares its q(0), q(1), q(2) *************************/
+        // This is done non-interactively using input masks
+        T q_0_masked = q_0 + masks_open[3 * round_i];
+        T q_1_masked = q_1 + masks_open[3 * round_i + 1];
+        T q_2_masked = q_2 + masks_open[3 * round_i + 2];
+
+        q_0_masked.pack(os);
+        q_1_masked.pack(os);
+        q_2_masked.pack(os);
+
+        /************************* Compute [f_e(r)] and [h_e(r)] for all e *************************/
+        // We are only able to evaluate the f and h, not the [q(r)]
+        T random_point = os.hash().get<T>();
+        cerr << "Random point at round " << round_i << ": " << random_point << '\n';
+        if (round_i == 0) {
+            a.resize(half_size);
+            // Compute f_e(r) for each e via Lagrange interpolation
+            std::transform(x_verify.begin(), x_verify.begin() + half_size, // f_e(0) = x_verify[i]
+                x_verify.begin() + half_size, // f_e(1) = x_verify[i + half_size]
+                a.begin(), // store f_e(random_point)
+                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+            
+            b.resize(half_size);
+            // Compute h_e(r) for each e via Lagrange interpolation
+            std::transform(y_verify.begin(), y_verify.begin() + half_size, // h_e(0) = y_verify[i]
+                y_verify.begin() + half_size, // h_e(1) = y_verify[i + half_size]
+                b.begin(), // store h_e(random_point)
+                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+        } else {
+            // Compute f_e(r) for each e via Lagrange interpolation
+            std::transform(a.begin(), a.begin() + half_size, // f_e(0) = a[i]
+                a.begin() + half_size, // f_e(1) = a[i + half_size]
+                a.begin(), // store f_e(random_point)
+                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+
+            a.resize(half_size);
+            a.shrink_to_fit();
+
+            // Compute h_e(r) for each e via Lagrange interpolation
+            std::transform(b.begin(), b.begin() + half_size, // h_e(0) = b[i]
+                b.begin() + half_size, // h_e(1) = b[i + half_size]
+                b.begin(), // store h_e(random_point)
+                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+
+            b.resize(half_size);
+            b.shrink_to_fit();
+        }       
+    }
+
+    /*********************************** 1-round communication ***********************************/
+    P.send_all(os);
+    octetStreams os_recv(P);
+    P.receive_all(os_recv);
+
+    /*********************************** Step 2, after communication ***********************************/
+    octetStreams os_hash(P);
+    for (int round_i = 0; round_i < round_count - 1; ++round_i) {
+        for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+            T q_0_masked, q_1_masked, q_2_masked;
+            if (party_i == P.my_num()) {
+                q_0_masked.unpack(os);
+                q_1_masked.unpack(os);
+                q_2_masked.unpack(os);
+            } else {
+                q_0_masked.unpack(os_recv[party_i]);
+                q_1_masked.unpack(os_recv[party_i]);
+                q_2_masked.unpack(os_recv[party_i]);
+            }
+
+            // Derive the random point for round_i, party_i
+            q_0_masked.pack(os_hash[party_i]);
+            q_1_masked.pack(os_hash[party_i]);
+            q_2_masked.pack(os_hash[party_i]);
+            T random_point = os_hash[party_i].hash().get<T>();
+            cerr << "Random point at round " << round_i << ", party " << party_i << ": " << random_point << '\n';
+
+            q_0_masked -= masks[party_i][3 * round_i];
+            q_1_masked -= masks[party_i][3 * round_i + 1];
+            q_2_masked -= masks[party_i][3 * round_i + 2];
+
+            /************************* Compute [c - q(0) - q(1)] and [q(r)] *************************/
+            to_check[round_i][party_i] = c_all_players[party_i] - q_0_masked - q_1_masked;
+            c_all_players[party_i] = interpolate_degree_2(q_0_masked, q_1_masked, q_2_masked, random_point);
+
+            // TODO: Compute [f_e(r)] and [h_e(r)] for all e
+        }
+    }
+
+//     /*********************************** Step 3 in the paper ***********************************/
+//     // The last round, we should have only two elements left in each vector
+//     assert(a_all_players[P.my_num()].size() == 2);
+//     assert(b_all_players[P.my_num()].size() == 2);
+
+//     /************************* Compute f, h at 0, 1, 2, 3, 4 *************************/
+//     // Note that the sequence of the points are sightly different from the paper
+//     array<T, 5> f = {
+//         a_all_players[P.my_num()][0], // f(0)
+//         a_all_players[P.my_num()][1], // f(1)
+//         get_random(), // f(2) = random point (w_1 in the paper)
+//     };
+//     f[3] = interpolate_degree_2(f[0], f[1], f[2], 3);
+//     f[4] = interpolate_degree_2(f[0], f[1], f[2], 4);
+
+//     array<T, 5> h = {
+//         b_all_players[P.my_num()][0], // h(0)
+//         b_all_players[P.my_num()][1], // h(1)
+//         get_random(), // h(2) = random point (w_2 in the paper)
+//     };
+//     h[3] = interpolate_degree_2(h[0], h[1], h[2], 3);
+//     h[4] = interpolate_degree_2(h[0], h[1], h[2], 4);
+    
+//     /************************* Compute q(0), ..., q(4) *************************/
+//     array<T, 5> q;
+//     std::transform(f.begin(), f.end(), h.begin(), q.begin(), std::multiplies());
+
+//     /************************* Each party shares q(0), ..., q(4) *************************/
+//     shamir_input.reset_all(P);
+//     for (auto q_i: q) {
+//         shamir_input.add_from_all(q_i);
+//     }
+//     shamir_input.exchange();
+
+    
+//     // TODO: random
+//     vector<typename T::open_type> random_points{431, 345, 789}; // One random point for each party's proof
+//     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+//         array<T, 5> q_share;
+//         for (int i = 0; i < 5; ++i) {
+//             q_share[i] = shamir_input.finalize(party_i);
+//         }
+        
+//         /************************* Compute [c - q(0) - q(1)] and q(r) *************************/
+//         // Store [c - q(0) - q(1)] values for each party for later verification
+//         to_check.back()[party_i] = c_all_players[party_i] - q_share[0] - q_share[1];
+
+//         const T random_point = random_points[party_i];
+//         // Compute q(r)'s for each parties' proof, for later triple verification
+//         c_all_players[party_i] = interpolate_degree_4(q_share, random_point);
+
+//         /************************* Compute f(r) and h(r) *************************/
+//         // Same as above, stored in a_all_players and b_all_players, now we have only one element
+//         a_all_players[party_i][0] = interpolate_degree_4(f, random_point);
+//         a_all_players[party_i].resize(1);
+//         b_all_players[party_i][0] = interpolate_degree_4(h, random_point);
+//         b_all_players[party_i].resize(1);
+//     }
+    
+//     /************************* Check if to_check opens to 0 *************************/
+//     // Random linear combination of to_check
+//     T coin = local_mc.POpen(get_random(), this->P);
+//     T random_coefficient = coin;
+//     T to_check_combined = 0;
+//     for (const auto& v: to_check) {
+//         for (const auto& t: v) {
+//             to_check_combined += t * random_coefficient;
+//             random_coefficient *= coin;
+//         }
+//     }
+//     T to_check_combined_open = local_mc.POpen(to_check_combined, this->P);
+//     if (to_check_combined_open != 0) {
+//         throw mac_fail("prove_deg2_rel failed");
+//     }
+
+//     /************************* Check q(r) = f(r) h(r) *************************/
+//     local_mc.init_open(P, 3 * P.num_players());
+//     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+//         local_mc.prepare_open(a_all_players[party_i][0]);
+//         local_mc.prepare_open(b_all_players[party_i][0]);
+//         local_mc.prepare_open(c_all_players[party_i]);
+//     }
+//     local_mc.exchange(P);
+//     vector<typename T::open_type> a_open(P.num_players()), b_open(P.num_players()), c_open(P.num_players());
+//     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+//         a_open[party_i] = local_mc.finalize_open();
+//         b_open[party_i] = local_mc.finalize_open();
+//         c_open[party_i] = local_mc.finalize_open();
+//     }
+//     // TODO: Check them
+//     // Note however, the a value for party i uses the value on point for party i, not point 0.
+
+
+#ifdef DEBUG_PROVE_DEG2_REL
+    typename T::MAC_Check debug_mc;
+    vector<vector<typename T::open_type>> to_check_open(P.num_players());
+    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+        debug_mc.POpen(to_check_open[party_i], to_check[party_i], this->P);
+    }
+    cerr << "to_check: \n";
+    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+        cerr << "P_" << party_i << ": ";
+        for (auto t: to_check_open[party_i]) {
+            cerr << t << " ";
+        }
+        cerr << '\n';
+    }
+
+    // cerr << "Shares of a:\n";
+    // for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+    //     cerr << "In P_" << party_i << "'s proof: " << a_all_players[party_i][0] << '\n';
+    // }
+
+    // cerr << "Shares of b:\n";
+    // for (int party_i = 0; party_i < P.num_players(); ++party_i) {
+    //     cerr << "In P_" << party_i << "'s proof: " << b_all_players[party_i][0] << '\n';
+    // }
+#endif
+}
+
+/**
+ * Get the input mask
+ * 
+ * We do not use prep.get_input() here, since it has several issues:
+ * 1. We cannot adjust batch size
+ * 2. It uses POpen, which is not efficient.
+ */
+template <class T>
+inline void AtlasBgin<T>::get_input_masks(int round_count, vector<vector<T>>& masks, vector<T>& masks_open)
+{
+    int size = 3 * round_count + 2;
+
+#ifndef USE_GET_INPUT // This is our implementation that does not use get_input
+    octetStreams oss(P), oss_recv(P);
+    // Bundle<octetStream> oss(P), oss_recv(P);
+
+    masks.resize(P.num_players());
+    for (int i = 0; i < P.num_players(); ++i) {
+        masks[i].resize(size);
+        for (int j = 0; j < size; ++j) {
+            T tmp = get_random();
+            masks[i][j] = tmp;
+            tmp.pack(oss[i]);
+        }
+    }
+
+    P.send_receive_all(oss, oss_recv);
+    // oss_recv.mine = oss.mine;
+
+    vector<int> points(P.num_players());
+    std::iota(points.begin(), points.end(), 0);
+    auto rec_factors = Shamir<T>::get_rec_factors(points);
+
+    masks_open.resize(size);
+    for (int i = 0; i < size; ++i) {
+        T tmp = 0;
+        for (int j = 0; j < P.num_players(); ++j) {
+            if (j == P.my_num()) {
+                tmp += masks[j][i] * rec_factors[j];
+            } else {
+                tmp += oss_recv[j].get<T>() * rec_factors[j];
+            }
+        }
+        masks_open[i] = tmp;
+    }
+
+#else // USE_GET_INPUT is defined, use the original get_input
+    masks.resize(P.num_players());
+    masks_open.resize(size);
+    T discard;
+    for (int i = 0; i < P.num_players(); ++i) {
+        masks[i].resize(size);
+        if (i == P.my_num()) {
+            for (int j = 0; j < size; ++j) {
+                this->prep->get_input(masks[i][j], masks_open[j], i);
+
+                cerr << "Getting input for P_" << i << " at " << j << '\n';
+                cerr << "share = " << masks[i][j] << '\n';
+                cerr << "open = " << masks_open[j] << '\n';
+            }
+        } else {
+            for (int j = 0; j < size; ++j) {
+                this->prep->get_input(masks[i][j], discard, i);
+
+                cerr << "Getting input for P_" << i << " at " << j << '\n';
+                cerr << "share = " << masks[i][j] << '\n';
+                cerr << "open = " << discard << '\n';
+            }
+        }
+    }
+#endif
+
+#ifdef DEBUG_GET_INPUT_MASKS
+    typename T::MAC_Check debug_mc;
+    for (int i = 0; i < P.num_players(); ++i) {
+        for (int j = 0; j < size; ++j) {
+            auto mask_open = debug_mc.POpen(masks[i][j], this->P);
+            if (i == P.my_num()) {
+                assert(mask_open == masks_open[j]);
+            }
+        }
     }
 #endif
 }
