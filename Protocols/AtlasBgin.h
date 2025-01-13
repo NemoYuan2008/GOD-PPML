@@ -5,8 +5,10 @@
 #ifndef PROTOCOLS_ATLASBGIN_H_
 #define PROTOCOLS_ATLASBGIN_H_
 
-#include <unordered_map>
 #include "Atlas.h"
+
+#include <unordered_map>
+#include "Tools/random.h"
 
 /**
  * Maliciously secure ATLAS protocol using BGIN verification
@@ -34,7 +36,8 @@ private:
     std::unordered_map<int, int> dotprod_info; 
 
 public:
-    static constexpr true_type use_fiat_shamir; 
+    static constexpr false_type use_fiat_shamir; 
+    // static constexpr true_type use_fiat_shamir; 
 
     static const bool uses_triples = false;
 
@@ -90,9 +93,11 @@ public:
     void prove_deg2_rel(false_type); // No Fiat-Shamir heuristic
     void prove_deg2_rel(true_type); // With Fiat-Shamir heuristic
 
+    // Helper function for BGIN20 verification
+    // void seed_prng_globally(PRNG& G);
+    void get_random_coins(int num, vector<typename T::open_type>& coins);
     void get_input_masks(int round_count, vector<vector<T>>& masks, vector<T>& masks_open);
 
-    // Helper function for BGIN20 verification
     inline static T interpolate_degree_1(T x_0, T x_1, T x);
     inline static T interpolate_degree_2(T x_0, T x_1, T x_2, T x);
     inline static T interpolate_degree_4(const array<T, 5>& points, T x);
