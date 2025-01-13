@@ -55,6 +55,8 @@ public:
     static const true_type prime_field;
     static const true_type invertible;
 
+    // All of the constructors do not perform any modulo operation (for efficiency)
+    // It is the caller's responsibility to ensure that the input is in the correct range
     inline Mersenne() = default;
     inline Mersenne(const Mersenne& rhs);
     inline Mersenne(value_type x);
@@ -66,6 +68,9 @@ public:
 
     inline Mersenne& operator=(Mersenne rhs);
     inline Mersenne& operator=(int rhs);
+
+    // This constructor performs modulo operation
+    inline static Mersenne from_uint_mod(value_type x);
 
     // the Mersenne class is very small, so we prefer to pass by value
     friend Mersenne operator+<>(Mersenne lhs, Mersenne rhs);

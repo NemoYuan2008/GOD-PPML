@@ -13,15 +13,16 @@
 
 // #define DEBUG_CHECK
 // #define DEBUG_DE_LINEARIZATION
-#define DEBUG_PROVE_DEG2_REL
-#define DEBUG_GET_INPUT_MASKS
+// #define DEBUG_PROVE_DEG2_REL
+// #define DEBUG_GET_INPUT_MASKS
+constexpr int max_before_check = 8000;
 
 template<class T>
 AtlasBgin<T>::AtlasBgin(Player& P) 
     : honest(P), shamir_input(nullptr, P), P(P)
 {
-    x_verify.reserve(OnlineOptions::singleton.batch_size);
-    y_verify.reserve(OnlineOptions::singleton.batch_size);
+    x_verify.reserve(max_before_check);
+    y_verify.reserve(max_before_check);
 }
 
 template<class T>
@@ -41,6 +42,7 @@ void AtlasBgin<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC)
 template<class T>
 void AtlasBgin<T>::init_mul()
 {
+    maybe_check();
     honest.init_mul();
 }
 
@@ -75,6 +77,7 @@ T AtlasBgin<T>::get_random()
 template<class T>
 void AtlasBgin<T>::init_dotprod()
 {
+    maybe_check();
     honest.init_dotprod();
 }
 
@@ -182,6 +185,7 @@ void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>&
 template<class T>
 void AtlasBgin<T>::init_mul_trunc(int length)
 {
+    maybe_check();
     honest.init_mul_trunc(length);
 }
 
@@ -251,6 +255,16 @@ void AtlasBgin<T>::prepare_with_solved_bits(const typename T::open_type& product
     honest.prepare_with_solved_bits(product, k, f);
 }
 
+template <class T>
+inline void AtlasBgin<T>::maybe_check()
+{
+    if (x_verify.size() >= max_before_check)
+    {
+        check();
+        x_verify.reserve(max_before_check);
+        y_verify.reserve(max_before_check);
+    }
+}
 
 /**
  * Verification protocol in BGIN20
@@ -796,10 +810,10 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
 
         /************************* Compute [f_e(r)] and [h_e(r)] for all e *************************/
         // Only able to evaluate my own shares, other parties' shares are computed later
-        // T random_point = os.hash().get<T>();
         typename T::clear::value_type random_point_tmp;
         os.hash().get(random_point_tmp);
-        typename T::clear random_point(random_point_tmp & 0x1fffffffffffffffULL); // TODO: this is dirty!!!
+        // Assuming T is Mersenne
+        typename T::clear random_point = T::clear::from_uint_mod(random_point_tmp);
 
         vector<T> *a_src, *b_src, *a_dest, *b_dest;
         if (round_i == 0) {
@@ -871,7 +885,8 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
             
             uint64_t random_point_tmp;
             os_hash[party_i].hash().get(random_point_tmp);
-            typename T::clear random_point(random_point_tmp & 0x1fffffffffffffffULL); // TODO: this is dirty!!!
+            // Assuming T is Mersenne
+            typename T::clear random_point = T::clear::from_uint_mod(random_point_tmp);
 
             q_0_share -= masks[party_i][3 * round_i];
             q_1_share -= masks[party_i][3 * round_i + 1];

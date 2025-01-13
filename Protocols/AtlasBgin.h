@@ -87,13 +87,14 @@ public:
 
     void prepare_with_solved_bits(const typename T::open_type& product, int k, int f);
 
+    void maybe_check();
+
     // BGIN20 verification 
     void check();
     void de_linearization();
     void prove_deg2_rel_no_fiat_shamir(); // No Fiat-Shamir heuristic
     void prove_deg2_rel(true_type) { throw runtime_error("Not implemented"); } 
     void prove_deg2_rel(false_type); // With Fiat-Shamir heuristic
-
 
     // Helper function for BGIN20 verification
     // void seed_prng_globally(PRNG& G);

@@ -2,6 +2,7 @@
 #define MATH_MERSENNE_HPP
 
 #include "Math/Mersenne.h"
+#include "Mersenne.h"
 
 
 template<int L>
@@ -40,8 +41,15 @@ inline Mersenne<L>& Mersenne<L>::operator=(int rhs) {
     return *this;
 }
 
-template<int L>
-inline Mersenne<L>& Mersenne<L>::operator=(Mersenne rhs) {
+template <int L>
+inline Mersenne<L> Mersenne<L>::from_uint_mod(value_type x)
+{
+    return Mersenne(x % prime);
+}
+
+template <int L>
+inline Mersenne<L> &Mersenne<L>::operator=(Mersenne rhs)
+{
     value = rhs.value;
     return *this;
 }
