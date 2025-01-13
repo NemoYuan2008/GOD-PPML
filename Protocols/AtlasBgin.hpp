@@ -617,14 +617,14 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
 
 #ifdef DEBUG_PROVE_DEG2_REL
     typename T::MAC_Check debug_mc;
-    vector<vector<typename T::open_type>> to_check_open(P.num_players());
-    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        debug_mc.POpen(to_check_open[party_i], to_check[party_i], this->P);
+    vector<vector<typename T::open_type>> to_check_open(round_count);
+    for (int i = 0; i < round_count; ++i) {
+        debug_mc.POpen(to_check_open[i], to_check[i], this->P);
     }
     cerr << "to_check: \n";
-    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        cerr << "P_" << party_i << ": ";
-        for (auto t: to_check_open[party_i]) {
+    for (int i = 0; i < round_count; ++i) {
+        cerr << "Round " << i << ": ";
+        for (auto t: to_check_open[i]) {
             cerr << t << " ";
         }
         cerr << '\n';
@@ -754,46 +754,46 @@ void AtlasBgin<T>::prove_deg2_rel(true_type) {
         q_2_masked.pack(os);
 
         /************************* Compute [f_e(r)] and [h_e(r)] for all e *************************/
-        // We are only able to evaluate my own shares of f_e(r) and h_e(r) 
+        // Only able to evaluate my own shares, other parties' shares are computed later
         T random_point = os.hash().get<T>();
 #ifdef DEBUG_PROVE_DEG2_REL
         cerr << "Round " << round_i << " for me, before communication\n";
         cerr << "Random point: " << random_point << '\n';
         cerr << "q(0)=" << q_0 << " q(1)=" << q_1 << " q(2)=" << q_2 << '\n';
 #endif
+        vector<T> *a_src, *b_src, *a_dest, *b_dest;
         if (round_i == 0) {
-            a.resize(half_size);
-            // Compute f_e(r) for each e via Lagrange interpolation
-            std::transform(x_verify.begin(), x_verify.begin() + half_size, // f_e(0) = x_verify[i]
-                x_verify.begin() + half_size, // f_e(1) = x_verify[i + half_size]
-                a.begin(), // store f_e(random_point)
-                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
-            
-            b.resize(half_size);
-            // Compute h_e(r) for each e via Lagrange interpolation
-            std::transform(y_verify.begin(), y_verify.begin() + half_size, // h_e(0) = y_verify[i]
-                y_verify.begin() + half_size, // h_e(1) = y_verify[i + half_size]
-                b.begin(), // store h_e(random_point)
-                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+            a_src = &x_verify;
+            b_src = &y_verify;
+            a_dest = &a_all_players[P.my_num()];
+            b_dest = &b_all_players[P.my_num()];
+            a_dest->resize(half_size);
+            b_dest->resize(half_size);
         } else {
-            // Compute f_e(r) for each e via Lagrange interpolation
-            std::transform(a.begin(), a.begin() + half_size, // f_e(0) = a[i]
-                a.begin() + half_size, // f_e(1) = a[i + half_size]
-                a.begin(), // store f_e(random_point)
-                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+            a_src = a_dest = &a_all_players[P.my_num()];
+            b_src = b_dest = &b_all_players[P.my_num()];
+        }
 
-            a.resize(half_size);
-            a.shrink_to_fit();
+        std::transform(a_src->begin(), a_src->begin() + half_size, // f_e(0)
+                        a_src->begin() + half_size, // f_e(1)
+                        a_dest->begin(), // f_e(r)
+                        [random_point](auto x_0, auto x_1) { return interpolate_degree_1(x_0, x_1, random_point); });
+        std::transform(b_src->begin(), b_src->begin() + half_size, // h_e(0)
+                        b_src->begin() + half_size, // h_e(1)
+                        b_dest->begin(), // h_e(r)
+                        [random_point](auto x_0, auto x_1) { return interpolate_degree_1(x_0, x_1, random_point); });
+        
+        a_dest->resize(half_size); // no effect in the first round,
+        b_dest->resize(half_size); // halves the size in the subsequent rounds
 
-            // Compute h_e(r) for each e via Lagrange interpolation
-            std::transform(b.begin(), b.begin() + half_size, // h_e(0) = b[i]
-                b.begin() + half_size, // h_e(1) = b[i + half_size]
-                b.begin(), // store h_e(random_point)
-                [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+        if (half_size & 1) { // odd length for next round, pad with a zero
+            a_dest->emplace_back(0);
+            b_dest->emplace_back(0);
+        }
+        a_dest->shrink_to_fit();
+        b_dest->shrink_to_fit();
 
-            b.resize(half_size);
-            b.shrink_to_fit();
-        }       
+        // We cannot clear x_verify and y_verify here
     }
 
     /*********************************** 1-round communication ***********************************/
@@ -839,43 +839,46 @@ void AtlasBgin<T>::prove_deg2_rel(true_type) {
             c_all_players[party_i] = interpolate_degree_2(q_0_masked, q_1_masked, q_2_masked, random_point);
 
             /************************* Compute [f_e(r)] and [h_e(r)] for all e *************************/
-            int half_size;
-            if (round_i == 0) {
-                half_size = x_verify.size() / 2;
-                auto& a_party = a_all_players[party_i];
-                a_party.resize(half_size);
-                // Compute f_e(r) for each e via Lagrange interpolation
-                std::transform(x_verify.begin(), x_verify.begin() + half_size, // f_e(0) = x_verify[i]
-                    x_verify.begin() + half_size, // f_e(1) = x_verify[i + half_size]
-                    a_party.begin(), // store f_e(random_point)
-                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
-                
-                auto& b_party = b_all_players[party_i];
-                b_party.resize(half_size);
-                // Compute h_e(r) for each e via Lagrange interpolation
-                std::transform(y_verify.begin(), y_verify.begin() + half_size, // h_e(0) = y_verify[i]
-                    y_verify.begin() + half_size, // h_e(1) = y_verify[i + half_size]
-                    b_party.begin(), // store h_e(random_point)
-                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
-            } else {
-                half_size = a_all_players[party_i].size() / 2;
-                auto& a_party = a_all_players[party_i];
-                // Compute f_e(r) for each e via Lagrange interpolation
-                std::transform(a_party.begin(), a_party.begin() + half_size, // f_e(0) = x_verify[i]
-                    a_party.begin() + half_size, // f_e(1) = x_verify[i + half_size]
-                    a_party.begin(), // store f_e(random_point)
-                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
-
-                a_party.resize(half_size);
-                a_party.shrink_to_fit();
-
-                auto& b_party = b_all_players[party_i];
-                // Compute h_e(r) for each e via Lagrange interpolation
-                std::transform(b_party.begin(), b_party.begin() + half_size, // h_e(0) = y_verify[i]
-                    b_party.begin() + half_size, // h_e(1) = y_verify[i + half_size]
-                    b_party.begin(),
-                    [random_point](auto x_1, auto x_2) { return interpolate_degree_1(x_1, x_2, random_point); });
+            if (party_i == P.my_num()) {
+                // my own shares have been computed before communication
+                continue;
             }
+            vector<T> *a_src, *b_src, *a_dest, *b_dest;
+            int half_size;
+
+            if (round_i == 0) {
+                a_src = &x_verify;
+                b_src = &y_verify;
+                a_dest = &a_all_players[party_i];
+                b_dest = &b_all_players[party_i];
+                half_size = a_src->size() / 2;
+                a_dest->resize(half_size);
+                b_dest->resize(half_size);
+            } else {
+                a_src = a_dest = &a_all_players[party_i];
+                b_src = b_dest = &b_all_players[party_i];
+                half_size = a_src->size() / 2;
+            }
+            assert(a_src->size() == b_src->size() && a_src->size() % 2 == 0);
+
+            std::transform(a_src->begin(), a_src->begin() + half_size, // f_e(0)
+                            a_src->begin() + half_size, // f_e(1)
+                            a_dest->begin(), // f_e(r)
+                            [random_point](auto x_0, auto x_1) { return interpolate_degree_1(x_0, x_1, random_point); });
+            std::transform(b_src->begin(), b_src->begin() + half_size, // h_e(0)
+                            b_src->begin() + half_size, // h_e(1)
+                            b_dest->begin(), // h_e(r)
+                            [random_point](auto x_0, auto x_1) { return interpolate_degree_1(x_0, x_1, random_point); });
+            
+            a_dest->resize(half_size); // no effect in the first round,
+            b_dest->resize(half_size); // halves the size in the subsequent rounds
+
+            if (half_size & 1) { // odd length for next round, pad with a zero
+                a_dest->emplace_back(0);
+                b_dest->emplace_back(0);
+            }
+            a_dest->shrink_to_fit();
+            b_dest->shrink_to_fit();
         }
 
         if (round_i == 0) {
@@ -981,14 +984,14 @@ void AtlasBgin<T>::prove_deg2_rel(true_type) {
 
 #ifdef DEBUG_PROVE_DEG2_REL
     typename T::MAC_Check debug_mc;
-    vector<vector<typename T::open_type>> to_check_open(P.num_players());
-    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        debug_mc.POpen(to_check_open[party_i], to_check[party_i], this->P);
+    vector<vector<typename T::open_type>> to_check_open(round_count);
+    for (int i = 0; i < round_count; ++i) {
+        debug_mc.POpen(to_check_open[i], to_check[i], this->P);
     }
     cerr << "to_check: \n";
-    for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        cerr << "P_" << party_i << ": ";
-        for (auto t: to_check_open[party_i]) {
+    for (int i = 0; i < round_count; ++i) {
+        cerr << "Round " << i << ": ";
+        for (auto t: to_check_open[i]) {
             cerr << t << " ";
         }
         cerr << '\n';
@@ -1003,6 +1006,12 @@ void AtlasBgin<T>::prove_deg2_rel(true_type) {
     // for (int party_i = 0; party_i < P.num_players(); ++party_i) {
     //     cerr << "In P_" << party_i << "'s proof: " << b_all_players[party_i][0] << '\n';
     // }
+
+    // cerr << "c_open: ";
+    // for (auto c: c_open) {
+    //     cerr << c << " ";
+    // }
+    // cerr << '\n';
 #endif
 }
 
