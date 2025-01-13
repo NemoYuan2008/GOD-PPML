@@ -36,8 +36,8 @@ private:
     std::unordered_map<int, int> dotprod_info; 
 
 public:
-    static constexpr false_type use_fiat_shamir; 
-    // static constexpr true_type use_fiat_shamir; 
+    // static constexpr false_type use_fiat_shamir; 
+    static constexpr true_type use_fiat_shamir; 
 
     static const bool uses_triples = false;
 
@@ -90,8 +90,10 @@ public:
     // BGIN20 verification 
     void check();
     void de_linearization();
-    void prove_deg2_rel(false_type); // No Fiat-Shamir heuristic
-    void prove_deg2_rel(true_type); // With Fiat-Shamir heuristic
+    void prove_deg2_rel_no_fiat_shamir(); // No Fiat-Shamir heuristic
+    void prove_deg2_rel(true_type) { throw runtime_error("Not implemented"); } 
+    void prove_deg2_rel(false_type); // With Fiat-Shamir heuristic
+
 
     // Helper function for BGIN20 verification
     // void seed_prng_globally(PRNG& G);
