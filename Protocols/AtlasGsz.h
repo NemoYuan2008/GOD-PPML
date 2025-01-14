@@ -86,6 +86,8 @@ public:
 
     void prepare_with_solved_bits(const typename T::open_type& product, int k, int f);
 
+    void maybe_check();
+
     // GSZ20 verification
     void check();
     void de_linearization();

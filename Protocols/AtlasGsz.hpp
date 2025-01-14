@@ -10,8 +10,8 @@
 
 #include <algorithm>
 #include <numeric>
-
 #include "BufferScope.h"
+#include "AtlasConfig.h"
 
 // #define DEBUG_CHECK
 // #define DEBUG_DE_LINEARIZATION
@@ -22,14 +22,24 @@ template<class T>
 AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
 {
     // TODO: maybe use a power of 2 for the batch size
-    x_verify.reserve(OnlineOptions::singleton.batch_size);
-    y_verify.reserve(OnlineOptions::singleton.batch_size);
+    x_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+    y_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
 }
 
 template<class T>
 AtlasGsz<T>::~AtlasGsz()
 {
     check();
+}
+
+template <class T>
+inline void AtlasGsz<T>::maybe_check()
+{
+    if (x_verify.size() >= ATLAS_MAX_BEFORE_CHECK) {
+        check();
+        x_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+        y_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+    }
 }
 
 template<class T>
@@ -40,6 +50,7 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
 template<class T>
 void AtlasGsz<T>::init_mul()
 {
+    maybe_check();
     honest.init_mul();
 }
 
@@ -74,6 +85,7 @@ T AtlasGsz<T>::get_random()
 template<class T>
 void AtlasGsz<T>::init_dotprod()
 {
+    maybe_check();
     honest.init_dotprod();
 }
 
@@ -186,6 +198,7 @@ void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& 
 template<class T>
 void AtlasGsz<T>::init_mul_trunc(int length)
 {
+    maybe_check();
     honest.init_mul_trunc(length);
 }
 
@@ -308,6 +321,8 @@ void AtlasGsz<T>::check()
     
     x_verify.clear();
     y_verify.clear();
+    z_verify.clear();
+    dotprod_info.clear();
     // z_verify and dotprod_info are cleared in de_linearization
 }
 

@@ -10,25 +10,36 @@
 
 #include <cmath>
 #include <Tools/Hash.h>
+#include "AtlasConfig.h"
 
 // #define DEBUG_CHECK
 // #define DEBUG_DE_LINEARIZATION
 // #define DEBUG_PROVE_DEG2_REL
 // #define DEBUG_GET_INPUT_MASKS
-constexpr int max_before_check = 8000;
+
 
 template<class T>
 AtlasBgin<T>::AtlasBgin(Player& P) 
     : honest(P), shamir_input(nullptr, P), P(P)
 {
-    x_verify.reserve(max_before_check);
-    y_verify.reserve(max_before_check);
+    x_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+    y_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
 }
 
 template<class T>
 AtlasBgin<T>::~AtlasBgin()
 {
     check();
+}
+
+template <class T>
+inline void AtlasBgin<T>::maybe_check()
+{
+    if (x_verify.size() >= ATLAS_MAX_BEFORE_CHECK) {
+        check();
+        x_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+        y_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+    }
 }
 
 template<class T>
@@ -255,16 +266,6 @@ void AtlasBgin<T>::prepare_with_solved_bits(const typename T::open_type& product
     honest.prepare_with_solved_bits(product, k, f);
 }
 
-template <class T>
-inline void AtlasBgin<T>::maybe_check()
-{
-    if (x_verify.size() >= max_before_check)
-    {
-        check();
-        x_verify.reserve(max_before_check);
-        y_verify.reserve(max_before_check);
-    }
-}
 
 /**
  * Verification protocol in BGIN20
