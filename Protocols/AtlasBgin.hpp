@@ -1168,11 +1168,21 @@ void AtlasBgin<T>::get_random_coins(int num, vector<typename T::open_type>& coin
 template <class T>
 inline void AtlasBgin<T>::get_input_masks(int round_count, vector<vector<T>>& masks, vector<T>& masks_open)
 {
-    int size = 3 * round_count + 2;
+    int size = 3 * (round_count - 1);
 
 #ifndef USE_GET_INPUT // This is our implementation that does not use get_input
+    static bool initialized = false;
+    static vector<int> points;
+    if (!initialized) {
+        initialized = true;
+        
+        points.resize(P.num_players());
+        std::iota(points.begin(), points.end(), 0);
+    }
+    
+    static const auto rec_factors = Shamir<T>::get_rec_factors(points);
+
     octetStreams oss(P), oss_recv(P);
-    // Bundle<octetStream> oss(P), oss_recv(P);
 
     masks.resize(P.num_players());
     for (int i = 0; i < P.num_players(); ++i) {
@@ -1185,11 +1195,6 @@ inline void AtlasBgin<T>::get_input_masks(int round_count, vector<vector<T>>& ma
     }
 
     P.send_receive_all(oss, oss_recv);
-    // oss_recv.mine = oss.mine;
-
-    vector<int> points(P.num_players());
-    std::iota(points.begin(), points.end(), 0);
-    auto rec_factors = Shamir<T>::get_rec_factors(points);
 
     masks_open.resize(size);
     for (int i = 0; i < size; ++i) {
@@ -1213,18 +1218,10 @@ inline void AtlasBgin<T>::get_input_masks(int round_count, vector<vector<T>>& ma
         if (i == P.my_num()) {
             for (int j = 0; j < size; ++j) {
                 this->prep->get_input(masks[i][j], masks_open[j], i);
-
-                cerr << "Getting input for P_" << i << " at " << j << '\n';
-                cerr << "share = " << masks[i][j] << '\n';
-                cerr << "open = " << masks_open[j] << '\n';
             }
         } else {
             for (int j = 0; j < size; ++j) {
                 this->prep->get_input(masks[i][j], discard, i);
-
-                cerr << "Getting input for P_" << i << " at " << j << '\n';
-                cerr << "share = " << masks[i][j] << '\n';
-                cerr << "open = " << discard << '\n';
             }
         }
     }
