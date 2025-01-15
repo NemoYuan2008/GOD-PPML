@@ -11,6 +11,8 @@
 #include "MAC_Check_Base.hpp"
 #include "Shamir.hpp"
 
+#include "AtlasConfig.h"
+
 template<class T>
 ShamirMC<T>::ShamirMC(int t) :
         os(0), player(0), threshold()
@@ -248,6 +250,25 @@ void IndirectShamirMC_2t<T>::exchange(const Player& P)
 
     while (this->os.left())
         this->values.push_back(this->os.template get<T>());
+}
+
+
+template<class T>
+void CheckedIndirectShamirMC_2t<T>::exchange(const Player& P)
+{
+    IndirectShamirMC_2t<T>::exchange(P);
+
+    this->stored_values.reserve(AtlasConfig::max_openings_before_check);
+    this->stored_secrets.reserve(AtlasConfig::max_openings_before_check);
+
+    // We do not use push_back or back_inserter
+    // since Mersenne is as small as uint64_t, and we hope that
+    // the compiler can optimize the copy
+    this->stored_values.resize(this->stored_values.size() + this->values.size());
+    std::copy(this->values.begin(), this->values.end(), this->stored_values.end() - this->values.size());
+    
+    this->stored_secrets.resize(this->stored_secrets.size() + this->secrets.size());
+    std::copy(this->secrets.begin(), this->secrets.end(), this->stored_secrets.end() - this->secrets.size());
 }
 
 #endif

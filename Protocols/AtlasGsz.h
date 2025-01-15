@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "Atlas.h"
+#include "MaliciousShamirMC.h"
 
 /**
  * Maliciously secure ATLAS protocol
@@ -22,8 +23,8 @@ class AtlasGsz : public ProtocolBase<T>
 private:
     Atlas<T> honest;
 
-    // typename T::MAC_Check local_mc;
-    typename T::MAC_Check_2t local_mc_2t;
+    CheckedIndirectShamirMC_2t<T> local_mc_2t;
+    MaliciousShamirMC<T> malicious_mc;
 
     vector<T> x_verify;
     vector<T> y_verify;
@@ -98,6 +99,9 @@ public:
     void de_linearization();
     void dimension_reduction();
     void randomization();
+
+    // Check the values opened in local_mc_2t
+    void check_opened_values();
 };
 
 #endif /* PROTOCOLS_ATLASGSZ_H_ */

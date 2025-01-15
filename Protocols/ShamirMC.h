@@ -43,6 +43,23 @@ public:
 };
 
 /**
+ * Degree-2t Shamir secret sharing opening protocol (indirect communication)
+ * 
+ */
+template<class T>
+class CheckedIndirectShamirMC_2t : public IndirectShamirMC_2t<T>
+{
+public:
+    CheckedIndirectShamirMC_2t(typename T::mac_key_type = {}, int = 0, int = 0) {}
+    ~CheckedIndirectShamirMC_2t() {}
+
+    vector<T> stored_secrets;
+    vector<typename T::open_type> stored_values;
+
+    virtual void exchange(const Player& P);
+};
+
+/**
  * Shamir secret sharing opening protocol (direct communication)
  */
 template<class T>

@@ -9,6 +9,7 @@
 
 #include <unordered_map>
 #include "Tools/random.h"
+#include "AtlasConfig.h"
 
 /**
  * Maliciously secure ATLAS protocol using BGIN verification
@@ -21,7 +22,9 @@ private:
     Preprocessing<T>* prep = nullptr;
 
     // typename T::MAC_Check local_mc;
-    typename T::MAC_Check_2t local_mc_2t;
+    // typename T::MAC_Check_2t local_mc_2t;
+    CheckedIndirectShamirMC_2t<T> local_mc_2t;
+    MaliciousShamirMC<T> malicious_mc;
 
     ShamirInput<T> shamir_input;
     vector<T> x_verify;
@@ -105,6 +108,9 @@ public:
     // void seed_prng_globally(PRNG& G);
     void get_random_coins(int num, vector<typename T::open_type>& coins);
     void get_input_masks(int round_count, vector<vector<T>>& masks, vector<T>& masks_open);
+
+    // Check the values opened in local_mc_2t
+    void check_opened_values();
 
     inline static T interpolate_degree_1(T x_0, T x_1, T x);
     inline static T interpolate_degree_2(T x_0, T x_1, T x_2, T x);

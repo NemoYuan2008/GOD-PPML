@@ -22,23 +22,27 @@ template<class T>
 AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
 {
     // TODO: maybe use a power of 2 for the batch size
-    x_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
-    y_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+    x_verify.reserve(AtlasConfig::max_before_check);
+    y_verify.reserve(AtlasConfig::max_before_check);
 }
 
 template<class T>
 AtlasGsz<T>::~AtlasGsz()
 {
     check();
+    check_opened_values();
 }
 
 template <class T>
 inline void AtlasGsz<T>::maybe_check()
 {
-    if (x_verify.size() >= ATLAS_MAX_BEFORE_CHECK) {
+    if (x_verify.size() >= AtlasConfig::max_before_check) {
         check();
-        x_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
-        y_verify.reserve(ATLAS_MAX_BEFORE_CHECK);
+        x_verify.reserve(AtlasConfig::max_before_check);
+        y_verify.reserve(AtlasConfig::max_before_check);
+    }
+    if (local_mc_2t.stored_values.size() >= AtlasConfig::max_openings_before_check) {
+        check_opened_values();
     }
 }
 
@@ -559,6 +563,37 @@ void AtlasGsz<T>::randomization()
 
     if (v_open != 0) {
         throw mac_fail("AtlasGsz: Verification failed");
+    }
+}
+
+template <class T>
+inline void AtlasGsz<T>::check_opened_values()
+{
+    auto& values = local_mc_2t.stored_values;
+    auto& secrets = local_mc_2t.stored_secrets;
+    if (values.size() == 0) {
+        return;
+    }
+    assert(values.size() == secrets.size());
+    auto r = local_mc_2t.POpen(get_random(), this->P);
+    vector<T> random_coeffs(values.size());
+    random_coeffs[0] = r;
+    for (size_t i = 1; i < values.size(); ++i) {
+        random_coeffs[i] = random_coeffs[i - 1] * r;
+    }
+    auto value_combined = std::inner_product(values.begin(), values.end(), random_coeffs.begin(), T{0});
+    values.clear();
+    auto secret_combined = std::inner_product(secrets.begin(), secrets.end(), random_coeffs.begin(), T{0});
+    secrets.clear();
+
+    // gf2n has no POpen for single element
+    malicious_mc.init_open(P, 1);
+    malicious_mc.prepare_open(secret_combined);
+    malicious_mc.exchange(P);
+    auto secret_combined_open = malicious_mc.finalize_open();
+
+    if (value_combined != secret_combined_open) {
+        throw mac_fail("AtlasGsz: check_opened_values failed");
     }
 }
 
