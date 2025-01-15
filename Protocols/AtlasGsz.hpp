@@ -119,6 +119,34 @@ T AtlasGsz<T>::finalize_dotprod(int length)
 }
 
 template<class T>
+void AtlasGsz<T>::init_mul_pub()
+{
+    honest.init_mul_pub();
+}
+
+template<class T>
+void AtlasGsz<T>::prepare_mul_pub(T x, T y)
+{
+    x_verify.push_back(x);
+    y_verify.push_back(y);
+    honest.prepare_mul_pub(x, y);
+}
+
+template<class T>
+void AtlasGsz<T>::exchange_mul_pub()
+{
+    honest.exchange_mul_pub();
+}
+
+template<class T>
+T AtlasGsz<T>::finalize_mul_pub()
+{
+    T res = honest.finalize_mul_pub();
+    z_verify.push_back(res);
+    return res;
+}
+
+template<class T>
 void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc)
 {
     mul_trunc(regs, size, proc, T::characteristic_two);

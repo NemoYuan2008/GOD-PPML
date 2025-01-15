@@ -45,10 +45,18 @@ public:
     }
 
     template<int = 0>
-    void buffer_bits(false_type, false_type) { throw not_implemented(); }
+    void buffer_bits(false_type, false_type) 
+    { 
+        throw runtime_error("Sorry, AtlasPrep::buffer_bits only implemented "
+            "for Mersenne prime fields"); 
+    }
 
     template<int = 0>
-    void buffer_bits(false_type, true_type) { throw not_implemented(); }
+    void buffer_bits(false_type, true_type) 
+    { 
+        throw runtime_error("Sorry, AtlasPrep::buffer_bits only implemented "
+            "for Mersenne prime fields"); 
+    }
 
     template<int = 0>
     void buffer_bits(true_type, false_type)
@@ -74,6 +82,45 @@ public:
             if (square_opened[i] != 0) {
                 this->bits.push_back((randoms[i] / square_opened[i].sqrRoot() + one) * two_inverse);
             }
+        }
+        if (this->bits.empty()) {
+            throw runtime_error("All squares were zero");
+        }
+    }
+
+    void buffer_inverses() 
+    {
+        buffer_inverses<0>(T::clear::invertible);
+    }
+
+    template<int>
+    void buffer_inverses(false_type) 
+    { 
+        throw runtime_error("Why using Atlas with non-field ring?"); 
+    }
+
+    template<int>
+    void buffer_inverses(true_type)
+    {
+        cerr << "AtlasPrep::buffer_inverses\n";
+        auto buffer_size = BaseMachine::batch_size<T>(DATA_BIT, this->buffer_size);
+        vector<T> a(buffer_size), b(buffer_size);
+        std::generate(a.begin(), a.end(), [this]{return this->protocol->get_random();});
+        std::generate(b.begin(), b.end(), [this]{return this->protocol->get_random();});
+
+        this->protocol->init_mul_pub();
+        for (int i = 0; i < buffer_size; i++) {
+            this->protocol->prepare_mul_pub(a[i], b[i]);
+        }
+        this->protocol->exchange_mul_pub();
+        for (int i = 0; i < buffer_size; i++) {
+            T c = this->protocol->finalize_mul_pub();
+            if (c != 0) {
+                this->inverses.push_back({a[i], b[i] / c});
+            }
+        }
+        if (this->inverses.empty()) {
+            throw runtime_error("All products were zero");
         }
     }
 };

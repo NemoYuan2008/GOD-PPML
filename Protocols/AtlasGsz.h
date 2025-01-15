@@ -69,6 +69,11 @@ public:
     void next_dotprod();
     T finalize_dotprod(int length);
 
+    void init_mul_pub();
+    void prepare_mul_pub(T x, T y);
+    void exchange_mul_pub();
+    T finalize_mul_pub();
+
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
