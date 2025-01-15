@@ -107,6 +107,7 @@ opcodes = dict(
     MUL_TRUNC = 0x3C,
     MATMULS_TRUNC = 0x3D,
     MATMULSM_TRUNC = 0x3E,
+    CONV2DS_TRUNC = 0x40,
     # Open
     OPEN = 0xA5,
     MULS = 0xA6,

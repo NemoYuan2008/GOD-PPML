@@ -130,6 +130,10 @@ public:
     void conv2ds(SubProcessor<T>& proc, const Instruction& instruction)
     { proc.conv2ds(instruction); }
 
+    template<int = 0>
+    void conv2ds_trunc(SubProcessor<T>& proc, const Instruction& instruction)
+    { proc.conv2ds_trunc(instruction); }
+
     virtual void start_exchange() { exchange(); }
     virtual void stop_exchange() {}
 

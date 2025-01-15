@@ -320,6 +320,7 @@ void BaseInstruction::parse_operands(istream& s, int pos, int file_pos)
       case TRUNC_PR:
       case RUN_TAPE:
       case CONV2DS:
+      case CONV2DS_TRUNC:
       case MATMULS:
       case MUL_TRUNC:
       case MATMULS_TRUNC:
@@ -765,7 +766,6 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
       return res;
   }
   case MATMULS:
-  case MATMULS_TRUNC: // TODO: I'm not sure
   {
       int res = 0;
       for (auto it = start.begin(); it < start.end(); it += 6)
@@ -775,11 +775,29 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
       }
       return res;
   }
+  case MATMULS_TRUNC: // TODO: I'm not sure
+  {
+      int res = 0;
+      for (auto it = start.begin(); it < start.end(); it += 8)
+      {
+          int tmp = *it + *(it + 3) * *(it + 5);
+          res = max(res, tmp);
+      }
+      return res;
+  }
   case MATMULSM:
-  case MATMULSM_TRUNC: // TODO: I'm not sure
   {
       int res = 0;
       for (auto it = start.begin(); it < start.end(); it += 12)
+      {
+          res = max(res, *it + *(it + 3) * *(it + 5));
+      }
+      return res;
+  }
+  case MATMULSM_TRUNC: // TODO: I'm not sure
+  {
+      int res = 0;
+      for (auto it = start.begin(); it < start.end(); it += 14)
       {
           res = max(res, *it + *(it + 3) * *(it + 5));
       }
@@ -792,6 +810,17 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
       {
           unsigned tmp = start[i]
                                + start[i + 3] * start[i + 4] * start.at(i + 14);
+          res = max(res, tmp);
+      }
+      return res;
+  }
+  case CONV2DS_TRUNC: // TODO: I'm not sure
+  {
+      unsigned res = 0;
+      for (size_t i = 0; i < start.size(); i += 17)
+      {
+          unsigned tmp = start[i]
+                               + start[i + 3] * start[i + 4] * start.at(i + 16);
           res = max(res, tmp);
       }
       return res;
@@ -1190,6 +1219,9 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
       case CONV2DS:
         Proc.Procp.protocol.conv2ds(Proc.Procp, *this);
         return;
+      case CONV2DS_TRUNC:
+        Proc.Procp.protocol.conv2ds_trunc(Proc.Procp, *this);
+        return;
       case TRUNC_PR:
         Proc.Procp.protocol.trunc_pr(start, size, Proc.Procp);
         return;
@@ -1583,8 +1615,7 @@ void Instruction::print_mersenne(SwitchableOutput& out, T* v, T* p, T* s, T* z, 
     {
       auto v_signed = v[i].to_signed();
       auto p_signed = p[i].to_signed(); // p is negative
-      v_signed >>= (-p_signed); // Assuming arithmetic shift
-      out << v_signed;
+      out << v_signed * pow(2.0, p_signed);
       if (i < size - 1)
         out << ", ";
     }

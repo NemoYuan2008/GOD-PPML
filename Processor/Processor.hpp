@@ -848,6 +848,29 @@ void SubProcessor<T>::conv2ds(const Instruction& instruction)
     maybe_check();
 }
 
+template<class T>
+void SubProcessor<T>::conv2ds_trunc(const Instruction& instruction)
+{
+    auto& args = instruction.get_start();
+    vector<Conv2dTuple> tuples;
+    for (size_t i = 0; i < args.size(); i += 17)
+        tuples.push_back(Conv2dTuple(args, i));
+    size_t done = 0;
+    while (done < tuples.size())
+    {
+        protocol.init_dotprod_trunc();
+        size_t i;
+        for (i = done; i < tuples.size() and protocol.get_buffer_size() <
+                OnlineOptions::singleton.batch_size; i++)
+            tuples[i].pre_trunc(S, protocol);
+        protocol.exchange_dotprod_trunc();
+        for (; done < i; done++)
+            tuples[done].post_trunc(S, protocol);
+    }
+
+    maybe_check();
+}
+
 inline
 Conv2dTuple::Conv2dTuple(const vector<int>& arguments, int start)
 {
@@ -934,6 +957,65 @@ void Conv2dTuple::post(StackedVector<T>& S, typename T::Protocol& protocol)
                 output_base[out_y * output_w + out_x] =
                         protocol.finalize_dotprod(
                                 lengths[i_batch][out_y][out_x]);
+            }
+    }
+}
+
+template<class T>
+void Conv2dTuple::pre_trunc(StackedVector<T>& S, typename T::Protocol& protocol)
+{
+    for (int i_batch = 0; i_batch < batch_size; i_batch ++)
+    {
+        size_t base = r1 + i_batch * inputs_w * inputs_h * n_channels_in;
+        assert(base + inputs_w * inputs_h * n_channels_in <= S.size());
+        T* input_base = &S[base];
+        for (int out_y = 0; out_y < output_h; out_y++)
+            for (int out_x = 0; out_x < output_w; out_x++)
+            {
+                int in_x_origin = (out_x * stride_w) - padding_w;
+                int in_y_origin = (out_y * stride_h) - padding_h;
+
+                for (int filter_y = 0; filter_y < weights_h; filter_y++)
+                {
+                    int in_y = in_y_origin + filter_y * filter_stride_h;
+                    if ((0 <= in_y) and (in_y < inputs_h))
+                        for (int filter_x = 0; filter_x < weights_w; filter_x++)
+                        {
+                            int in_x = in_x_origin + filter_x * filter_stride_w;
+                            if ((0 <= in_x) and (in_x < inputs_w))
+                            {
+                                T* pixel_base = &input_base[(in_y * inputs_w
+                                        + in_x) * n_channels_in];
+                                T* weight_base = &S[r2
+                                        + (filter_y * weights_w + filter_x)
+                                                * n_channels_in];
+                                for (int in_c = 0; in_c < n_channels_in; in_c++)
+                                    protocol.prepare_dotprod_trunc(pixel_base[in_c],
+                                            weight_base[in_c]);
+                                lengths[i_batch][out_y][out_x] += n_channels_in;
+                            }
+                        }
+                }
+
+                protocol.next_dotprod_trunc(k, f);
+            }
+    }
+}
+
+template<class T>
+void Conv2dTuple::post_trunc(StackedVector<T>& S, typename T::Protocol& protocol)
+{
+    for (int i_batch = 0; i_batch < batch_size; i_batch ++)
+    {
+        size_t base = r0 + i_batch * output_h * output_w;
+        assert(base + output_h * output_w <= S.size());
+        T* output_base = &S[base];
+        for (int out_y = 0; out_y < output_h; out_y++)
+            for (int out_x = 0; out_x < output_w; out_x++)
+            {
+                output_base[out_y * output_w + out_x] =
+                        protocol.finalize_dotprod_trunc(
+                                lengths[i_batch][out_y][out_x], k, f);
             }
     }
 }

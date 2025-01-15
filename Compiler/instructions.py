@@ -2668,6 +2668,55 @@ class conv2ds(base.DataInstruction, base.VarArgsInstruction, base.Mergeable):
             req_node.increment(('matmul', (1, args[7] * args[8] * args[11],
                                            args[14] * args[3] * args[4])), 1)
 
+
+class conv2ds_trunc(base.DataInstruction, base.VarArgsInstruction, base.Mergeable):
+    """ Secret 2D convolution followed by probabilistic truncation.
+
+    :param: number of arguments to follow (int)
+    :param: result (sint vector in row-first order)
+    :param: inputs (sint vector in row-first order)
+    :param: weights (sint vector in row-first order)
+    :param: output height (int)
+    :param: output width (int)
+    :param: input height (int)
+    :param: input width (int)
+    :param: weight height (int)
+    :param: weight width (int)
+    :param: stride height (int)
+    :param: stride width (int)
+    :param: number of channels (int)
+    :param: padding height (int)
+    :param: padding width (int)
+    :param: batch size (int)
+    :param: bit length of sources (int)
+    :param: number of bits to truncate (int)
+    :param: repeat from result...
+
+    """
+    code = base.opcodes['CONV2DS_TRUNC']
+    arg_format = itertools.cycle(['sw','s','s','int','int','int','int','int',
+                                  'int','int','int','int','int','int','int','int','int'])
+    data_type = 'triple'
+    is_vec = lambda self: True
+
+    def __init__(self, *args, **kwargs):
+        super(conv2ds_trunc, self).__init__(*args, **kwargs)
+        assert args[0].size == args[3] * args[4] * args[14]
+        assert args[1].size == args[5] * args[6] * args[11] * args[14]
+        assert args[2].size == args[7] * args[8] * args[11]
+
+    # TODO: check get_repeat and add_usage
+    def get_repeat(self):
+        args = self.args
+        return sum(args[i+3] * args[i+4] * args[i+7] * args[i+8] * \
+            args[i+11] * args[i+14] for i in range(0, len(args), 17))
+
+    def add_usage(self, req_node):
+        super(conv2ds_trunc, self).add_usage(req_node)
+        for i in range(0, len(self.args), 17):
+            args = self.args[i:i + 17]
+
+
 @base.vectorize
 class mul_trunc(
                 base.VarArgsInstruction,

@@ -1,4 +1,3 @@
-
 #ifndef _Processor
 #define _Processor
 
@@ -98,6 +97,7 @@ public:
                                      int endI, int endJ);
 
   void conv2ds(const Instruction& instruction);
+  void conv2ds_trunc(const Instruction& instruction); // Add this line
 
   void secure_shuffle(const Instruction& instruction);
   size_t generate_secure_shuffle(const Instruction& instruction,

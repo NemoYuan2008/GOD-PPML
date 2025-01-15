@@ -12,6 +12,8 @@ using namespace std;
 class Conv2dTuple
 {
 public:
+    static const int k = 61, f = 16; //TODO: this is a hack, should be removed
+
     int output_h, output_w;
     int inputs_h, inputs_w;
     int weights_h, weights_w;
@@ -35,6 +37,11 @@ public:
     void pre(StackedVector<T>& S, typename T::Protocol& protocol);
     template<class T>
     void post(StackedVector<T>& S, typename T::Protocol& protocol);
+    
+    template<class T>
+    void pre_trunc(StackedVector<T>& S, typename T::Protocol& protocol);
+    template<class T>
+    void post_trunc(StackedVector<T>& S, typename T::Protocol& protocol);
 
     template<class T>
     void run_matrix(SubProcessor<T>& processor);

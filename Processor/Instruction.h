@@ -122,6 +122,7 @@ enum
     MUL_TRUNC = 0x3C,
     MATMULS_TRUNC = 0x3D,
     MATMULSM_TRUNC = 0x3E,
+    CONV2DS_TRUNC = 0x40,
     // Shuffling
     SECSHUFFLE = 0xFA,
     GENSECSHUFFLE = 0xFB,

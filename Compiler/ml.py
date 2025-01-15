@@ -1741,20 +1741,26 @@ class Conv2d(ConvBase):
                 inputs = inputs.pre_mul()
                 weights = weights.pre_mul()
                 res = sint(size = output_h * output_w * part_size)
-                conv2ds(res, inputs, weights, output_h, output_w,
-                        inputs_h, inputs_w, weights_h, weights_w,
-                        stride_h, stride_w, n_channels_in, padding_h, padding_w,
-                        part_size)
+                conv2ds_trunc(res, inputs, weights, output_h, output_w,
+                              inputs_h, inputs_w, weights_h, weights_w,
+                              stride_h, stride_w, n_channels_in, padding_h, padding_w,
+                              part_size,
+                              sfix.k, sfix.f)
+                # conv2ds(res, inputs, weights, output_h, output_w,
+                        # inputs_h, inputs_w, weights_h, weights_w,
+                        # stride_h, stride_w, n_channels_in, padding_h, padding_w,
+                        # part_size)
                 if self.bias_before_reduction:
                     res += self.bias.expand_to_vector(j, res.size).v
                 else:
                     res += self.bias.expand_to_vector(j, res.size).v << \
                         self.weight_squant.f
-                addresses = regint.inc(res.size,
+                res_sfix = sfix._new(res, sfix.k, sfix.f)
+                addresses = regint.inc(res_sfix.size,
                                        self.unreduced[i * part_size].address + j,
                                        n_channels_out)
-                res.store_in_mem(addresses)
-            self.reduction(len(batch))
+                res_sfix.store_in_mem(addresses)
+            # self.reduction(len(batch))
             if self.debug_output:
                 print_ln('%s weights %s', self, self.weights.reveal_nested())
                 print_ln('%s bias %s', self, self.bias.reveal_nested())
@@ -1803,7 +1809,7 @@ class Conv2d(ConvBase):
                                  weights[out_y][out_x][out_c],
                                  out_y, out_x, out_c)
 
-        self.reduction()
+        # self.reduction()
 
 class QuantConvBase(QuantBase):
     def input_params_from(self, player):
