@@ -38,6 +38,44 @@ public:
         for (int i = 0; i < batch_size; i++)
             this->inputs.at(player).push_back({shares[i], opened[i]});
     }
+
+    void buffer_bits()
+    {
+        buffer_bits(T::clear::prime_field, T::clear::characteristic_two);
+    }
+
+    template<int = 0>
+    void buffer_bits(false_type, false_type) { throw not_implemented(); }
+
+    template<int = 0>
+    void buffer_bits(false_type, true_type) { throw not_implemented(); }
+
+    template<int = 0>
+    void buffer_bits(true_type, false_type)
+    {
+        auto buffer_size = BaseMachine::batch_size<T>(DATA_BIT, this->buffer_size);
+        vector<T> randoms(buffer_size);
+        std::generate(randoms.begin(), randoms.end(), [this]{return this->protocol->get_random();});
+
+        vector<T> square_opened(buffer_size);
+
+        this->protocol->init_mul_pub();
+        for (auto x : randoms) {
+            this->protocol->prepare_mul_pub(x, x);
+        }
+        this->protocol->exchange_mul_pub();
+        for (int i = 0; i < buffer_size; i++) {
+            square_opened[i] = this->protocol->finalize_mul_pub();
+        }
+
+        T one(1); // Assuming T is Mersenne
+        T two_inverse = T(2).invert();
+        for (int i = 0; i < buffer_size; i++) {
+            if (square_opened[i] != 0) {
+                this->bits.push_back((randoms[i] / square_opened[i].sqrRoot() + one) * two_inverse);
+            }
+        }
+    }
 };
 
 #endif /* PROTOCOLS_ATLASPREP_H_ */

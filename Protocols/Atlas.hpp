@@ -155,6 +155,30 @@ T Atlas<T>::get_random()
     return shamir.get_random();
 }
 
+template <class T>
+inline void Atlas<T>::init_mul_pub()
+{
+    local_mc_2t.init_open(P);
+}
+
+template <class T>
+inline void Atlas<T>::prepare_mul_pub(T x, T y)
+{
+    // TODO: a zero-sharing is needed here for security
+    local_mc_2t.prepare_open(x * y);
+}
+
+template <class T>
+inline void Atlas<T>::exchange_mul_pub()
+{
+    local_mc_2t.exchange(P);
+}
+
+template <class T>
+inline T Atlas<T>::finalize_mul_pub()
+{
+    return local_mc_2t.finalize_open();
+}
 
 template<class T>
 void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc)

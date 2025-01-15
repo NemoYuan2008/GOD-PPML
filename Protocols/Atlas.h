@@ -81,6 +81,11 @@ public:
 
     T get_random();
 
+    void init_mul_pub();
+    void prepare_mul_pub(T x, T y); // It's our method, so we can change the signature, use pass-by-value
+    void exchange_mul_pub();
+    T finalize_mul_pub();
+
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
