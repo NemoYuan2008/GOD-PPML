@@ -360,7 +360,7 @@ void AtlasGsz<T>::de_linearization()
     z_de_linearized = 0;
 
     // Random coin
-    typename T::open_type r = local_mc.POpen(get_random(), this->P);
+    typename T::open_type r = local_mc_2t.POpen(get_random(), this->P);
 
     vector<typename T::open_type> random_coeffs(x_verify.size());
     random_coeffs[0] = r;
@@ -481,7 +481,7 @@ void AtlasGsz<T>::dimension_reduction()
     h_coeffs[2] = (c_0 + c_2) * two_inverse - c_1;
 
 
-    T random_point = local_mc.POpen(get_random(), this->P);
+    T random_point = local_mc_2t.POpen(get_random(), this->P);
 
     // Evaluate f_i(random_point) and g_i(random_point), just put them in x_verify and y_verify
     for (int i = 0; i < half_size; ++i) {
@@ -543,19 +543,19 @@ void AtlasGsz<T>::randomization()
     T b = get_random();
     T c = this->mul(a, b);
 
-    typename T::clear alpha = local_mc.POpen(get_random(), P);
+    typename T::clear alpha = local_mc_2t.POpen(get_random(), P);
     T rho = alpha * x_verify[0] + a;
     T sigma = y_verify[0] + b;
 
-    local_mc.init_open(P, 2);
-    local_mc.prepare_open(rho);
-    local_mc.prepare_open(sigma);
-    local_mc.exchange(P);
-    auto rho_open = local_mc.finalize_open();
-    auto sigma_open = local_mc.finalize_open();
+    local_mc_2t.init_open(P, 2);
+    local_mc_2t.prepare_open(rho);
+    local_mc_2t.prepare_open(sigma);
+    local_mc_2t.exchange(P);
+    auto rho_open = local_mc_2t.finalize_open();
+    auto sigma_open = local_mc_2t.finalize_open();
 
     T v = alpha * z_de_linearized - c + sigma_open * a + rho_open * b - rho_open * sigma_open;
-    auto v_open = local_mc.POpen(v, P);
+    auto v_open = local_mc_2t.POpen(v, P);
 
     if (v_open != 0) {
         throw mac_fail("AtlasGsz: Verification failed");

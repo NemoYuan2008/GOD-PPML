@@ -323,7 +323,7 @@ void AtlasBgin<T>::de_linearization()
     z_de_linearized = 0;
 
     // Random coin
-    typename T::open_type r = local_mc.POpen(get_random(), this->P);
+    typename T::open_type r = local_mc_2t.POpen(get_random(), this->P);
 
     vector<typename T::open_type> random_coeffs(x_verify.size());
     random_coeffs[0] = r;
@@ -626,7 +626,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
     
     /************************* Check if to_check opens to 0 *************************/
     // Random linear combination of to_check
-    T coin = local_mc.POpen(get_random(), this->P);
+    T coin = local_mc_2t.POpen(get_random(), this->P);
     T random_coefficient = coin;
     T to_check_combined = 0;
     for (const auto& v: to_check) {
@@ -635,24 +635,24 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
             random_coefficient *= coin;
         }
     }
-    T to_check_combined_open = local_mc.POpen(to_check_combined, this->P);
+    T to_check_combined_open = local_mc_2t.POpen(to_check_combined, this->P);
     if (to_check_combined_open != 0) {
         throw mac_fail("prove_deg2_rel failed");
     }
 
     /************************* Check q(r) = f(r) h(r) *************************/
-    local_mc.init_open(P, 3 * P.num_players());
+    local_mc_2t.init_open(P, 3 * P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        local_mc.prepare_open(a_all_players[party_i][0]);
-        local_mc.prepare_open(b_all_players[party_i][0]);
-        local_mc.prepare_open(c_all_players[party_i]);
+        local_mc_2t.prepare_open(a_all_players[party_i][0]);
+        local_mc_2t.prepare_open(b_all_players[party_i][0]);
+        local_mc_2t.prepare_open(c_all_players[party_i]);
     }
-    local_mc.exchange(P);
+    local_mc_2t.exchange(P);
     vector<typename T::open_type> a_open(P.num_players()), b_open(P.num_players()), c_open(P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        a_open[party_i] = local_mc.finalize_open();
-        b_open[party_i] = local_mc.finalize_open();
-        c_open[party_i] = local_mc.finalize_open();
+        a_open[party_i] = local_mc_2t.finalize_open();
+        b_open[party_i] = local_mc_2t.finalize_open();
+        c_open[party_i] = local_mc_2t.finalize_open();
     }
     // TODO: Check them
     // Note however, the a value for party i uses the value on point for party i, not point 0.
@@ -1049,7 +1049,7 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
     
     /************************* Check if to_check opens to 0 *************************/
     // Random linear combination of to_check
-    T coin = local_mc.POpen(get_random(), this->P);
+    T coin = local_mc_2t.POpen(get_random(), this->P);
     T random_coefficient = coin;
     T to_check_combined = 0;
     for (const auto& v: to_check) {
@@ -1058,24 +1058,24 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
             random_coefficient *= coin;
         }
     }
-    T to_check_combined_open = local_mc.POpen(to_check_combined, this->P);
+    T to_check_combined_open = local_mc_2t.POpen(to_check_combined, this->P);
     if (to_check_combined_open != 0) {
         throw mac_fail("prove_deg2_rel failed");
     }
 
     /************************* Check q(r) = f(r) h(r) *************************/
-    local_mc.init_open(P, 3 * P.num_players());
+    local_mc_2t.init_open(P, 3 * P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        local_mc.prepare_open(a_all_players[party_i][0]);
-        local_mc.prepare_open(b_all_players[party_i][0]);
-        local_mc.prepare_open(c_all_players[party_i]);
+        local_mc_2t.prepare_open(a_all_players[party_i][0]);
+        local_mc_2t.prepare_open(b_all_players[party_i][0]);
+        local_mc_2t.prepare_open(c_all_players[party_i]);
     }
-    local_mc.exchange(P);
+    local_mc_2t.exchange(P);
     vector<typename T::open_type> a_open(P.num_players()), b_open(P.num_players()), c_open(P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        a_open[party_i] = local_mc.finalize_open();
-        b_open[party_i] = local_mc.finalize_open();
-        c_open[party_i] = local_mc.finalize_open();
+        a_open[party_i] = local_mc_2t.finalize_open();
+        b_open[party_i] = local_mc_2t.finalize_open();
+        c_open[party_i] = local_mc_2t.finalize_open();
     }
     // TODO: Check them
     // Note however, the a value for party i uses the value on point for party i, not point 0.
@@ -1128,29 +1128,29 @@ void AtlasBgin<T>::get_random_coins(int num, vector<typename T::open_type>& coin
     vector<T> shares;
 
     if (num <= num_shares_for_seed) {
-        local_mc.init_open(this->P, num);
+        local_mc_2t.init_open(this->P, num);
         for (int i = 0; i < num; ++i) {
-            local_mc.prepare_open(get_random());
+            local_mc_2t.prepare_open(get_random());
         }
-        local_mc.exchange(P);
+        local_mc_2t.exchange(P);
 
         coins.clear();
         coins.reserve(num);
         for (int i = 0; i < num; ++i) {
-            coins.push_back(local_mc.finalize_open());
+            coins.push_back(local_mc_2t.finalize_open());
         }
         return;
     }
 
-    local_mc.init_open(this->P, num_shares_for_seed);
+    local_mc_2t.init_open(this->P, num_shares_for_seed);
     for (int i = 0; i < num_shares_for_seed; ++i) {
-        local_mc.prepare_open(get_random());
+        local_mc_2t.prepare_open(get_random());
     }
-    local_mc.exchange(P);
+    local_mc_2t.exchange(P);
 
     octetStream os_seed;
     for (int i = 0; i < num_shares_for_seed; ++i) {
-        local_mc.finalize_open().pack(os_seed);
+        local_mc_2t.finalize_open().pack(os_seed);
     }
 
     PRNG prng(os_seed);

@@ -20,7 +20,7 @@ private:
     Atlas<T> honest;
     Preprocessing<T>* prep = nullptr;
 
-    typename T::MAC_Check local_mc;
+    // typename T::MAC_Check local_mc;
     typename T::MAC_Check_2t local_mc_2t;
 
     ShamirInput<T> shamir_input;

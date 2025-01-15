@@ -22,7 +22,7 @@ class AtlasGsz : public ProtocolBase<T>
 private:
     Atlas<T> honest;
 
-    typename T::MAC_Check local_mc;
+    // typename T::MAC_Check local_mc;
     typename T::MAC_Check_2t local_mc_2t;
 
     vector<T> x_verify;
