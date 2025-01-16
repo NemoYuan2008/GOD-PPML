@@ -102,7 +102,6 @@ public:
     template<int>
     void buffer_inverses(true_type)
     {
-        cerr << "AtlasPrep::buffer_inverses\n";
         auto buffer_size = BaseMachine::batch_size<T>(DATA_BIT, this->buffer_size);
         vector<T> a(buffer_size), b(buffer_size);
         std::generate(a.begin(), a.end(), [this]{return this->protocol->get_random();});

@@ -95,6 +95,14 @@ void ShamirInput<T>::add_mine(const typename T::open_type& input, int n_bits)
 }
 
 template<class T>
+void ShamirInput<T>::exchange()
+{
+    if (threshold == this->P.num_players() - 1)
+        return;
+    IndividualInput<T>::exchange();
+}
+
+template<class T>
 void ShamirInput<T>::finalize_other(int player, T& target,
         octetStream& o, int n_bits)
 {

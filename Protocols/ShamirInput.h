@@ -88,6 +88,7 @@ public:
     }
 
     void add_mine(const typename T::open_type& input, int n_bits = -1);
+    void exchange();
     void finalize_other(int player, T& target, octetStream& o, int n_bits = -1);
 };
 
