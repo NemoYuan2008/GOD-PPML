@@ -21,6 +21,7 @@ from Compiler import ml
 from Compiler.library import print_ln
 import numpy as np
 
+# ml.set_n_threads(4)
 sfix.set_precision(16, 61)
 
 input_channels = 1

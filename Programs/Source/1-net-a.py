@@ -34,6 +34,12 @@ layers = [
 ]
 
 layers[0].X = sfix.input_tensor_via(0, np.random.rand(batch_size, input_size), binary=True)
+layers[0].W = sfix.input_tensor_via(0, np.random.rand(input_size, layer_1_out), binary=True)
+layers[0].b = sfix.input_tensor_via(0, np.random.rand(layer_1_out), binary=True)
+layers[2].W = sfix.input_tensor_via(0, np.random.rand(layer_1_out, layer_2_out), binary=True)
+layers[2].b = sfix.input_tensor_via(0, np.random.rand(layer_2_out), binary=True)
+layers[4].W = sfix.input_tensor_via(0, np.random.rand(layer_2_out, output_size), binary=True)
+layers[4].b = sfix.input_tensor_via(0, np.random.rand(output_size), binary=True)
 # layers[0].X = sfix.Array(batch_size * input_size)
 
 optimizer = ml.Optimizer(layers)
