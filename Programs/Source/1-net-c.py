@@ -43,18 +43,26 @@ fc_layer_1_out = 100
 output_size = 10
 
 layers = [
-    ml.easyConv2d([1, input_size, input_size, input_channels], input_channels, conv1_filters, kernel_size, stride, padding),
-    ml.easyMaxPool([1, conv1_output, conv1_output, conv1_filters], pool_size, pool_stride),
-    ml.Relu(shape=(1, pool1_output, pool1_output, conv1_filters)),
-    ml.easyConv2d([1, pool1_output, pool1_output, conv1_filters], conv1_filters, conv1_filters, kernel_size, stride, padding),
-    ml.easyMaxPool([1, conv2_output, conv2_output, conv1_filters], pool_size, pool_stride),
-    ml.Relu(shape=(1, pool2_output, pool2_output, conv1_filters)),
-    ml.Dense(N=1, d_in=flattened_size, d_out=fc_layer_1_out),
-    ml.Relu(shape=(1, fc_layer_1_out)),
-    ml.Dense(N=1, d_in=fc_layer_1_out, d_out=output_size),
+    ml.easyConv2d([1, input_size, input_size, input_channels], input_channels, conv1_filters, kernel_size, stride, padding), # 0
+    ml.easyMaxPool([1, conv1_output, conv1_output, conv1_filters], pool_size, pool_stride), # 1
+    ml.Relu(shape=(1, pool1_output, pool1_output, conv1_filters)), # 2
+    ml.easyConv2d([1, pool1_output, pool1_output, conv1_filters], conv1_filters, conv1_filters, kernel_size, stride, padding), # 3
+    ml.easyMaxPool([1, conv2_output, conv2_output, conv1_filters], pool_size, pool_stride), # 4
+    ml.Relu(shape=(1, pool2_output, pool2_output, conv1_filters)), # 5
+    ml.Dense(N=1, d_in=flattened_size, d_out=fc_layer_1_out), # 6
+    ml.Relu(shape=(1, fc_layer_1_out)), # 7
+    ml.Dense(N=1, d_in=fc_layer_1_out, d_out=output_size), # 8
 ]
 
-layers[0].X = sfix.Tensor([1, input_channels, input_size, input_size])
+# layers[0].X = sfix.Tensor([1, input_channels, input_size, input_size])
+
+layers[0].X = sfix.input_tensor_via(0, np.random.rand(1, input_channels, input_size, input_size), binary=True)
+layers[0].weights = sfix.input_tensor_via(0, np.random.rand(conv1_filters, input_channels, kernel_size, kernel_size), binary=True)
+layers[3].weights = sfix.input_tensor_via(0, np.random.rand(conv1_filters, conv1_filters, kernel_size, kernel_size), binary=True)
+layers[6].W = sfix.input_tensor_via(0, np.random.rand(flattened_size, fc_layer_1_out), binary=True)
+layers[6].b = sfix.input_tensor_via(0, np.random.rand(fc_layer_1_out), binary=True)
+layers[8].W = sfix.input_tensor_via(0, np.random.rand(fc_layer_1_out, output_size), binary=True)
+layers[8].b = sfix.input_tensor_via(0, np.random.rand(output_size), binary=True)
 
 optimizer = ml.Optimizer(layers)
 optimizer.forward(1)

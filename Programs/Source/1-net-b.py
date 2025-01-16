@@ -38,9 +38,14 @@ layers = [
     ml.Dense(N=1, d_in=fc_layer_1_out, d_out=output_size),
 ]
 
-# input
-# layers[0].X = sfix.input_tensor_via(0, np.random.rand(1, input_channels, input_size, input_size), binary=True)
-layers[0].X = sfix.Tensor([1, input_channels, input_size, input_size])
+# layers[0].X = sfix.Tensor([1, input_channels, input_size, input_size])
+
+layers[0].X = sfix.input_tensor_via(0, np.random.rand(1, input_channels, input_size, input_size), binary=True)
+layers[0].weights = sfix.input_tensor_via(0, np.random.rand(conv_filters, input_channels, kernel_size, kernel_size), binary=True)
+layers[2].W = sfix.input_tensor_via(0, np.random.rand(flattened_size, fc_layer_1_out), binary=True)
+layers[2].b = sfix.input_tensor_via(0, np.random.rand(fc_layer_1_out), binary=True)
+layers[4].W = sfix.input_tensor_via(0, np.random.rand(fc_layer_1_out, output_size), binary=True)
+layers[4].b = sfix.input_tensor_via(0, np.random.rand(output_size), binary=True)
 
 optimizer = ml.Optimizer(layers)
 optimizer.forward(1)
