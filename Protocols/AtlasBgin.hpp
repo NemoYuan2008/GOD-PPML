@@ -37,8 +37,6 @@ inline void AtlasBgin<T>::maybe_check()
 {
     if (x_verify.size() >= AtlasConfig::max_before_check) {
         check();
-        x_verify.reserve(AtlasConfig::max_before_check);
-        y_verify.reserve(AtlasConfig::max_before_check);
     }
     if (local_mc_2t.stored_values.size() >= AtlasConfig::max_openings_before_check) {
         check_opened_values();
@@ -305,6 +303,11 @@ void AtlasBgin<T>::check()
     if (x_verify.empty())
         return;
 
+#ifdef DEBUG_CHECK
+    cerr << "check()\n"
+         << "x_verify.size() = " << x_verify.size() << '\n'
+         << "x_verify.capacity() = " << x_verify.capacity() << '\n';
+#endif
     // Not sure if this will increase performance
     // BufferScope _(honest, 2 * x_verify.size());
 
@@ -558,9 +561,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
 
         if (round_i == 0) {
             x_verify.clear();
-            x_verify.shrink_to_fit();
             y_verify.clear();
-            y_verify.shrink_to_fit();
         }
     }
 
@@ -981,9 +982,7 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
 
         if (round_i == 0) {
             x_verify.clear();
-            x_verify.shrink_to_fit();
             y_verify.clear();
-            y_verify.shrink_to_fit();
         }
     }
 

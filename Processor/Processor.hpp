@@ -456,7 +456,10 @@ void SubProcessor<T>::maybe_check()
 template <class T>
 void SubProcessor<T>::POpen(const Instruction& inst)
 {
-  if (inst.get_n() or BaseMachine::s().nthreads > 0)
+  // I don't know why BaseMachine::s().nthreads > 0 is needed, I'll remove it
+  // if (inst.get_n() or BaseMachine::s().nthreads > 0)
+  //   check();
+  if (inst.get_n())
     check();
   auto& reg = inst.get_start();
   int size = inst.get_size();
@@ -470,7 +473,7 @@ void SubProcessor<T>::POpen(const Instruction& inst)
   for (auto it = reg.begin(); it < reg.end(); it += 2)
     for (int i = 0; i < size; i++)
       C[*it + i] = MC.finalize_open();
-  if (inst.get_n() or BaseMachine::s().nthreads > 0)
+  if (inst.get_n())
     check();
 
   if (Proc != 0)
