@@ -259,10 +259,10 @@ Mersenne<L> Mersenne<L>::dot_product(const vector<Mersenne<L>>& a, const vector<
 
 template<int L>
 Mersenne<L> Mersenne<L>::invert() const {
-    value_type a = value;
-    value_type b = prime;
-    value_type x = 1, y = 0;
-    value_type u = 0, v = 1;
+    value_type a = prime;
+    value_type b = value;
+    value_type x = 0, y = 1;
+    value_type u = 1, v = 0;
     
     while (b != 0) {
         value_type q = a / b;
