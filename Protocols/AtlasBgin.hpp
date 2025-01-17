@@ -24,6 +24,7 @@ AtlasBgin<T>::AtlasBgin(Player& P)
 {
     x_verify.reserve(AtlasConfig::max_before_check);
     y_verify.reserve(AtlasConfig::max_before_check);
+    z_verify.reserve(AtlasConfig::max_before_check);
 }
 
 template<class T>
@@ -125,6 +126,7 @@ T AtlasBgin<T>::finalize_dotprod(int length)
 template<class T>
 void AtlasBgin<T>::init_mul_pub()
 {
+    maybe_check();
     honest.init_mul_pub();
 }
 
@@ -251,6 +253,7 @@ T AtlasBgin<T>::finalize_mul_trunc()
 template<class T>
 void AtlasBgin<T>::init_dotprod_trunc()
 {
+    maybe_check();
     honest.init_dotprod_trunc();
 }
 
@@ -357,7 +360,12 @@ void AtlasBgin<T>::de_linearization()
 
     // z_de_linearized = z_0 r^0 + z_1 r^1 + ... + z_n r^n
     z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
+    
     z_verify.clear();
+    if (z_verify.size() > AtlasConfig::max_before_shrink) {
+        z_verify.shrink_to_fit();
+        z_verify.reserve(AtlasConfig::max_before_check);
+    }
 
     // x_verify = (x_0 r^0, x_1 r^1, ..., x_n r^n); y_verify is unchanged
     std::transform(x_verify.begin(), x_verify.end(), random_coeffs.begin(), x_verify.begin(),
@@ -562,6 +570,12 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
         if (round_i == 0) {
             x_verify.clear();
             y_verify.clear();
+            if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
+                x_verify.shrink_to_fit();
+                y_verify.shrink_to_fit();
+                x_verify.reserve(AtlasConfig::max_before_check);
+                y_verify.reserve(AtlasConfig::max_before_check);
+            }
         }
     }
 
@@ -983,6 +997,12 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
         if (round_i == 0) {
             x_verify.clear();
             y_verify.clear();
+            if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
+                x_verify.shrink_to_fit();
+                y_verify.shrink_to_fit();
+                x_verify.reserve(AtlasConfig::max_before_check);
+                y_verify.reserve(AtlasConfig::max_before_check);
+            }
         }
     }
 

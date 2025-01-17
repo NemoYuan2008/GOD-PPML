@@ -14,6 +14,7 @@
 #include "AtlasConfig.h"
 
 // #define DEBUG_CHECK
+// #define DEBUG_CHECK_OPENED_VALUES
 // #define DEBUG_DE_LINEARIZATION
 // #define DEBUG_DIM_REDUCTION
 
@@ -21,9 +22,9 @@
 template<class T>
 AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
 {
-    // TODO: maybe use a power of 2 for the batch size
     x_verify.reserve(AtlasConfig::max_before_check);
     y_verify.reserve(AtlasConfig::max_before_check);
+    z_verify.reserve(AtlasConfig::max_before_check);
 }
 
 template<class T>
@@ -125,6 +126,7 @@ T AtlasGsz<T>::finalize_dotprod(int length)
 template<class T>
 void AtlasGsz<T>::init_mul_pub()
 {
+    maybe_check();
     honest.init_mul_pub();
 }
 
@@ -257,6 +259,7 @@ T AtlasGsz<T>::finalize_mul_trunc()
 template<class T>
 void AtlasGsz<T>::init_dotprod_trunc()
 {
+    maybe_check();
     honest.init_dotprod_trunc();
 }
 
@@ -316,6 +319,12 @@ void AtlasGsz<T>::check()
     }
 
 #ifdef DEBUG_CHECK
+    cerr << "check()\n"
+         << "x_verify.size() = " << x_verify.size() << '\n'
+         << "x_verify.capacity() = " << x_verify.capacity() << '\n';
+#endif
+
+#ifdef DEBUG_CHECK_OPENED_VALUES
     typename T::MAC_Check debug_mc;
     vector<typename T::open_type> x_open, y_open, z_open;
     
@@ -351,7 +360,15 @@ void AtlasGsz<T>::check()
     y_verify.clear();
     z_verify.clear();
     dotprod_info.clear();
-    // z_verify and dotprod_info are cleared in de_linearization
+
+    if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
+        x_verify.shrink_to_fit();
+        y_verify.shrink_to_fit();
+        z_verify.shrink_to_fit();
+        x_verify.reserve(AtlasConfig::max_before_check);
+        y_verify.reserve(AtlasConfig::max_before_check);
+        z_verify.reserve(AtlasConfig::max_before_check);
+    }
 }
 
 template<class T>
@@ -397,6 +414,11 @@ void AtlasGsz<T>::de_linearization()
     // z_de_linearized = z_0 r^0 + z_1 r^1 + ... + z_n r^n
     z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
     z_verify.clear();
+
+    if (z_verify.capacity() > AtlasConfig::max_before_shrink) {
+        z_verify.shrink_to_fit();
+        z_verify.reserve(AtlasConfig::max_before_check);
+    }
 
 #ifdef DEBUG_DE_LINEARIZATION
     typename T::MAC_Check debug_mc;
@@ -453,8 +475,10 @@ void AtlasGsz<T>::dimension_reduction()
     for (int i = 0; i < half_size; ++i) {
         honest.prepare_dotprod(x_verify[i], y_verify[i]);
     }
+    
     x_verify.clear();
     y_verify.clear();
+    
     honest.next_dotprod();
 
     // c_2 = f(2) dot g(2)

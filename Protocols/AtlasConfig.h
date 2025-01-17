@@ -16,13 +16,15 @@ namespace AtlasConfig
      * since multiplcations are executed in batches,
      * it may happen that after a batch, the size exceeds max_before_check.
      */
-    static constexpr int max_before_check = 8000;
+    static constexpr int max_before_check = 10000;
+
+    static constexpr int max_before_shrink = 40000;
 
     /**
      * The maximum openings before the check.
      * 
      */
-    static constexpr int max_openings_before_check = 8000;
+    static constexpr int max_openings_before_check = 10000;
 
     /**
      * The fix-point precision
