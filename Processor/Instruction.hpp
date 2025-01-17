@@ -775,10 +775,10 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
       }
       return res;
   }
-  case MATMULS_TRUNC: // TODO: I'm not sure
+  case MATMULS_TRUNC:
   {
       int res = 0;
-      for (auto it = start.begin(); it < start.end(); it += 8)
+      for (auto it = start.begin(); it < start.end(); it += 6)
       {
           int tmp = *it + *(it + 3) * *(it + 5);
           res = max(res, tmp);
@@ -797,7 +797,7 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
   case MATMULSM_TRUNC: // TODO: I'm not sure
   {
       int res = 0;
-      for (auto it = start.begin(); it < start.end(); it += 14)
+      for (auto it = start.begin(); it < start.end(); it += 12)
       {
           res = max(res, *it + *(it + 3) * *(it + 5));
       }
@@ -817,10 +817,10 @@ unsigned BaseInstruction::get_max_reg(int reg_type) const
   case CONV2DS_TRUNC: // TODO: I'm not sure
   {
       unsigned res = 0;
-      for (size_t i = 0; i < start.size(); i += 17)
+      for (size_t i = 0; i < start.size(); i += 15)
       {
           unsigned tmp = start[i]
-                               + start[i + 3] * start[i + 4] * start.at(i + 16);
+                               + start[i + 3] * start[i + 4] * start.at(i + 14);
           res = max(res, tmp);
       }
       return res;

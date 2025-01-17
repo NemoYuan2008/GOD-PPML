@@ -23,6 +23,12 @@ namespace AtlasConfig
      * 
      */
     static constexpr int max_openings_before_check = 8000;
+
+    /**
+     * The fix-point precision
+     * must match the sfix.set_precision() in the compiler
+     */
+    static constexpr int fixed_point_precision = 16;
 }
 
 #endif

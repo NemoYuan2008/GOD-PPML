@@ -2222,7 +2222,7 @@ class _secret(_arithmetic_register, _secret_structure):
         res = cls(size=size) # should be an sint
         n_rows = len(A) // n
         n_cols = len(B) // n
-        matmuls_trunc(res, A, B, n_rows, n, n_cols, k, f)
+        matmuls_trunc(res, A, B, n_rows, n, n_cols)
         return res
 
     @staticmethod
@@ -2789,7 +2789,7 @@ class sint(_secret, _int):
             second_factor_base_addresses = None
 
         matmulsm_trunc(res, regint(A), regint(B), len(indices[0]), len(indices[1]),
-                       len(indices[3]), *(list(indices) + [m, l, k, f]),
+                       len(indices[3]), *(list(indices) + [m, l]),
                        first_factor_base_addresses=first_factor_base_addresses,
                        second_factor_base_addresses=second_factor_base_addresses,
                        indices_values=indices_values)
@@ -3022,7 +3022,7 @@ class sint(_secret, _int):
     @ret_cisc
     def _mul_trunc(self, other, k, f):
         res = sint()
-        mul_trunc(res, self, other, k, f)
+        mul_trunc(res, self, other)
         return res
 
 
@@ -4807,7 +4807,7 @@ class _fix(_single):
             k = max(self.k, other.k)
             max_f = max(self.f, other.f)
             min_f = min(self.f, other.f)
-            val = self.v.mul_trunc(other.v, k, min_f)   # TODO: check this
+            val = self.v.mul_trunc(other.v, k, min_f)
             if 'vec' not in self.__dict__:
                 return self._new(val, k=k, f=max_f)
             else:

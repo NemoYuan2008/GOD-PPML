@@ -1744,8 +1744,7 @@ class Conv2d(ConvBase):
                 conv2ds_trunc(res, inputs, weights, output_h, output_w,
                               inputs_h, inputs_w, weights_h, weights_w,
                               stride_h, stride_w, n_channels_in, padding_h, padding_w,
-                              part_size,
-                              sfix.k, sfix.f)
+                              part_size)
                 # conv2ds(res, inputs, weights, output_h, output_w,
                         # inputs_h, inputs_w, weights_h, weights_w,
                         # stride_h, stride_w, n_channels_in, padding_h, padding_w,

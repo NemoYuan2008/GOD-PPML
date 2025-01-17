@@ -2688,14 +2688,12 @@ class conv2ds_trunc(base.DataInstruction, base.VarArgsInstruction, base.Mergeabl
     :param: padding height (int)
     :param: padding width (int)
     :param: batch size (int)
-    :param: bit length of sources (int)
-    :param: number of bits to truncate (int)
     :param: repeat from result...
 
     """
     code = base.opcodes['CONV2DS_TRUNC']
     arg_format = itertools.cycle(['sw','s','s','int','int','int','int','int',
-                                  'int','int','int','int','int','int','int','int','int'])
+                                  'int','int','int','int','int','int','int'])
     data_type = 'triple'
     is_vec = lambda self: True
 
@@ -2709,12 +2707,12 @@ class conv2ds_trunc(base.DataInstruction, base.VarArgsInstruction, base.Mergeabl
     def get_repeat(self):
         args = self.args
         return sum(args[i+3] * args[i+4] * args[i+7] * args[i+8] * \
-            args[i+11] * args[i+14] for i in range(0, len(args), 17))
+            args[i+11] * args[i+14] for i in range(0, len(args), 15))
 
     def add_usage(self, req_node):
         super(conv2ds_trunc, self).add_usage(req_node)
-        for i in range(0, len(self.args), 17):
-            args = self.args[i:i + 17]
+        for i in range(0, len(self.args), 15):
+            args = self.args[i:i + 15]
 
 
 @base.vectorize
@@ -2730,12 +2728,10 @@ class mul_trunc(
     :param: destination (sint)
     :param: first source for multiplication (sint)
     :param: second source for multiplication (sint)
-    :param: bit length of sources (int)
-    :param: number of bits to truncate (int)
     """
     __slots__ = []
     code = base.opcodes['MUL_TRUNC']
-    arg_format = tools.cycle(['sw','s','s','int','int'])
+    arg_format = tools.cycle(['sw','s','s'])
 
     def add_usage(self, req_node):
         # TODO: 1. check if the triple usage is correct
@@ -2743,7 +2739,7 @@ class mul_trunc(
         req_node.increment((self.field_type, 'triple'),
                            self.get_size() * self.get_repeat())
         req_node.increment((self.field_type, 'bit'),
-                            self.get_size() * self.get_repeat() * self.args[3])
+                            self.get_size() * self.get_repeat() * 61) # TODO: magic number
 
 class matmuls_trunc(matmul_base, base.Mergeable):
     """ Secret matrix multiplication from registers followed by probabilistic truncation.
@@ -2754,22 +2750,20 @@ class matmuls_trunc(matmul_base, base.Mergeable):
     :param: number of rows in first factor and result (int)
     :param: number of columns in first factor and rows in second factor (int)
     :param: number of columns in second factor and result (int)
-    :param: bit length of sources (int)
-    :param: number of bits to truncate (int)
     """
     code = base.opcodes['MATMULS_TRUNC']
-    arg_format = itertools.cycle(['sw','s','s','int','int','int','int','int'])
+    arg_format = itertools.cycle(['sw','s','s','int','int','int'])
 
     # TODO: check get_repeat
     def get_repeat(self):
         return sum(reduce(operator.mul, self.args[i + 3:i + 6])
-                   for i in range(0, len(self.args), 8))
+                   for i in range(0, len(self.args), 6))
     
     def add_usage(self, req_node):
         super(matmuls_trunc, self).add_usage(req_node)
         req_node.increment((self.field_type, 'bit'),
                             # size * bit_length * dim_rows * dim_cols
-                            self.get_size() * self.args[6] * self.args[3] * self.args[5])
+                            self.get_size() * self.args[3] * self.args[5] * 61) # TODO: magic number
 
 class matmulsm_trunc(matmul_base, base.Mergeable):
     """ Secret matrix multiplication reading directly from memory followed by probabilistic truncation.
@@ -2786,13 +2780,11 @@ class matmulsm_trunc(matmul_base, base.Mergeable):
     :param: columns of second factor to use (regint vector, length as number of columns in the second factor)
     :param: total number of columns in the first factor, equal to used number of columns when all columns are used (int)
     :param: total number of columns in the second factor, equal to used number of columns when all columns are used (int)
-    :param: bit length of sources (int)
-    :param: number of bits to truncate (int)
     """
 
     code = base.opcodes['MATMULSM_TRUNC']
     arg_format = itertools.cycle(['sw','ci','ci','int','int','int','ci','ci','ci','ci',
-                                  'int','int','int','int'])
+                                  'int','int'])
 
     def __init__(self, *args,
                  first_factor_base_addresses=None,
@@ -2800,11 +2792,11 @@ class matmulsm_trunc(matmul_base, base.Mergeable):
                  indices_values=None,
                  **kwargs):
         matmul_base.__init__(self, *args, **kwargs)
-        for matmul_index in range(len(args) // 14):
+        for matmul_index in range(len(args) // 12):
             for i in range(2):
-                assert args[14 * matmul_index + 6 + i].size == args[14 * matmul_index + 3 + i]
+                assert args[12 * matmul_index + 6 + i].size == args[12 * matmul_index + 3 + i]
             for i in range(2):
-                assert args[14 * matmul_index + 8 + i].size == args[14 * matmul_index + 4 + i]
+                assert args[12 * matmul_index + 8 + i].size == args[12 * matmul_index + 4 + i]
 
         # These are used to reconstruct that accessed memory addresses in the allocator.
         self.first_factor_base_addresses = first_factor_base_addresses
@@ -2819,15 +2811,15 @@ class matmulsm_trunc(matmul_base, base.Mergeable):
     # TODO: check get_repeat and add_usage
     def add_usage(self, req_node):
         super(matmulsm_trunc, self).add_usage(req_node)
-        for i in range(0, len(self.args), 14):
+        for i in range(0, len(self.args), 12):
             req_node.increment(('matmul', (self.args[i + 3], self.args[i + 4], self.args[i + 5])), 1)
             req_node.increment((self.field_type, 'bit'),
                             # size * bit_length * dim_rows * dim_cols
-                            self.get_size() * self.args[i + 12] * self.args[i + 3] * self.args[i + 5])
+                            self.get_size() * self.args[i + 3] * self.args[i + 5] * 61) # TODO: magic number
 
     def get_repeat(self):
         return sum(reduce(operator.mul, self.args[i + 3:i + 6])
-                   for i in range(0, len(self.args), 14))
+                   for i in range(0, len(self.args), 12))
 
 @base.vectorize
 class trunc_pr(base.VarArgsInstruction):

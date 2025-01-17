@@ -620,7 +620,7 @@ template<class T>
 void SubProcessor<T>::matmuls_trunc(const StackedVector<T>& source,
         const Instruction& instruction)
 {
-    static constexpr int instruction_size = 8;
+    static constexpr int instruction_size = 6;
 
     protocol.init_dotprod_trunc();
 
@@ -642,7 +642,7 @@ void SubProcessor<T>::matmuls_trunc(const StackedVector<T>& source,
                 for (int k = 0; k < dim[1]; k++)
                     protocol.prepare_dotprod_trunc(*(A + i * dim[1] + k),
                             *(B + k * dim[2] + j));
-                protocol.next_dotprod_trunc(it[6], it[7]);
+                protocol.next_dotprod_trunc();
             }
     }
 
@@ -655,7 +655,7 @@ void SubProcessor<T>::matmuls_trunc(const StackedVector<T>& source,
         assert(C + dim[0] * dim[2] <= S.end());
         for (int i = 0; i < dim[0]; i++)
             for (int j = 0; j < dim[2]; j++)
-                *(C + i * dim[2] + j) = protocol.finalize_dotprod_trunc(dim[1], it[6], it[7]);
+                *(C + i * dim[2] + j) = protocol.finalize_dotprod_trunc(dim[1]);
     }
 
     maybe_check();
@@ -853,7 +853,7 @@ void SubProcessor<T>::conv2ds_trunc(const Instruction& instruction)
 {
     auto& args = instruction.get_start();
     vector<Conv2dTuple> tuples;
-    for (size_t i = 0; i < args.size(); i += 17)
+    for (size_t i = 0; i < args.size(); i += 15)
         tuples.push_back(Conv2dTuple(args, i));
     size_t done = 0;
     while (done < tuples.size())
@@ -997,7 +997,7 @@ void Conv2dTuple::pre_trunc(StackedVector<T>& S, typename T::Protocol& protocol)
                         }
                 }
 
-                protocol.next_dotprod_trunc(k, f);
+                protocol.next_dotprod_trunc();
             }
     }
 }
@@ -1015,7 +1015,7 @@ void Conv2dTuple::post_trunc(StackedVector<T>& S, typename T::Protocol& protocol
             {
                 output_base[out_y * output_w + out_x] =
                         protocol.finalize_dotprod_trunc(
-                                lengths[i_batch][out_y][out_x], k, f);
+                                lengths[i_batch][out_y][out_x]);
             }
     }
 }
@@ -1294,7 +1294,7 @@ void SubProcessor<T>::matmulsm_trunc(const MemoryPart<T>& source,
     const T* sourceData = source.data();
 
     protocol.init_dotprod_trunc();
-    for (auto matmulArgs = start.begin(); matmulArgs < start.end(); matmulArgs += 14) {
+    for (auto matmulArgs = start.begin(); matmulArgs < start.end(); matmulArgs += 12) {
         auto output = S.begin() + matmulArgs[0];
         size_t firstFactorBase  = Proc->get_Ci().at(matmulArgs[1]).get();
         size_t secondFactorBase = Proc->get_Ci().at(matmulArgs[2]).get();
@@ -1303,8 +1303,6 @@ void SubProcessor<T>::matmulsm_trunc(const MemoryPart<T>& source,
         auto resultNumberOfColumns = matmulArgs[5];
         auto firstFactorTotalNumberOfColumns = matmulArgs[10];
         auto secondFactorTotalNumberOfColumns = matmulArgs[11];
-        auto k = matmulArgs[12];
-        auto m = matmulArgs[13];
 
         assert(output + resultNumberOfRows * resultNumberOfColumns <= S.end());
 
@@ -1326,7 +1324,7 @@ void SubProcessor<T>::matmulsm_trunc(const MemoryPart<T>& source,
 
                     protocol.prepare_dotprod_trunc(sourceData[firstAddress], sourceData[secondAddress]);
                 }
-                protocol.next_dotprod_trunc(k, m);
+                protocol.next_dotprod_trunc();
 
                 if (protocol.get_buffer_size() > OnlineOptions::singleton.batch_size) {
                     protocol.exchange_dotprod_trunc();
@@ -1344,7 +1342,7 @@ void SubProcessor<T>::matmulsm_trunc(const MemoryPart<T>& source,
     }
 
     protocol.exchange_dotprod_trunc();
-    auto lastMatmulsArgs = start.end() - 14;
+    auto lastMatmulsArgs = start.end() - 12;
     auto lastMatrixRows = lastMatmulsArgs[3];
     auto lastMatrixColumns = lastMatmulsArgs[5];
     matmulsm_trunc_finalize_batch(batchStartMatrix, batchStartI, batchStartJ,
@@ -1362,8 +1360,6 @@ void SubProcessor<T>::matmulsm_trunc_finalize_batch(vector<int>::const_iterator 
         auto resultNumberOfRows = matmulArgs[3];
         auto usedNumberOfFirstFactorColumns = matmulArgs[4];
         auto resultNumberOfColumns = matmulArgs[5];
-        auto k = matmulArgs[12];
-        auto m = matmulArgs[13];
 
         assert(output + resultNumberOfRows * resultNumberOfColumns <= S.end());
 
@@ -1372,7 +1368,7 @@ void SubProcessor<T>::matmulsm_trunc_finalize_batch(vector<int>::const_iterator 
         if (matmulArgs == endMatmul && startI == endI) // For the case that the batch covers only a part of the first row of current matrix or only part of a single row.
             firstRowEndJ = endJ;
         for (int j = startJ; j <= firstRowEndJ; j += 1) {
-            *(output + startI * resultNumberOfColumns + j) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns, k, m);
+            *(output + startI * resultNumberOfColumns + j) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns);
         }
         if (firstRowEndJ == resultNumberOfColumns - 1) {
             startJ = 0;
@@ -1394,14 +1390,14 @@ void SubProcessor<T>::matmulsm_trunc_finalize_batch(vector<int>::const_iterator 
         // Finish the rows that always are complete, i.e., the second to the "second to last" row.
         for (; startI <= currentMatrixEndI - 1; startI += 1) {
             for (int j = 0; j < resultNumberOfColumns; j += 1) {
-                *(output + startI * resultNumberOfColumns + j) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns, k, m);
+                *(output + startI * resultNumberOfColumns + j) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns);
             }
         }
 
         // (Partially) finish the last row.
         if (startI == currentMatrixEndI) {
             for (; startJ <= currentMatrixEndJ; startJ += 1) {
-                *(output + startI * resultNumberOfColumns + startJ) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns, k, m);
+                *(output + startI * resultNumberOfColumns + startJ) = protocol.finalize_dotprod_trunc(usedNumberOfFirstFactorColumns);
             }
         }
 

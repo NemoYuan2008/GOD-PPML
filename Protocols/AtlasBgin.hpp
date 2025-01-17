@@ -182,21 +182,17 @@ void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>&
         int dest_base;       // Destination register
         int x_base;         // First operand
         int y_base;         // Second operand 
-        int k;             // Bit length
-        int f;             // Number of bits to truncate
 
         MultTruncInfo(const vector<int>& regs, int offset)
         {
             dest_base = regs[offset];
             x_base = regs[offset + 1]; 
             y_base = regs[offset + 2];
-            k = regs[offset + 3];
-            f = regs[offset + 4];
         }
     };
 
     vector<MultTruncInfo> infos;
-    for (size_t i = 0; i < regs.size(); i += 5)
+    for (size_t i = 0; i < regs.size(); i += 3)
     {
         infos.emplace_back(regs, i);
     }
@@ -209,7 +205,7 @@ void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>&
         {
             T x = proc.get_S_ref(info.x_base + i);
             T y = proc.get_S_ref(info.y_base + i);
-            prepare_mul_trunc(x, y, info.k, info.f);
+            prepare_mul_trunc(x, y);
         }
     }
 
@@ -219,7 +215,7 @@ void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>&
     {
         for (int i = 0; i < size; ++i)
         {
-            proc.get_S_ref(info.dest_base + i) = finalize_mul_trunc(info.k, info.f);
+            proc.get_S_ref(info.dest_base + i) = finalize_mul_trunc();
         }
     }
 }
@@ -232,11 +228,11 @@ void AtlasBgin<T>::init_mul_trunc(int length)
 }
 
 template<class T>
-void AtlasBgin<T>::prepare_mul_trunc(const T& x, const T& y, int k, int f)
+void AtlasBgin<T>::prepare_mul_trunc(const T& x, const T& y)
 {
     x_verify.push_back(x);
     y_verify.push_back(y);
-    honest.prepare_mul_trunc(x, y, k, f);
+    honest.prepare_mul_trunc(x, y);
 }
 
 template<class T>
@@ -246,10 +242,10 @@ void AtlasBgin<T>::exchange_mul_trunc()
 }
 
 template<class T>
-T AtlasBgin<T>::finalize_mul_trunc(int k, int f)
+T AtlasBgin<T>::finalize_mul_trunc()
 {
     T pre_trunc;
-    T res = honest.finalize_mul_trunc(k, f, &pre_trunc);
+    T res = honest.finalize_mul_trunc(&pre_trunc);
     z_verify.push_back(pre_trunc);
     return res;
 }
@@ -269,9 +265,9 @@ void AtlasBgin<T>::prepare_dotprod_trunc(const T& x, const T& y)
 }
 
 template<class T>
-void AtlasBgin<T>::next_dotprod_trunc(int k, int f)
+void AtlasBgin<T>::next_dotprod_trunc()
 {
-    honest.next_dotprod_trunc(k, f);
+    honest.next_dotprod_trunc();
 }
 
 template<class T>
@@ -281,20 +277,20 @@ void AtlasBgin<T>::exchange_dotprod_trunc()
 }
 
 template<class T>
-T AtlasBgin<T>::finalize_dotprod_trunc(int length, int k, int f)
+T AtlasBgin<T>::finalize_dotprod_trunc(int length)
 {
     dotprod_info[z_verify.size()] = length;
     T pre_trunc;
-    T res = honest.finalize_dotprod_trunc(length, k, f, &pre_trunc);
+    T res = honest.finalize_dotprod_trunc(length, &pre_trunc);
     z_verify.push_back(pre_trunc);
     z_verify.insert(z_verify.end(), length - 1, T{0});
     return res;
 }
 
 template<class T>
-void AtlasBgin<T>::prepare_with_solved_bits(const typename T::open_type& product, int k, int f)
+void AtlasBgin<T>::prepare_with_solved_bits(const typename T::open_type& product)
 {
-    honest.prepare_with_solved_bits(product, k, f);
+    honest.prepare_with_solved_bits(product);
 }
 
 
