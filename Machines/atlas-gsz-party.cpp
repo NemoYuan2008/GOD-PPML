@@ -1,6 +1,5 @@
 /**
  * @file atlas-gsz-party.cpp
- * @author Boshi Yuan
  * @brief 
  * 
  */

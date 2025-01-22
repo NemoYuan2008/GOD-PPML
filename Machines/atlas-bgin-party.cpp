@@ -1,6 +1,5 @@
 /**
  * @file atlas-bgin-party.cpp
- * @author Boshi Yuan
  * 
  */
 
