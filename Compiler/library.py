@@ -106,8 +106,10 @@ def print_str(s, *args, print_secrets=False):
                 raise CompilerError('Cannot print secret value:', args[i])
             elif isinstance(val, cfloat):
                 val.print_float_plain()
-            elif isinstance(val, (list, tuple, Array, SubMultiArray)):
+            elif isinstance(val, (list, tuple)):
                 print_str(*_expand_to_print(val), print_secrets=print_secrets)
+            elif isinstance(val, (Array, SubMultiArray)):
+                val.output(print_secrets=print_secrets)
             else:
                 try:
                     val.output()
@@ -1160,10 +1162,16 @@ def map_reduce_single(n_parallel, n_loops, initializer=lambda *x: [],
             for j in range(loop_rounds * my_n_parallel, n_loops):
                 state = reducer(tuplify(loop_body(j)), state)
         else:
-            @for_range(loop_rounds * my_n_parallel, n_loops)
-            def f(j):
-                r = reducer(tuplify(loop_body(j)), mem_state)
-                write_state_to_memory(r)
+            done = regint(loop_rounds * my_n_parallel)
+            for i in range(int(math.log(my_n_parallel, 2)), -1, -1):
+                N = 2 ** i
+                @if_(n_loops - done >= N)
+                def _():
+                    state = tuplify(initializer())
+                    for j in range(N):
+                        state = reducer(tuplify(loop_body(done + j)), state)
+                    write_state_to_memory(reducer(mem_state, state))
+                    done.iadd(N)
             state = mem_state
         if use_array and len(state) and \
            isinstance(types._register, types._vectorizable):

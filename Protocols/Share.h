@@ -104,7 +104,8 @@ class Share_ : public ShareInterface
    void set_mac(const V& aa)    { mac=aa; }
 
    /* Arithmetic Routines */
-   void mul(const Share_<T, V>& S,const clear& aa);
+   template<class U>
+   void mul(const Share_<T, V>& S,const U& aa);
    void add(const Share_<T, V>& S1,const Share_<T, V>& S2);
    void sub(const Share_<T, V>& S1,const Share_<T, V>& S2);
 
@@ -222,8 +223,8 @@ public:
             super(share, mac) {}
 };
 
-template <class T, class V>
-Share_<T, V> operator*(const typename T::clear& y, const Share_<T, V>& x) { Share_<T, V> res; res.mul(x, y); return res; }
+template <class T, class V, class U>
+Share_<T, V> operator*(const U& y, const Share_<T, V>& x) { return x * y; }
 
 template<class T, class V>
 inline void Share_<T, V>::add(const Share_<T, V>& S1,const Share_<T, V>& S2)
@@ -240,10 +241,11 @@ void Share_<T, V>::sub(const Share_<T, V>& S1,const Share_<T, V>& S2)
 }
 
 template<class T, class V>
-inline void Share_<T, V>::mul(const Share_<T, V>& S,const clear& aa)
+template<class U>
+inline void Share_<T, V>::mul(const Share_<T, V>& S, const U& aa)
 {
   a = S.a * aa;
-  mac = aa * S.mac;
+  mac = S.mac * aa;
 }
 
 template<class T, class V>

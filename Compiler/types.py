@@ -3171,7 +3171,7 @@ class sint(_secret, _int):
     @read_mem_value
     def secure_permute(self, shuffle, unit_size=1, reverse=False):
         res = sint(size=self.size)
-        applyshuffle(res, self, unit_size, shuffle, reverse)
+        applyshuffle(self.size, res, self, unit_size, shuffle, reverse)
         return res
 
     def inverse_permutation(self):
@@ -3480,6 +3480,7 @@ class _bitint(Tape._no_truth):
     log_rounds = False
     linear_rounds = False
     comp_result = staticmethod(lambda x: x)
+    reverse_type = lambda *args: False
 
     @staticmethod
     def half_adder(a, b):
@@ -3766,6 +3767,8 @@ class _bitint(Tape._no_truth):
             return self.bit_comparator(a, b)
 
     def __lt__(self, other):
+        if self.reverse_type(other):
+            return other > self
         if program.options.comparison == 'log':
             x, not_equal = self.comparison(other)
             res = util.if_else(not_equal, x, 0)
@@ -3774,6 +3777,8 @@ class _bitint(Tape._no_truth):
         return self.comp_result(res)
 
     def __le__(self, other):
+        if self.reverse_type(other):
+            return other >= self
         if program.options.comparison == 'log':
             x, not_equal = self.comparison(other)
             res = util.if_else(not_equal, x, x.long_one())
@@ -3788,6 +3793,8 @@ class _bitint(Tape._no_truth):
         return (self <= other).bit_not()
 
     def __eq__(self, other, bit_length=None):
+        if self.reverse_type(other):
+            return other == self
         diff = self ^ other
         diff_bits = [x.bit_not() for x in diff.bit_decompose()[:bit_length]]
         return self.comp_result(util.tree_reduce(lambda x, y: x.bit_and(y),
@@ -4744,7 +4751,7 @@ class _fix(_single):
             a = b*(_v.v << (p)) + (1-b)*(_v.v >> (-p))
             self.v = (1-2*_v.s)*a
         elif isinstance(_v, type(self)):
-            self.v = _v.v
+            self.v = self.int_type(_v.v)
         elif isinstance(_v, cfix):
             self.v = self.int_type(adjust(_v))
         elif isinstance(_v, (MemValue, MemFix)):
@@ -6482,6 +6489,12 @@ class Array(_vectorizable):
             library.print_str('%s', self[self.length - 1].reveal())
             library.print_str(']' + end)
 
+    def output(self, **kwargs):
+        try:
+            library.print_str('%s', self[:], **kwargs)
+        except:
+            MultiArray.output(self, **kwargs)
+
     def reveal_to_binary_output(self, player=None):
         """ Reveal to binary output if supported by type.
 
@@ -7348,20 +7361,38 @@ class SubMultiArray(_vectorizable):
             self.secure_permute(perm)
             delshuffle(perm)
 
-    def secure_permute(self, permutation, reverse=False, n_threads=None):
+    def secure_permute(self, permutation, reverse=False, n_threads=None, n_parallel=None):
         """ Securely permute rows (first index). See
         :py:func:`secure_shuffle` for references.
 
         :param permutation: output of :py:func:`sint.get_secure_shuffle()`
         :param reverse: whether to apply inverse (default: False)
-
+        :param n_threads: How many threads should be used. Will not multithread when set to None (default: None)
+        :param n_parallel: How many columns should be permuted in parallel. Will use the compiler's optimization budget is set to None. (default: None).
         """
-        if n_threads is not None:
-            permutation = MemValue(permutation)
-        @library.for_range_multithread(n_threads, 1, self.get_part_size())
-        def _(i):
-            self.set_column(i, self.get_column(i).secure_permute(
-                permutation, reverse=reverse))
+        if (self.value_type == sint) and (n_threads is None):
+            # Use only a single shuffle instruction if applicable and permutation is single-threaded anyway.
+            unit_size = self.get_part_size()
+            n = self.sizes[0] * unit_size
+            res = sint(size=n)
+            applyshuffle(n, res, self[:], unit_size, permutation, reverse)
+            self.assign_vector(res)
+        else:
+            if n_threads is not None:
+                permutation = MemValue(permutation)
+
+            if n_parallel is None:
+                @library.for_range_opt_multithread(n_threads, self.get_part_size())
+                def iter(i):
+                    column = self.get_column(i)
+                    column = column.secure_permute(permutation, reverse=reverse)
+                    self.set_column(i, column)
+            else:
+                @library.for_range_multithread(n_threads, n_parallel, self.get_part_size())
+                def iter(i):
+                    column = self.get_column(i)
+                    column = column.secure_permute(permutation, reverse=reverse)
+                    self.set_column(i, column)
 
     def sort(self, key_indices=None, n_bits=None, batcher=False):
         """ Sort sub-arrays (different first index) in place.
@@ -7440,6 +7471,13 @@ class SubMultiArray(_vectorizable):
                 self[i].print_reveal_nested(end=', ')
             self[len(self) - 1].print_reveal_nested(end='')
             library.print_str(']' + end)
+
+    def output(self, **kwargs):
+        library.print_str('[')
+        @library.for_range(len(self) - 1)
+        def _(i):
+            library.print_str('%s, ', self[i], **kwargs)
+        library.print_str('%s]', self[len(self) - 1], **kwargs)
 
     def reveal_to_binary_output(self, player=None):
         """ Reveal to binary output if supported by type.

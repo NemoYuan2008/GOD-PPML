@@ -39,6 +39,11 @@ public:
             super(other)
     {
     }
+
+    MamaMac operator*(const T& other) const
+    {
+        return super::operator*(SemiShare<T>(other));
+    }
 };
 
 template<class T, int N>

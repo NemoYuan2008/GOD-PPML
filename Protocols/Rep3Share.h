@@ -54,6 +54,22 @@ public:
     {
     }
 
+    template<class U>
+    RepShare operator*(const U& other) const
+    {
+        This res = *this;
+        res *= other;
+        return res;
+    }
+
+    template<class U>
+    RepShare operator*=(const U& other)
+    {
+        for (int i = 0; i < L; i++)
+            (*this)[i] *= other;
+        return *this;
+    }
+
     void pack(octetStream& os, T) const
     {
         pack(os, false);
