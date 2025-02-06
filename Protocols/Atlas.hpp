@@ -8,7 +8,6 @@
  *
  * 1. Use lazy mod for prepare_dotprod_trunc and prepare_dotprod
  * 2. Pass-by-value for T
- * 3. In mul_trunc and dotprod_trunc, the k and f are fixed, maybe omit them both here and in the instruction, and add an instruction to set them
  */
 
 
@@ -17,10 +16,6 @@
 
 #include "Atlas.h"
 #include "AtlasConfig.h"
-
-// #define DEBUG_ATLAS
-// #define DEBUG_MUL_TRUNC
-// #define DEBUG_DOTPROD
 
 
 template<class T>
@@ -188,14 +183,14 @@ void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& pro
 }
 
 template<class T>
-void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type)
+void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, true_type)
 {
     (void) regs; (void) size; (void) proc;
     throw runtime_error("mul_trunc not implemented for characteristic 2");
 }
 
 template<class T>
-void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type) {
+void Atlas<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, false_type) {
     // Parse the arguments
     struct MultTruncInfo {
         int dest_base;       // Destination register

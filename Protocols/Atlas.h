@@ -1,5 +1,5 @@
 /*
- * Atla.h
+ * Atlas.h
  *
  */
 
@@ -81,20 +81,23 @@ public:
 
     T get_random();
 
+    // Functions for multiplication with public output
     void init_mul_pub();
     void prepare_mul_pub(T x, T y); // It's our method, so we can change the signature, use pass-by-value
     void exchange_mul_pub();
     T finalize_mul_pub();
 
+    // Functions for multiply-then-truncate
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
-    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
-    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, true_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, false_type);
 
     void init_mul_trunc(int length);
     void prepare_mul_trunc(const T& x, const T& y);
     void exchange_mul_trunc();
     T finalize_mul_trunc(T* pre_trunc = nullptr);
 
+    // Functions for dot-product-then-truncate
     void init_dotprod_trunc();
     void prepare_dotprod_trunc(const T& x, const T& y);
     void next_dotprod_trunc();

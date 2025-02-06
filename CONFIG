@@ -1,7 +1,5 @@
 ROOT = .
 
-# REMEMBER TO SET THIS BACK TO -O3!!!
-# OPTIM= -O0 # I found -O0 works better for debugging than -Og in clang
 OPTIM= -O3
 #PROF = -pg
 #DEBUG = -DDEBUG

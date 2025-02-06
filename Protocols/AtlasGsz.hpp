@@ -13,11 +13,6 @@
 #include "BufferScope.h"
 #include "AtlasConfig.h"
 
-// #define DEBUG_CHECK
-// #define DEBUG_CHECK_OPENED_VALUES
-// #define DEBUG_DE_LINEARIZATION
-// #define DEBUG_DIM_REDUCTION
-
 
 template<class T>
 AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
@@ -159,17 +154,17 @@ void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& 
 }
 
 template<class T>
-void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type)
+void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, true_type)
 {
     (void) regs; (void) size; (void) proc;
     throw runtime_error("mul_trunc not implemented for characteristic 2");
 }
 
 /**
- * @brief Multiplycation with truncation, called by the instruction mul_trunc
+ * @brief Multiplication with truncation, called by the instruction mul_trunc
  */
 template<class T>
-void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type)
+void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, false_type)
 {
     /*
      * We do not call honest.mul_trunc, 
@@ -456,12 +451,11 @@ void AtlasGsz<T>::dimension_reduction()
     int half_size = x_verify.size() / 2;
 
     // Stored as f_i(x) = f_coeffs[i][0] + f_coeffs[i][1] * x
-    vector<vector<typename T::clear>> f_coeffs(half_size, vector<typename T::clear>(2));
-    vector<vector<typename T::clear>> g_coeffs(half_size, vector<typename T::clear>(2));
+    vector<array<typename T::clear, 2>> f_coeffs(half_size);
+    vector<array<typename T::clear, 2>> g_coeffs(half_size);
 
-    // TODO: maybe use iterators for better cache performance
     for (int i = 0; i < half_size; ++i) {
-        // Let f_i(0) = x_verify[i], f_i(1) = x_verify[i + half_size], we compute the coefficients
+        // Compute the coefficients of f_i such that f_i(0) = x_verify[i], f_i(1) = x_verify[i + half_size]
         f_coeffs[i][0] = x_verify[i];
         f_coeffs[i][1] = x_verify[i + half_size] - f_coeffs[i][0];
         // same for g(x)

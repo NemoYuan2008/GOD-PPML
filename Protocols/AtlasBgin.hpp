@@ -12,11 +12,6 @@
 #include <Tools/Hash.h>
 #include "AtlasConfig.h"
 
-// #define DEBUG_CHECK
-// #define DEBUG_DE_LINEARIZATION
-// #define DEBUG_PROVE_DEG2_REL
-// #define DEBUG_GET_INPUT_MASKS
-
 
 template<class T>
 AtlasBgin<T>::AtlasBgin(Player& P) 
@@ -159,14 +154,14 @@ void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>&
 }
 
 template<class T>
-void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type)
+void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, true_type)
 {
     (void) regs; (void) size; (void) proc;
     throw runtime_error("mul_trunc not implemented for characteristic 2");
 }
 
 template<class T>
-void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type)
+void AtlasBgin<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, false_type)
 {
     /*
      * We do not call honest.mul_trunc, 
@@ -311,11 +306,9 @@ void AtlasBgin<T>::check()
          << "x_verify.size() = " << x_verify.size() << '\n'
          << "x_verify.capacity() = " << x_verify.capacity() << '\n';
 #endif
-    // Not sure if this will increase performance
-    // BufferScope _(honest, 2 * x_verify.size());
 
     de_linearization();
-    prove_deg2_rel(T::characteristic_two);
+    prove_deg2_rel_with_fiat_shamir(T::characteristic_two);
     
     x_verify.clear();
     y_verify.clear();
@@ -404,6 +397,11 @@ void AtlasBgin<T>::de_linearization()
 /**
  * Protocol 3.3 in BGIN20 (No Fiat-Shamir heuristic)
  * 
+ * This function is not used in the experiments in the paper,
+ * but it is implemented for completeness.
+ * See the function prove_deg2_rel_with_fiat_shamir()
+ * for the Fiat-Shamir heuristic version, which is used in the experiments.
+ * 
  * Note that the protocol in the paper is for a single party,
  * but here we execute the protocol for in parallel for all parties,
  * i.e., this function is the batched version of the protocol.
@@ -445,8 +443,12 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
     // A total of log(L) - 1 rounds in step 2
     for (int round_i = 0; round_i < round_count - 1; ++round_i) {
         /* 
-         * In the first round, all players use the same x_verify, y_verify values (use it's own share)
-         * In the subsequent rounds, they use the values computed in the previous round
+         * In the first round, 
+         * all players use the same x_verify, y_verify values (use its own share)
+         * 
+         * In the subsequent rounds, 
+         * they use the values computed in the previous round,
+         * which are stored in a_all_players and b_all_players.
          */
         vector<T>& a_mine = round_i == 0 ? x_verify : a_all_players[P.my_num()];
         vector<T>& b_mine = round_i == 0 ? y_verify : b_all_players[P.my_num()];
@@ -459,6 +461,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
          * We define f_e(x) such that f_e(0) = x[e], f_e(1) = x[half_size + e]
          * and h_e(x) such that h_e(0) = y[e], h_e(1) = y[half_size + e]
          * i.e., we separate the original L polynomials f into L/2 pairs of f_e and h_e
+         * 
          * Also, the indices and the evaluation points start from 0, not 1.
          * This is done to simplify the implementation and for better cache performance
          */
@@ -478,9 +481,9 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
         /*
          * The definition of q(x) becomes q(x) = sum_{e=0}^{L/2-1} f_e(x) h_e(x)
          * 
-         * q(2) = sum_{e=0}^{L/2-1} f_e(2) h_e(2)
          * q(0) = sum_{e=0}^{L/2-1} f_e(0) h_e(0) (first half of a and b)
          * q(1) = sum_{e=0}^{L/2-1} f_e(1) h_e(1) (second half of a and b)
+         * q(2) = sum_{e=0}^{L/2-1} f_e(2) h_e(2)
          */
 
         T q_2 = std::inner_product(f_2.begin(), f_2.end(), h_2.begin(), T{0});
@@ -507,6 +510,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
 
         vector<typename T::open_type> random_points; // One random point for each party's proof
         get_random_coins(P.num_players(), random_points);
+
         for (int party_i = 0; party_i < P.num_players(); ++party_i) {
             T q_0_share = shamir_input.finalize(party_i);
             T q_1_share = shamir_input.finalize(party_i);
@@ -655,6 +659,25 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
     }
 
     /************************* Check q(r) = f(r) h(r) *************************/
+    /**
+     * Here, the shares of f(r) in P_i's proof is stored in a_all_players[party_i][0]
+     * The shares of h(r) in P_i's proof is stored in b_all_players[party_i][0]
+     * The shares of q(r) in P_i's proof is stored in c_all_players[party_i]
+     * We need to open them all and check if q(r) = f(r) h(r) in each party's proof
+     * 
+     * However, when opening f(r) and h(r) in P_i's proof,
+     * the secret revealed is the Shamir's polynomial at point i, not point 0,
+     * i.e., the secret is hold by the party itself.
+     * In contrast, the opening of q(r) is normal, 
+     * i.e., the secret is the Shamir's polynomial at point 0.
+     * 
+     * TODO:
+     * For benchmarking, we just temporarily just open them all at point 0, 
+     * (since opening at point i is not supported by the current API),
+     * and omit the check for q(r) = f(r) h(r).
+     * This doesn't affect the communication and the computation costs :)
+     * However, in P_i's proof, P_i can check if q(r) = f(r) h(r) at point i.
+     */
     local_mc_2t.init_open(P, 3 * P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
         local_mc_2t.prepare_open(a_all_players[party_i][0]);
@@ -668,8 +691,9 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
         b_open[party_i] = local_mc_2t.finalize_open();
         c_open[party_i] = local_mc_2t.finalize_open();
     }
-    // TODO: Check them
-    // Note however, the a value for party i uses the value on point for party i, not point 0.
+    if (a_all_players[P.my_num()][0] * b_all_players[P.my_num()][0] != c_open[P.my_num()]) {
+        throw mac_fail("prove_deg2_rel failed");
+    }
 
 
 #ifdef DEBUG_PROVE_DEG2_REL
@@ -713,16 +737,17 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
  * i.e., this function is the batched version of the protocol.
  */
 template<class T>
-void AtlasBgin<T>::prove_deg2_rel(false_type) {
-    /*
-     * Notes on the notation:
+void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(false_type) {
+    /**
+     * Notes on the notation and variable names:
      * 
-     * x_verify is the initial input of a in the paper, 
-     * y_verify is the initial input of b, 
-     * psi[i] is the initial input of c in P_i's proof.
+     * this->x_verify is the initial input of a in the paper, 
+     * this->y_verify is the initial input of b, 
+     * this->psi[i] is the initial input of c in P_i's proof.
      * 
      * a, b, c will be overwritten in each round.
-     * Also note that in every party's proof, there are corresponding a, b, c,
+     * Also note that in every party's proof, 
+     * there are the corresponding a, b, c values,
      * so we use a_all_players, b_all_players, c_all_players to store them.
      * a_all_players[i] is the share of a in P_i's proof, and so on.
      * 
@@ -1082,6 +1107,25 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
     }
 
     /************************* Check q(r) = f(r) h(r) *************************/
+    /**
+     * Here, the shares of f(r) in P_i's proof is stored in a_all_players[party_i][0]
+     * The shares of h(r) in P_i's proof is stored in b_all_players[party_i][0]
+     * The shares of q(r) in P_i's proof is stored in c_all_players[party_i]
+     * We need to open them all and check if q(r) = f(r) h(r) in each party's proof
+     * 
+     * However, when opening f(r) and h(r) in P_i's proof,
+     * the secret revealed is the Shamir's polynomial at point i, not point 0,
+     * i.e., the secret is hold by the party itself.
+     * In contrast, the opening of q(r) is normal, 
+     * i.e., the secret is the Shamir's polynomial at point 0.
+     * 
+     * TODO:
+     * For benchmarking, we just temporarily just open them all at point 0, 
+     * (since opening at point i is not supported by the current API),
+     * and omit the check for q(r) = f(r) h(r).
+     * This doesn't affect the communication and the computation costs :)
+     * However, in P_i's proof, P_i can check if q(r) = f(r) h(r) at point i.
+     */
     local_mc_2t.init_open(P, 3 * P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
         local_mc_2t.prepare_open(a_all_players[party_i][0]);
@@ -1095,8 +1139,9 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
         b_open[party_i] = local_mc_2t.finalize_open();
         c_open[party_i] = local_mc_2t.finalize_open();
     }
-    // TODO: Check them
-    // Note however, the a value for party i uses the value on point for party i, not point 0.
+    if (a_all_players[P.my_num()][0] * b_all_players[P.my_num()][0] != c_open[P.my_num()]) {
+        throw mac_fail("prove_deg2_rel failed");
+    }
 
 
 #ifdef DEBUG_PROVE_DEG2_REL
@@ -1131,13 +1176,15 @@ void AtlasBgin<T>::prove_deg2_rel(false_type) {
 #endif
 }
 
+template<class T>
+void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(true_type) {
+    throw runtime_error("not implemented for characteristic 2");
+}
+
+
 /**
- * Get random coins using PRNG
- * 
- * We do not use GlobalPRNG or PRNG::SeedGlobally here,
- * since it uses commit-and-open, 
- * which is not the most efficient way for Atlas.
- * We just open the random share to get the seed.
+ * Get random coins by opening random shares 
+ * maybe using PRNG, see the comments in the function.
  */
 template<class T>
 void AtlasBgin<T>::get_random_coins(int num, vector<typename T::open_type>& coins) {
@@ -1145,6 +1192,11 @@ void AtlasBgin<T>::get_random_coins(int num, vector<typename T::open_type>& coin
 
     vector<T> shares;
 
+    /**
+     * If (the number of random coins needed) <= (the number of shares needed for the seed),
+     * then we do not use PRNG.
+     * We just open the random shares to get the random coins.
+     */
     if (num <= num_shares_for_seed) {
         local_mc_2t.init_open(this->P, num);
         for (int i = 0; i < num; ++i) {
@@ -1160,6 +1212,16 @@ void AtlasBgin<T>::get_random_coins(int num, vector<typename T::open_type>& coin
         return;
     }
 
+    /**
+     * Otherwise, we use PRNG to generate the random coins
+     * We open the random shares to get the coins,
+     * and use the coins as the seed for the PRNG,
+     * then use the PRNG to generate all the random coins.
+     * 
+     * We do not use GlobalPRNG or PRNG::SeedGlobally here,
+     * since it uses commit-and-open, 
+     * which is not the as efficient as the method we use here.
+     */
     local_mc_2t.init_open(this->P, num_shares_for_seed);
     for (int i = 0; i < num_shares_for_seed; ++i) {
         local_mc_2t.prepare_open(get_random());
@@ -1177,7 +1239,7 @@ void AtlasBgin<T>::get_random_coins(int num, vector<typename T::open_type>& coin
 }
 
 /**
- * Get the input mask
+ * Get the random input mask ([r], r) for each party
  * 
  * We do not use prep.get_input() here, since it has several issues:
  * 1. We cannot adjust batch size

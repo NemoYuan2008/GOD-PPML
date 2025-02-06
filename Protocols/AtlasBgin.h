@@ -21,8 +21,6 @@ private:
     Atlas<T> honest;
     Preprocessing<T>* prep = nullptr;
 
-    // typename T::MAC_Check local_mc;
-    // typename T::MAC_Check_2t local_mc_2t;
     CheckedIndirectShamirMC_2t<T> local_mc_2t;
     MaliciousShamirMC<T> malicious_mc;
 
@@ -36,12 +34,9 @@ private:
     // The dot product results are stored flattened in *_verify,
     // so we need to know where each dot product begins and ends,
     // this is stored as (index in *_verify) -> length
-    std::unordered_map<int, int> dotprod_info; 
+    unordered_map<int, int> dotprod_info; 
 
 public:
-    // static constexpr false_type use_fiat_shamir; 
-    static constexpr true_type use_fiat_shamir; 
-
     static const bool uses_triples = false;
 
     Player& P;
@@ -79,8 +74,8 @@ public:
     T finalize_mul_pub();
 
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
-    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
-    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, true_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, false_type);
 
     void init_mul_trunc(int length);
     void prepare_mul_trunc(const T& x, const T& y);
@@ -101,11 +96,10 @@ public:
     void check();
     void de_linearization();
     void prove_deg2_rel_no_fiat_shamir(); // No Fiat-Shamir heuristic
-    void prove_deg2_rel(true_type) { throw runtime_error("Not implemented"); } 
-    void prove_deg2_rel(false_type); // With Fiat-Shamir heuristic
+    void prove_deg2_rel_with_fiat_shamir(false_type); // With Fiat-Shamir heuristic
+    void prove_deg2_rel_with_fiat_shamir(true_type);
 
     // Helper function for BGIN20 verification
-    // void seed_prng_globally(PRNG& G);
     void get_random_coins(int num, vector<typename T::open_type>& coins);
     void get_input_masks(int round_count, vector<vector<T>>& masks, vector<T>& masks_open);
 

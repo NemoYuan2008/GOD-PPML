@@ -34,7 +34,7 @@ private:
     // The dot product results are stored flattened in *_verify,
     // so we need to know where each dot product begins and ends,
     // this is stored as (index in *_verify) -> length
-    std::unordered_map<int, int> dotprod_info; 
+    unordered_map<int, int> dotprod_info; 
 
 public:
     static const bool uses_triples = false;
@@ -76,8 +76,8 @@ public:
     T finalize_mul_pub();
 
     void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc);
-    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::true_type);
-    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, std::false_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, true_type);
+    void mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& proc, false_type);
 
     void init_mul_trunc(int length);
     void prepare_mul_trunc(const T& x, const T& y);
