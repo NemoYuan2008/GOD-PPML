@@ -3,7 +3,6 @@
 Although I believe that the protocols have been correctly implemented,
 there are still some improvements can be made.
 
-- Finish BGIN implementation
 - Add correct usage prediction in the compiler
 - Add inference accuracy benchmarks
 - Ensure the consistency of fixed-point precision

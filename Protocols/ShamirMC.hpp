@@ -253,6 +253,82 @@ void IndirectShamirMC_2t<T>::exchange(const Player& P)
 }
 
 
+/**
+ * Prepare opening of a secret at a specific point
+ * 
+ * The corresponding rec_factor is multiplied to the secret
+ */
+template <class T>
+void IndirectShamirMC_2t<T>::prepare_open_at_point(const T &secret, int target, const Player &P)
+{
+    static bool init = false;
+    // stores my rec factor to the points -1, 0, 1, ..., num_players - 1
+    static vector<typename T::open_type::Scalar> rec_factors;
+    if (!init) {
+        vector<int> points(P.num_players());
+        std::iota(points.begin(), points.end(), 0);
+        rec_factors.reserve(P.num_players() + 1);
+        rec_factors.push_back(Shamir<T>::get_rec_factor(P.my_num(), points, -1));
+        for (int target_point = 0; target_point < P.num_players(); ++target_point) {
+            rec_factors.push_back(Shamir<T>::get_rec_factor(P.my_num(), points, target_point));
+        }
+        init = true;
+    }
+
+    this->secrets.push_back(secret * rec_factors[target + 1]);
+}
+
+/**
+ * Exchange secrets and open them
+ * 
+ * Unlike exchange, this function does not multiply the secrets by rec_factor,
+ * since the rec_factor is already multiplied in prepare_open_at_point
+ */
+template <class T>
+void IndirectShamirMC_2t<T>::exchange_no_rec_factor(const Player &P)
+{
+    this->oss.resize(P.num_players());
+
+    static vector<vector<bool>> channels;
+    static bool init = false;
+    if (!init)
+    {
+        channels.resize(P.num_players());
+        for (int i = 0; i < P.num_players(); i++)
+        {
+            channels[i].resize(P.num_players());
+            channels[i][0] = true;
+        }
+        init = true;
+    }
+
+    this->oss[0].reset_write_head();
+    for (auto& x : this->secrets) {
+        x.pack(this->oss[0]);
+    }
+
+    P.send_receive_all(channels, this->oss, this->oss);
+
+    if (P.my_num() == 0)
+    {
+        this->os.reset_write_head();
+        while (this->oss[0].left())
+        {
+            T sum;
+            for (int i = 0; i < P.num_players(); i++)
+                sum += this->oss[i].template get<T>();
+            sum.pack(this->os);
+        }
+        P.send_all(this->os);
+    }
+
+    if (P.my_num() != 0)
+        P.receive_player(0, this->os);
+
+    while (this->os.left())
+        this->values.push_back(this->os.template get<T>());
+}
+
 template<class T>
 void CheckedIndirectShamirMC_2t<T>::exchange(const Player& P)
 {

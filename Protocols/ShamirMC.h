@@ -6,6 +6,8 @@
 #ifndef PROTOCOLS_SHAMIRMC_H_
 #define PROTOCOLS_SHAMIRMC_H_
 
+#include <numeric>
+
 #include "MAC_Check_Base.h"
 #include "Protocols/ShamirShare.h"
 #include "ShamirOptions.h"
@@ -40,6 +42,10 @@ public:
     ~IndirectShamirMC_2t() {}
 
     virtual void exchange(const Player& P);
+
+    // The following two functions are needed in AtlasBgin::prove_deg2_rel_*()
+    void prepare_open_at_point(const T& secret, int point, const Player &P);
+    void exchange_no_rec_factor(const Player& P);
 };
 
 /**

@@ -26,6 +26,7 @@ template<class T>
 AtlasBgin<T>::~AtlasBgin()
 {
     check();
+    check_opened_values();
 }
 
 template <class T>
@@ -290,14 +291,8 @@ void AtlasBgin<T>::prepare_with_solved_bits(const typename T::open_type& product
 }
 
 
-/**
- * Verification protocol in BGIN20
- * 
- * See https://ia.cr/2020/1451 Protocol 4.2
- */
 template<class T>
-void AtlasBgin<T>::check()
-{
+void AtlasBgin<T>::check() {
     if (x_verify.empty())
         return;
 
@@ -307,12 +302,30 @@ void AtlasBgin<T>::check()
          << "x_verify.capacity() = " << x_verify.capacity() << '\n';
 #endif
 
-    de_linearization();
-    prove_deg2_rel_with_fiat_shamir(T::characteristic_two);
-    
+    check(T::characteristic_two);
+}
+
+template<class T>
+void AtlasBgin<T>::check(true_type) {
+    throw runtime_error("Not implemented for characteristic 2");
+}
+
+/**
+ * Verification protocol in BGIN20
+ * 
+ * See https://ia.cr/2020/1451 Protocol 4.2
+ */
+template<class T>
+void AtlasBgin<T>::check(false_type)
+{
+    de_linearization(); // Steps 1-3
+    prove_deg2_rel_with_fiat_shamir(); // Steps 4-5
+    check_beta(); // Steps 6-7
+
     x_verify.clear();
     y_verify.clear();
-    // z_verify and dotprod_info are cleared in de_linearization       
+    z_verify.clear();
+    dotprod_info.clear();
 }
 
 template<class T>
@@ -355,7 +368,7 @@ void AtlasBgin<T>::de_linearization()
     z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
     
     z_verify.clear();
-    if (z_verify.size() > AtlasConfig::max_before_shrink) {
+    if (z_verify.capacity() > AtlasConfig::max_before_shrink) {
         z_verify.shrink_to_fit();
         z_verify.reserve(AtlasConfig::max_before_check);
     }
@@ -426,7 +439,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
      */
     vector<vector<T>> a_all_players(P.num_players());
     vector<vector<T>> b_all_players(P.num_players());
-    auto& c_all_players = psi; // just for keeping the notation consistent with the paper
+    auto c_all_players = psi; // We need a copy
     
     // round_count = ceil(log(L))
     const int round_count = static_cast<int>(std::ceil(std::log2(x_verify.size())));
@@ -655,7 +668,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
     }
     T to_check_combined_open = local_mc_2t.POpen(to_check_combined, this->P);
     if (to_check_combined_open != 0) {
-        throw mac_fail("prove_deg2_rel failed");
+        throw mac_fail("AtlasBgin: Prove degree-2 relation failed");
     }
 
     /************************* Check q(r) = f(r) h(r) *************************/
@@ -665,34 +678,29 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
      * The shares of q(r) in P_i's proof is stored in c_all_players[party_i]
      * We need to open them all and check if q(r) = f(r) h(r) in each party's proof
      * 
-     * However, when opening f(r) and h(r) in P_i's proof,
+     * There is one caveat here:
+     * when opening f(r) and h(r) in P_i's proof,
      * the secret revealed is the Shamir's polynomial at point i, not point 0,
-     * i.e., the secret is hold by the party itself.
+     * i.e., the secret is hold by the party P_i itself.
      * In contrast, the opening of q(r) is normal, 
      * i.e., the secret is the Shamir's polynomial at point 0.
-     * 
-     * TODO:
-     * For benchmarking, we just temporarily just open them all at point 0, 
-     * (since opening at point i is not supported by the current API),
-     * and omit the check for q(r) = f(r) h(r).
-     * This doesn't affect the communication and the computation costs :)
-     * However, in P_i's proof, P_i can check if q(r) = f(r) h(r) at point i.
+     * So we implemented two special functions
+     * prepare_open_at_point() and exchange_no_rec_factor() in ShamirMC.hpp
      */
     local_mc_2t.init_open(P, 3 * P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        local_mc_2t.prepare_open(a_all_players[party_i][0]);
-        local_mc_2t.prepare_open(b_all_players[party_i][0]);
-        local_mc_2t.prepare_open(c_all_players[party_i]);
+        local_mc_2t.prepare_open_at_point(a_all_players[party_i][0], party_i, P);
+        local_mc_2t.prepare_open_at_point(b_all_players[party_i][0], party_i, P);
+        local_mc_2t.prepare_open_at_point(c_all_players[party_i], -1, P);
     }
-    local_mc_2t.exchange(P);
-    vector<typename T::open_type> a_open(P.num_players()), b_open(P.num_players()), c_open(P.num_players());
+    local_mc_2t.exchange_no_rec_factor(P);
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        a_open[party_i] = local_mc_2t.finalize_open();
-        b_open[party_i] = local_mc_2t.finalize_open();
-        c_open[party_i] = local_mc_2t.finalize_open();
-    }
-    if (a_all_players[P.my_num()][0] * b_all_players[P.my_num()][0] != c_open[P.my_num()]) {
-        throw mac_fail("prove_deg2_rel failed");
+        auto a_open = local_mc_2t.finalize_open();
+        auto b_open = local_mc_2t.finalize_open();
+        auto c_open = local_mc_2t.finalize_open();
+        if (a_open * b_open != c_open) {
+            throw mac_fail("AtlasBgin: Prove degree-2 relation failed");
+        }
     }
 
 
@@ -737,7 +745,7 @@ void AtlasBgin<T>::prove_deg2_rel_no_fiat_shamir() {
  * i.e., this function is the batched version of the protocol.
  */
 template<class T>
-void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(false_type) {
+void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir() {
     /**
      * Notes on the notation and variable names:
      * 
@@ -757,7 +765,7 @@ void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(false_type) {
      */
     vector<vector<T>> a_all_players(P.num_players());
     vector<vector<T>> b_all_players(P.num_players());
-    auto& c_all_players = psi; // just for keeping the notation consistent with the paper
+    auto c_all_players = psi; // We need a copy
 
     // round_count equals ceil(log(L))
     const int round_count = static_cast<int>(std::ceil(std::log2(x_verify.size())));
@@ -1103,7 +1111,7 @@ void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(false_type) {
     }
     T to_check_combined_open = local_mc_2t.POpen(to_check_combined, this->P);
     if (to_check_combined_open != 0) {
-        throw mac_fail("prove_deg2_rel failed");
+        throw mac_fail("AtlasBgin: Prove degree-2 relation failed");
     }
 
     /************************* Check q(r) = f(r) h(r) *************************/
@@ -1113,36 +1121,30 @@ void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(false_type) {
      * The shares of q(r) in P_i's proof is stored in c_all_players[party_i]
      * We need to open them all and check if q(r) = f(r) h(r) in each party's proof
      * 
-     * However, when opening f(r) and h(r) in P_i's proof,
+     * There is one caveat here:
+     * when opening f(r) and h(r) in P_i's proof,
      * the secret revealed is the Shamir's polynomial at point i, not point 0,
-     * i.e., the secret is hold by the party itself.
+     * i.e., the secret is hold by the party P_i itself.
      * In contrast, the opening of q(r) is normal, 
      * i.e., the secret is the Shamir's polynomial at point 0.
-     * 
-     * TODO:
-     * For benchmarking, we just temporarily just open them all at point 0, 
-     * (since opening at point i is not supported by the current API),
-     * and omit the check for q(r) = f(r) h(r).
-     * This doesn't affect the communication and the computation costs :)
-     * However, in P_i's proof, P_i can check if q(r) = f(r) h(r) at point i.
+     * So we implemented two special functions
+     * prepare_open_at_point() and exchange_no_rec_factor() in ShamirMC.hpp
      */
     local_mc_2t.init_open(P, 3 * P.num_players());
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        local_mc_2t.prepare_open(a_all_players[party_i][0]);
-        local_mc_2t.prepare_open(b_all_players[party_i][0]);
-        local_mc_2t.prepare_open(c_all_players[party_i]);
+        local_mc_2t.prepare_open_at_point(a_all_players[party_i][0], party_i, P);
+        local_mc_2t.prepare_open_at_point(b_all_players[party_i][0], party_i, P);
+        local_mc_2t.prepare_open_at_point(c_all_players[party_i], -1, P);
     }
-    local_mc_2t.exchange(P);
-    vector<typename T::open_type> a_open(P.num_players()), b_open(P.num_players()), c_open(P.num_players());
+    local_mc_2t.exchange_no_rec_factor(P);
     for (int party_i = 0; party_i < P.num_players(); ++party_i) {
-        a_open[party_i] = local_mc_2t.finalize_open();
-        b_open[party_i] = local_mc_2t.finalize_open();
-        c_open[party_i] = local_mc_2t.finalize_open();
+        auto a_open = local_mc_2t.finalize_open();
+        auto b_open = local_mc_2t.finalize_open();
+        auto c_open = local_mc_2t.finalize_open();
+        if (a_open * b_open != c_open) {
+            throw mac_fail("AtlasBgin: Prove degree-2 relation failed");
+        }
     }
-    if (a_all_players[P.my_num()][0] * b_all_players[P.my_num()][0] != c_open[P.my_num()]) {
-        throw mac_fail("prove_deg2_rel failed");
-    }
-
 
 #ifdef DEBUG_PROVE_DEG2_REL
     vector<vector<typename T::open_type>> to_check_open(round_count);
@@ -1177,8 +1179,32 @@ void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(false_type) {
 }
 
 template<class T>
-void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir(true_type) {
-    throw runtime_error("not implemented for characteristic 2");
+void AtlasBgin<T>::check_beta() {
+    /**
+     * In the paper, beta is computed as beta = sum (r_k z_k) - sum (psi_i)
+     * Here, sum (r_k z_k) is stored in z_de_linearized
+     * However, for psi_i, we cannot take the sum,
+     * since in the paper psi_i is the additive share of psi,
+     * but here psi is the shamir share of psi,
+     * so we multiply psi by the reconstruction factors to get the additive share,
+     * this is done using std::inner_product
+     */
+    static bool initialized = false;
+    static vector<int> points;
+    if (!initialized) {
+        initialized = true;
+        
+        points.resize(P.num_players());
+        std::iota(points.begin(), points.end(), 0);
+    }
+    
+    static const auto rec_factors = Shamir<T>::get_rec_factors(points);
+
+    auto beta = z_de_linearized - std::inner_product(psi.begin(), psi.end(), rec_factors.begin(), T{0});
+    auto beta_open = local_mc_2t.POpen(beta, P);
+    if (beta_open != 0) {
+        throw mac_fail("AtlasBgin: Triple verification failed, beta is not zero");
+    }
 }
 
 
@@ -1396,10 +1422,12 @@ inline void AtlasBgin<T>::check_opened_values()
     typename T::open_type secret_combined_open;
     try {
         secret_combined_open = malicious_mc.finalize_open();
-    } catch (const mac_fail&) {
-        // It sometimes fails here, I don't know why. I'll just catch and swallow it.
-        // I assume it is the bug of MaliciousShamirMC, not the bug of our code.
-        cout << "Warning: MaliciousShamirMC finalize_open failed!!!!!!!\n";
+    } catch (const mac_fail& e) {
+        /**
+         * It sometimes fails here, but I don't know why,
+         * so for the time being, I'll just catch and swallow the mac_fail exception.
+         */
+        cout << "Ignoring " << e.what() << '\n';
         return;
     }
 

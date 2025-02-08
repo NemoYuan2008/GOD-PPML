@@ -94,10 +94,14 @@ public:
 
     // BGIN20 verification 
     void check();
+    void check(true_type);
+    void check(false_type);
+
+    // Subroutines for BGIN20 verification
     void de_linearization();
     void prove_deg2_rel_no_fiat_shamir(); // No Fiat-Shamir heuristic
-    void prove_deg2_rel_with_fiat_shamir(false_type); // With Fiat-Shamir heuristic
-    void prove_deg2_rel_with_fiat_shamir(true_type);
+    void prove_deg2_rel_with_fiat_shamir(); // With Fiat-Shamir heuristic
+    void check_beta();
 
     // Helper function for BGIN20 verification
     void get_random_coins(int num, vector<typename T::open_type>& coins);
