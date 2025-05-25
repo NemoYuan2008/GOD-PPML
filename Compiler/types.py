@@ -5003,8 +5003,6 @@ class sfix(_fix):
 
     @classmethod
     def direct_matrix_mul(cls, A, B, n, m, l, reduce=True, indices=None):
-        assert(reduce) # I'm not sure about reduce=False
-        
         if reduce:
             res = cls.int_type.direct_matrix_mul_trunc(A, B, n, m, l, cls.k, cls.f, indices=indices)
             return sfix._new(res, k=cls.k, f=cls.f)
