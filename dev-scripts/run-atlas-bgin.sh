@@ -14,10 +14,8 @@ start=$3
 end=$4
 port=12345
 
-server1=192.168.0.32
-server2=192.168.0.169
-
-$SPDZROOT/compile.py $progname --budget 1000000
+server1=192.168.0.11
+server2=192.168.0.104
 
 for i in $(seq $start $end); do
     echo "Running $SPDZROOT/atlas-bgin-party.x -pn $port -N $nparties -h $server1 $i $progname"
