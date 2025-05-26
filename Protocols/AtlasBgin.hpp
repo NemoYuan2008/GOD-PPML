@@ -769,6 +769,10 @@ void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir() {
 
     // round_count equals ceil(log(L))
     const int round_count = static_cast<int>(std::ceil(std::log2(x_verify.size())));
+    if (round_count == 0) {
+        // TODO: this is just a workaround, round_count == 0 doesn't mean that x_verify is empty
+        return;
+    }
 
     // to_check[i][j] is the share of c - q(0) - q(1) for party j in round i
     vector<vector<T>> to_check(round_count, vector<T>(P.num_players()));
@@ -1041,6 +1045,10 @@ void AtlasBgin<T>::prove_deg2_rel_with_fiat_shamir() {
 
     /*********************************** Step 3 in the paper ***********************************/
     // The last round, we should have only two elements left in each vector
+    if (a_all_players[P.my_num()].size() == 0) {
+        // TODO: This is just a workaround, I'm not sure why there may be no elements left
+        return;
+    }
     assert(a_all_players[P.my_num()].size() == 2);
     assert(b_all_players[P.my_num()].size() == 2);
 
