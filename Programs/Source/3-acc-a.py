@@ -11,7 +11,7 @@ net = nn.Sequential(
     nn.Linear(128, 10),
 )
 
-print('Downloading the dataset to ./Player-Data if needed, please wait...')
+print('Downloading the dataset to ./Player-Data (if needed), please wait...')
 
 transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor(),])
 dataset_train_torch = torchvision.datasets.MNIST(root='./Player-Data', train=True, download=True, transform=transform)

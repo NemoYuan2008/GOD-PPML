@@ -4,10 +4,14 @@ import torchvision
 
 
 net = nn.Sequential(
-    nn.Conv2d(1, 5, kernel_size=2, stride=2, padding=0),
+    nn.Conv2d(1, 16, kernel_size=5, stride=1, padding=0),
+    nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
+    nn.ReLU(),
+    nn.Conv2d(16, 16, kernel_size=5, stride=1, padding=0),
+    nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
     nn.ReLU(),
     nn.Flatten(),
-    nn.Linear(980, 100),
+    nn.Linear(256, 100),
     nn.ReLU(),
     nn.Linear(100, 10)
 )
@@ -63,7 +67,6 @@ dataset_train = torchvision.datasets.MNIST(root='./Player-Data', train=True, dow
 training_samples = sfix.input_tensor_via(0, dataset_train.data / 255., binary=True)
 training_labels = sint.input_tensor_via(0, dataset_train.targets, binary=True, one_hot=True)
 
-
 dataset_test = torchvision.datasets.MNIST(root='./Player-Data', train=False, download=True)
 test_samples = sfix.input_tensor_via(0, dataset_test.data / 255., binary=True)
 test_labels = sint.input_tensor_via(0, dataset_test.targets, binary=True, one_hot=True)
@@ -71,10 +74,9 @@ test_labels = sint.input_tensor_via(0, dataset_test.targets, binary=True, one_ho
 print(f"dataset_train shape: {dataset_train.data.shape}")
 print(f"Training samples shape: {training_samples.shape}")
 
-
 layers = ml.layers_from_torch(net, training_samples.shape, 128, input_via=0)
 optimizer = ml.Optimizer(layers)
 
-
 n_correct, loss = optimizer.reveal_correctness(test_samples, test_labels, 128, running=True)
 print_ln('Secure accuracy: %s/%s', n_correct, len(test_samples))
+
