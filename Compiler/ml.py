@@ -2611,8 +2611,13 @@ class Optimizer:
             loss.iadd(self.layers[-1].l * batch_size)
             if running:
                 total = start + batch_size
-                print_str('\rpart acc: %s (%s/%s) ',
-                          cfix(n_correct, k=63, f=31) / total, n_correct, total)
+                # TODO: the division result is always 0, but the n_correct and total variables are correct.
+                # So I changed the original MP-SPDZ code
+                print_str('\rpart acc: %s/%s ', n_correct, total)
+
+                # below is the original code
+                # print_str('\rpart acc: %s (%s/%s) ',
+                        #   cfix(n_correct, k=63, f=31) / total, n_correct, total)
         self.run_in_batches(f, data, batch_size, truth)
         if running:
             print_ln()
