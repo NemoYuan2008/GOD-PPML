@@ -1745,15 +1745,20 @@ class Conv2d(ConvBase):
                               inputs_h, inputs_w, weights_h, weights_w,
                               stride_h, stride_w, n_channels_in, padding_h, padding_w,
                               part_size)
+                # MODIFIED by me, we should not shift by f bits
+                # BUT WHY?????? WHY SHOULD bias_before_reduction BE True????
+                res += self.bias.expand_to_vector(j, res.size).v
+
+                ## Below is the original code
                 # conv2ds(res, inputs, weights, output_h, output_w,
                         # inputs_h, inputs_w, weights_h, weights_w,
                         # stride_h, stride_w, n_channels_in, padding_h, padding_w,
                         # part_size)
-                if self.bias_before_reduction:
-                    res += self.bias.expand_to_vector(j, res.size).v
-                else:
-                    res += self.bias.expand_to_vector(j, res.size).v << \
-                        self.weight_squant.f
+                # if self.bias_before_reduction:
+                #     res += self.bias.expand_to_vector(j, res.size).v
+                # else:
+                #     res += self.bias.expand_to_vector(j, res.size).v << \
+                #         self.weight_squant.f
                 res_sfix = sfix._new(res, sfix.k, sfix.f)
                 addresses = regint.inc(res_sfix.size,
                                        self.unreduced[i * part_size].address + j,
