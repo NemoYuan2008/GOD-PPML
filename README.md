@@ -111,4 +111,24 @@ All of the notes in this section mainly affect execution time (in particular WAN
 - When collecting the original data of the paper, we chose the `--budget 1000000` argument for the `./compile.py` command. When running this command for `1-net-c`, it make take some time (~1min). Reducing this argument reduces the memory needed for the compilation, but increases the round count and running time for the MPC execution. See [the original MP-SPDZ document](https://mp-spdz.readthedocs.io/en/latest/troubleshooting.html#high-number-of-rounds-or-slow-wan-execution) for details.
 - When collecting the original data of the paper, the parameters `max_before_check` and `max_before_shrink` in the file `Protocols/AtlasConfig.h` was set to 400,000. Larger values result in smaller communication rounds and running time, but more memory usage.
 - When collecting the original data of the paper, the parties were run on two different machines, while the above commands are for local execution. Please refer to the [Network](https://mp-spdz.readthedocs.io/en/latest/networking.html) section of the original MP-SPDZ document for remote execution commands.
-- The "simple malicious" protocol mentioned in the paper was benchmarked using the [original (unmodified) version of MP-SPDZ](https://github.com/data61/MP-SPDZ). Please use the script `Scripts/sy-shamir.sh` in the original framework.
+- The "sy-shamir" protocol mentioned in the paper was benchmarked using the [original (unmodified) version of MP-SPDZ](https://github.com/data61/MP-SPDZ). Please use the script `Scripts/sy-shamir.sh` in the original framework.
+
+## Training and accuracy
+
+For training, run
+
+```sh
+./compile.py 2-train-c
+./Scripts/atlas-bgin.sh -N 3 2-train-c
+```
+
+For accuracy, run (need pytorch installed)
+
+```sh
+./compile.py 3-acc-a
+./Scripts/atlas-bgin.sh -N 3 3-acc-a
+```
+
+Since this evaluates the whole MNIST test set, it may take some time.
+
+The code for the networks are located at `Programs/Source`, where you can see the network structure.
