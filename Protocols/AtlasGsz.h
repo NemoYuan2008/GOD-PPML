@@ -6,8 +6,6 @@
 #ifndef PROTOCOLS_ATLASGSZ_H_
 #define PROTOCOLS_ATLASGSZ_H_
 
-#include <unordered_map>
-
 #include "Atlas.h"
 #include "MaliciousShamirMC.h"
 
@@ -31,11 +29,6 @@ private:
     vector<T> z_verify;
     T z_de_linearized;
 
-    // The dot product results are stored flattened in *_verify,
-    // so we need to know where each dot product begins and ends,
-    // this is stored as (index in *_verify) -> length
-    unordered_map<int, int> dotprod_info; 
-
     struct PartialMultTranscriptRecord
     {
         size_t offset;
@@ -47,7 +40,14 @@ private:
 
     vector<PartialMultTranscriptRecord> partial_mult_transcripts;
 
+    typename Atlas<T>::PartialMultTranscript current_virtual_transcript;
+    bool have_current_virtual_transcript = false;
+
+    typename Atlas<T>::KingPartialMultEvidence current_virtual_king_evidence;
+    bool have_current_virtual_king_evidence = false;
+
     void validate_partial_mult_transcript_coverage() const;
+    void validate_current_virtual_transcript() const;
 
 public:
     static const bool uses_triples = false;

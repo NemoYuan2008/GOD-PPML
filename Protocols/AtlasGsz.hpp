@@ -50,15 +50,19 @@ void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
 #ifndef NDEBUG
     assert(x_verify.size() == y_verify.size());
     assert(x_verify.size() == z_verify.size());
+    assert(not partial_mult_transcripts.empty());
 
+    int batch_king = partial_mult_transcripts.front().transcript.king;
     size_t expected_offset = 0;
     for (const auto& record : partial_mult_transcripts)
     {
         assert(record.length > 0);
+        assert(record.transcript.king == batch_king);
+        assert(record.has_king_evidence == (P.my_num() == batch_king));
         assert(record.offset == expected_offset);
         assert(record.offset + size_t(record.length) <= x_verify.size());
 
-        T product{};
+        T product = T{0};
         for (int j = 0; j < record.length; j++)
             product += x_verify.at(record.offset + j)
                     * y_verify.at(record.offset + j);
@@ -71,7 +75,7 @@ void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
 
         if (record.has_king_evidence)
         {
-            assert(record.king_evidence.king == record.transcript.king);
+            assert(record.king_evidence.king == batch_king);
             assert(record.king_evidence.received_e_2t.size()
                     == size_t(P.num_players()));
             assert(record.king_evidence.distributed_e_t.size()
@@ -82,6 +86,64 @@ void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
     }
 
     assert(expected_offset == x_verify.size());
+#endif
+}
+
+template<class T>
+void AtlasGsz<T>::validate_current_virtual_transcript() const
+{
+#ifndef NDEBUG
+    assert(have_current_virtual_transcript);
+    assert(x_verify.size() == y_verify.size());
+    assert(not x_verify.empty());
+
+    T product = T{0};
+    for (size_t i = 0; i < x_verify.size(); i++)
+        product += x_verify.at(i) * y_verify.at(i);
+
+    assert(current_virtual_transcript.e_2t
+            == product + current_virtual_transcript.r_2t);
+    assert(current_virtual_transcript.e_t
+            - current_virtual_transcript.r_t
+            == z_de_linearized);
+
+    int king = current_virtual_transcript.king;
+    assert(have_current_virtual_king_evidence == (P.my_num() == king));
+
+    if (P.my_num() == king)
+    {
+        assert(current_virtual_king_evidence.king == king);
+        assert(current_virtual_king_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(current_virtual_king_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+
+        typename Atlas<T>::share_value_type local_e_2t =
+                current_virtual_transcript.e_2t;
+        typename Atlas<T>::share_value_type local_e_t =
+                current_virtual_transcript.e_t;
+
+        assert(current_virtual_king_evidence.received_e_2t.at(king)
+                == local_e_2t);
+        assert(current_virtual_king_evidence.distributed_e_t.at(king)
+                == local_e_t);
+
+        int t = ShamirMachine::s().threshold;
+        typename Atlas<T>::share_value_type received_secret(0);
+        typename Atlas<T>::share_value_type distributed_secret(0);
+
+        for (int i = 0; i < 2 * t + 1; i++)
+            received_secret +=
+                    current_virtual_king_evidence.received_e_2t.at(i)
+                    * Shamir<T>::get_rec_factor(i, 2 * t + 1);
+
+        for (int i = 0; i < t + 1; i++)
+            distributed_secret +=
+                    current_virtual_king_evidence.distributed_e_t.at(i)
+                    * Shamir<T>::get_rec_factor(i, t + 1);
+
+        assert(received_secret == distributed_secret);
+    }
 #endif
 }
 
@@ -175,7 +237,6 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     size_t offset = z_verify.size();
     assert(length > 0);
     assert(offset + size_t(length) <= x_verify.size());
-    dotprod_info[offset] = length;
     PartialMultTranscriptRecord record{};
     record.offset = offset;
     record.length = length;
@@ -411,7 +472,6 @@ T AtlasGsz<T>::finalize_dotprod_trunc(int length)
     size_t offset = z_verify.size();
     assert(length > 0);
     assert(offset + size_t(length) <= x_verify.size());
-    dotprod_info[offset] = length;
     T pre_trunc;
     T res = honest.finalize_dotprod_trunc(length, &pre_trunc);
     PartialMultTranscriptRecord record{};
@@ -507,8 +567,13 @@ void AtlasGsz<T>::check()
     x_verify.clear();
     y_verify.clear();
     z_verify.clear();
-    dotprod_info.clear();
     partial_mult_transcripts.clear();
+    current_virtual_transcript =
+            typename Atlas<T>::PartialMultTranscript{};
+    have_current_virtual_transcript = false;
+    current_virtual_king_evidence =
+            typename Atlas<T>::KingPartialMultEvidence{};
+    have_current_virtual_king_evidence = false;
 
     if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
         x_verify.shrink_to_fit();
@@ -525,45 +590,98 @@ void AtlasGsz<T>::check()
 template<class T>
 void AtlasGsz<T>::de_linearization()
 {
-    z_de_linearized = 0;
+    assert(not partial_mult_transcripts.empty());
+    z_de_linearized = T{0};
+    current_virtual_transcript =
+            typename Atlas<T>::PartialMultTranscript{};
+    current_virtual_transcript.r_t = T{0};
+    current_virtual_transcript.r_2t = T{0};
+    current_virtual_transcript.e_2t = T{0};
+    current_virtual_transcript.e_t = T{0};
+    have_current_virtual_transcript = false;
+    current_virtual_king_evidence =
+            typename Atlas<T>::KingPartialMultEvidence{};
+    have_current_virtual_king_evidence = false;
 
     // Random coin
-    typename T::open_type r = local_mc_2t.POpen(get_random(), this->P);
+    typename T::open_type lambda = local_mc_2t.POpen(get_random(), this->P);
+    typename T::open_type coefficient = 1;
 
-    vector<typename T::open_type> random_coeffs(x_verify.size());
-    random_coeffs[0] = r;
+    int batch_king = partial_mult_transcripts.front().transcript.king;
+    current_virtual_transcript.king = batch_king;
 
-    // We compute and store the random coefficients, not compute it on the fly, 
-    // to enable the use of std algorithms, which may be faster
-    
-    // Special case for the first element
-    int i;
-    if (const auto it = dotprod_info.find(0); it != dotprod_info.end()) {
-        // Use the same random coefficient for one dot product
-        std::fill_n(random_coeffs.begin(), it->second, r);
-        i = it->second;
-    } else {
-        i = 1;
+    if (P.my_num() == batch_king)
+    {
+        current_virtual_king_evidence.king = batch_king;
+        current_virtual_king_evidence.received_e_2t.assign(
+                P.num_players(), typename Atlas<T>::share_value_type(0));
+        current_virtual_king_evidence.distributed_e_t.assign(
+                P.num_players(), typename Atlas<T>::share_value_type(0));
     }
-    // Compute the rest of the coefficients
-    for (; i < static_cast<int>(x_verify.size()); ++i) {
-        auto it = dotprod_info.find(i);
-        if (it != dotprod_info.end()) {
-            // Use the same random coefficient for one dot product
-            std::fill_n(random_coeffs.begin() + i, it->second, random_coeffs[i - 1] * r);
-            i += it->second - 1;
-        } else {
-            random_coeffs[i] = random_coeffs[i - 1] * r;
+
+#ifdef DEBUG_DE_LINEARIZATION
+    vector<typename T::open_type> logical_coeffs;
+    logical_coeffs.reserve(partial_mult_transcripts.size());
+#endif
+
+    for (const auto& record : partial_mult_transcripts)
+    {
+#ifdef DEBUG_DE_LINEARIZATION
+        logical_coeffs.push_back(coefficient);
+#endif
+        assert(record.length > 0);
+        assert(record.transcript.king == batch_king);
+        assert(record.offset + size_t(record.length) <= x_verify.size());
+
+        for (int j = 0; j < record.length; j++)
+        {
+            auto& x = x_verify.at(record.offset + j);
+            x = x * coefficient;
         }
-    }
-    dotprod_info.clear();
 
-    // x_verify = (x_0 r^0, x_1 r^1, ..., x_n r^n); y_verify is unchanged
-    std::transform(x_verify.begin(), x_verify.end(), random_coeffs.begin(), x_verify.begin(),
-                    std::multiplies<typename T::open_type>());
-    
-    // z_de_linearized = z_0 r^0 + z_1 r^1 + ... + z_n r^n
-    z_de_linearized = std::inner_product(z_verify.begin(), z_verify.end(), random_coeffs.begin(), T{0});
+        z_de_linearized += z_verify.at(record.offset) * coefficient;
+        for (int j = 1; j < record.length; j++)
+            assert(z_verify.at(record.offset + j) == T{});
+
+        current_virtual_transcript.r_t +=
+                record.transcript.r_t * coefficient;
+        current_virtual_transcript.r_2t +=
+                record.transcript.r_2t * coefficient;
+        current_virtual_transcript.e_2t +=
+                record.transcript.e_2t * coefficient;
+        current_virtual_transcript.e_t +=
+                record.transcript.e_t * coefficient;
+
+        if (P.my_num() == batch_king)
+        {
+            assert(record.has_king_evidence);
+            assert(record.king_evidence.king == batch_king);
+            assert(record.king_evidence.received_e_2t.size()
+                    == size_t(P.num_players()));
+            assert(record.king_evidence.distributed_e_t.size()
+                    == size_t(P.num_players()));
+
+            for (int j = 0; j < P.num_players(); j++)
+            {
+                current_virtual_king_evidence.received_e_2t.at(j) +=
+                        record.king_evidence.received_e_2t.at(j)
+                        * coefficient;
+                current_virtual_king_evidence.distributed_e_t.at(j) +=
+                        record.king_evidence.distributed_e_t.at(j)
+                        * coefficient;
+            }
+        }
+        else
+        {
+            assert(not record.has_king_evidence);
+        }
+
+        coefficient *= lambda;
+    }
+
+    have_current_virtual_transcript = true;
+    have_current_virtual_king_evidence = (P.my_num() == batch_king);
+
     z_verify.clear();
 
     if (z_verify.capacity() > AtlasConfig::max_before_shrink) {
@@ -578,8 +696,8 @@ void AtlasGsz<T>::de_linearization()
     debug_mc.POpen(y_verify_open, y_verify, this->P);
     
     cerr << "\nDe-linearization\n";
-    cerr << "random_coeffs: ";
-    for (auto c: random_coeffs) {
+    cerr << "logical_coeffs: ";
+    for (auto c: logical_coeffs) {
         cerr << c << " ";
     }
     cerr << "\nx_verify: ";
@@ -592,6 +710,8 @@ void AtlasGsz<T>::de_linearization()
     }
     cerr << "\nz_de_linearized: " << debug_mc.POpen(z_de_linearized, this->P) << '\n';
 #endif
+
+    validate_current_virtual_transcript();
 }
 
 /**
