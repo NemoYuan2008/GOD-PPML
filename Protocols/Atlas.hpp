@@ -329,14 +329,27 @@ T Atlas<T>::get_random()
 template <class T>
 inline void Atlas<T>::init_mul_pub()
 {
+    init_mul();
+    assert(not fixed_king_enabled || fixed_king == 0);
     local_mc_2t.init_open(P);
 }
 
 template <class T>
 inline void Atlas<T>::prepare_mul_pub(T x, T y)
 {
-    // TODO: a zero-sharing is needed here for security
-    local_mc_2t.prepare_open(x * y);
+    auto rho = get_double_sharing();
+    T product = x * y;
+    T o_2t = rho[0] - rho[1];
+    T e_2t = product + o_2t;
+    local_mc_2t.prepare_open(e_2t);
+
+    PartialMultTranscript transcript{};
+    transcript.r_t = T{0};
+    transcript.r_2t = o_2t;
+    transcript.e_2t = e_2t;
+    transcript.king = 0;
+    assert(transcript.e_2t == product + transcript.r_2t);
+    pending_partial_mult_transcripts.push_back(transcript);
 }
 
 template <class T>
@@ -348,7 +361,22 @@ inline void Atlas<T>::exchange_mul_pub()
 template <class T>
 inline T Atlas<T>::finalize_mul_pub()
 {
-    return local_mc_2t.finalize_open();
+    typename T::open_type alpha = local_mc_2t.finalize_open();
+    T alpha_t = alpha;
+
+    size_t transcript_index = next_partial_mult_transcript;
+    assert(transcript_index < pending_partial_mult_transcripts.size());
+    auto& transcript = pending_partial_mult_transcripts.at(transcript_index);
+    next_partial_mult_transcript++;
+    assert(transcript.king == 0);
+    assert(transcript.r_t == T{0});
+    transcript.e_t = alpha_t;
+    last_partial_mult_transcript = transcript;
+    have_last_partial_mult_transcript = true;
+    have_last_king_partial_mult_evidence = false;
+    assert(transcript.e_t - transcript.r_t == alpha_t);
+
+    return alpha_t;
 }
 
 template<class T>

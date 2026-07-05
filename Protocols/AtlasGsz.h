@@ -47,6 +47,8 @@ private:
 
     vector<PartialMultTranscriptRecord> partial_mult_transcripts;
 
+    void validate_partial_mult_transcript_coverage() const;
+
 public:
     static const bool uses_triples = false;
 

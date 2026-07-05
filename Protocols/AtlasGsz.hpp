@@ -45,6 +45,47 @@ inline void AtlasGsz<T>::maybe_check()
 }
 
 template<class T>
+void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
+{
+#ifndef NDEBUG
+    assert(x_verify.size() == y_verify.size());
+    assert(x_verify.size() == z_verify.size());
+
+    size_t expected_offset = 0;
+    for (const auto& record : partial_mult_transcripts)
+    {
+        assert(record.length > 0);
+        assert(record.offset == expected_offset);
+        assert(record.offset + size_t(record.length) <= x_verify.size());
+
+        T product{};
+        for (int j = 0; j < record.length; j++)
+            product += x_verify.at(record.offset + j)
+                    * y_verify.at(record.offset + j);
+
+        assert(record.transcript.e_2t
+                == product + record.transcript.r_2t);
+        assert(record.transcript.e_t
+                - record.transcript.r_t
+                == z_verify.at(record.offset));
+
+        if (record.has_king_evidence)
+        {
+            assert(record.king_evidence.king == record.transcript.king);
+            assert(record.king_evidence.received_e_2t.size()
+                    == size_t(P.num_players()));
+            assert(record.king_evidence.distributed_e_t.size()
+                    == size_t(P.num_players()));
+        }
+
+        expected_offset += record.length;
+    }
+
+    assert(expected_offset == x_verify.size());
+#endif
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 }
@@ -180,7 +221,20 @@ void AtlasGsz<T>::exchange_mul_pub()
 template<class T>
 T AtlasGsz<T>::finalize_mul_pub()
 {
+    size_t n_records = partial_mult_transcripts.size();
     T res = honest.finalize_mul_pub();
+
+    PartialMultTranscriptRecord record{};
+    record.offset = z_verify.size();
+    record.length = 1;
+    record.transcript = honest.get_last_partial_mult_transcript();
+    record.has_king_evidence = false;
+    assert(record.transcript.king == 0);
+    assert(record.transcript.r_t == T{0});
+    assert(record.transcript.e_t - record.transcript.r_t == res);
+    partial_mult_transcripts.push_back(record);
+    assert(partial_mult_transcripts.size() == n_records + 1);
+
     z_verify.push_back(res);
     return res;
 }
@@ -373,6 +427,8 @@ void AtlasGsz<T>::check()
     if (x_verify.empty()) {
         return;
     }
+
+    validate_partial_mult_transcript_coverage();
 
 #ifdef DEBUG_CHECK
     cerr << "check()\n"
