@@ -48,6 +48,18 @@ array<T, 2> Atlas<T>::get_double_sharing()
 }
 
 template<class T>
+void Atlas<T>::initialize_reconstruction_factors()
+{
+    int t = ShamirMachine::s().threshold;
+    if (reconstruction.empty())
+        for (int i = 0; i < 2 * t + 1; i++)
+            reconstruction.push_back(Shamir<T>::get_rec_factor(i, 2 * t + 1));
+    if (reconstruction_t.empty())
+        for (int i = 0; i < t + 1; i++)
+            reconstruction_t.push_back(Shamir<T>::get_rec_factor(i, t + 1));
+}
+
+template<class T>
 typename Atlas<T>::share_value_type Atlas<T>::reconstruct_received_e_2t(
         const vector<typename Atlas<T>::share_value_type>& sharing) const
 {
@@ -73,6 +85,42 @@ typename Atlas<T>::share_value_type Atlas<T>::reconstruct_distributed_e_t(
     for (int i = 0; i < t + 1; i++)
         res += sharing.at(i) * reconstruction_t.at(i);
     return res;
+}
+
+template<class T>
+void Atlas<T>::build_public_opening_king_evidence(
+        size_t transcript_index,
+        const share_value_type& opened_value)
+{
+    assert(P.my_num() == 0);
+    initialize_reconstruction_factors();
+    assert(transcript_index < pending_partial_mult_transcripts.size());
+    if (pending_king_partial_mult_evidence.empty())
+        pending_king_partial_mult_evidence.resize(
+                pending_partial_mult_transcripts.size());
+    assert(pending_king_partial_mult_evidence.size()
+            == pending_partial_mult_transcripts.size());
+
+    auto& evidence = pending_king_partial_mult_evidence.at(transcript_index);
+    evidence.received_e_2t =
+            local_mc_2t.get_recorded_received_sharing(transcript_index);
+    evidence.distributed_e_t.assign(P.num_players(), opened_value);
+    evidence.king = 0;
+
+    assert(evidence.received_e_2t.size() == size_t(P.num_players()));
+    assert(evidence.distributed_e_t.size() == size_t(P.num_players()));
+    assert(evidence.king == 0);
+    assert(reconstruct_received_e_2t(evidence.received_e_2t)
+            == opened_value);
+    assert(reconstruct_distributed_e_t(evidence.distributed_e_t)
+            == opened_value);
+
+    const auto& transcript =
+            pending_partial_mult_transcripts.at(transcript_index);
+    share_value_type local_e_2t = transcript.e_2t;
+    share_value_type local_e_t = transcript.e_t;
+    assert(evidence.received_e_2t.at(0) == local_e_2t);
+    assert(evidence.distributed_e_t.at(0) == local_e_t);
 }
 
 template<class T>
@@ -133,12 +181,7 @@ void Atlas<T>::exchange()
     assert(pending_partial_mult_transcripts.size() == masks.size());
 
     int t = ShamirMachine::s().threshold;
-    if (reconstruction.empty())
-        for (int i = 0; i < 2 * t + 1; i++)
-            reconstruction.push_back(Shamir<T>::get_rec_factor(i, 2 * t + 1));
-    if (reconstruction_t.empty())
-        for (int i = 0; i < t + 1; i++)
-            reconstruction_t.push_back(Shamir<T>::get_rec_factor(i, t + 1));
+    initialize_reconstruction_factors();
     resharing.reset_all(P);
 
     if (fixed_king_enabled)
@@ -331,6 +374,8 @@ inline void Atlas<T>::init_mul_pub()
 {
     init_mul();
     assert(not fixed_king_enabled || fixed_king == 0);
+    assert(local_mc_2t.num_recorded_received_sharings() == 0);
+    local_mc_2t.clear_recorded_received_sharings();
     local_mc_2t.init_open(P);
 }
 
@@ -355,7 +400,14 @@ inline void Atlas<T>::prepare_mul_pub(T x, T y)
 template <class T>
 inline void Atlas<T>::exchange_mul_pub()
 {
+    local_mc_2t.begin_received_sharing_recording();
     local_mc_2t.exchange(P);
+    local_mc_2t.end_received_sharing_recording();
+    if (P.my_num() == 0)
+        assert(local_mc_2t.num_recorded_received_sharings()
+                == pending_partial_mult_transcripts.size());
+    else
+        assert(local_mc_2t.num_recorded_received_sharings() == 0);
 }
 
 template <class T>
@@ -373,8 +425,32 @@ inline T Atlas<T>::finalize_mul_pub()
     transcript.e_t = alpha_t;
     last_partial_mult_transcript = transcript;
     have_last_partial_mult_transcript = true;
-    have_last_king_partial_mult_evidence = false;
+    if (P.my_num() == 0)
+    {
+        build_public_opening_king_evidence(transcript_index, alpha);
+        last_king_partial_mult_evidence =
+                pending_king_partial_mult_evidence.at(transcript_index);
+        have_last_king_partial_mult_evidence = true;
+        assert(last_king_partial_mult_evidence.king == 0);
+        assert(last_king_partial_mult_evidence.king == transcript.king);
+        assert(last_king_partial_mult_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(last_king_partial_mult_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+        assert(reconstruct_received_e_2t(
+                last_king_partial_mult_evidence.received_e_2t) == alpha);
+        assert(reconstruct_distributed_e_t(
+                last_king_partial_mult_evidence.distributed_e_t) == alpha);
+    }
+    else
+    {
+        have_last_king_partial_mult_evidence = false;
+    }
     assert(transcript.e_t - transcript.r_t == alpha_t);
+
+    if (next_partial_mult_transcript
+            == pending_partial_mult_transcripts.size())
+        local_mc_2t.clear_recorded_received_sharings();
 
     return alpha_t;
 }
@@ -444,6 +520,8 @@ void Atlas<T>::init_mul_trunc(int length)
 {   
     init_mul();
     assert(not fixed_king_enabled || fixed_king == 0);
+    assert(local_mc_2t.num_recorded_received_sharings() == 0);
+    local_mc_2t.clear_recorded_received_sharings();
     local_mc_2t.init_open(P, length);
 }
 
@@ -561,7 +639,14 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product)
 template<class T>
 void Atlas<T>::exchange_mul_trunc()
 {
+    local_mc_2t.begin_received_sharing_recording();
     local_mc_2t.exchange(P);
+    local_mc_2t.end_received_sharing_recording();
+    if (P.my_num() == 0)
+        assert(local_mc_2t.num_recorded_received_sharings()
+                == pending_partial_mult_transcripts.size());
+    else
+        assert(local_mc_2t.num_recorded_received_sharings() == 0);
 }
 
 /**
@@ -594,13 +679,37 @@ T Atlas<T>::finalize_mul_trunc(T* pre_trunc)
     transcript.e_t = e_t;
     last_partial_mult_transcript = transcript;
     have_last_partial_mult_transcript = true;
-    have_last_king_partial_mult_evidence = false;
+    if (P.my_num() == 0)
+    {
+        build_public_opening_king_evidence(transcript_index, c);
+        last_king_partial_mult_evidence =
+                pending_king_partial_mult_evidence.at(transcript_index);
+        have_last_king_partial_mult_evidence = true;
+        assert(last_king_partial_mult_evidence.king == 0);
+        assert(last_king_partial_mult_evidence.king == transcript.king);
+        assert(last_king_partial_mult_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(last_king_partial_mult_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+        assert(reconstruct_received_e_2t(
+                last_king_partial_mult_evidence.received_e_2t) == c);
+        assert(reconstruct_distributed_e_t(
+                last_king_partial_mult_evidence.distributed_e_t) == c);
+    }
+    else
+    {
+        have_last_king_partial_mult_evidence = false;
+    }
 
     T a = e_t - r;
     if (pre_trunc != nullptr) {
         *pre_trunc = a; // This is needed for verification in the maliciously secure version
     }
     assert(transcript.e_t - transcript.r_t == a);
+
+    if (next_partial_mult_transcript
+            == pending_partial_mult_transcripts.size())
+        local_mc_2t.clear_recorded_received_sharings();
 
     c += two_power_k_minus_two;
     typename T::clear c_msb = c >> (k - 1);

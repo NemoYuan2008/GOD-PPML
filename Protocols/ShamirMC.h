@@ -37,11 +37,23 @@ public:
 template<class T>
 class IndirectShamirMC_2t : public IndirectShamirMC<T>
 {
+    bool record_received_sharings = false;
+    vector<vector<typename T::open_type>> recorded_received_sharings;
+    vector<typename T::open_type::Scalar> opening_rec_factors;
+    vector<typename T::open_type::Scalar> inverse_rec_factors;
+
 public:
     IndirectShamirMC_2t(typename T::mac_key_type = {}, int = 0, int = 0) {}
     ~IndirectShamirMC_2t() {}
 
     virtual void exchange(const Player& P);
+
+    void begin_received_sharing_recording();
+    void end_received_sharing_recording();
+    void clear_recorded_received_sharings();
+    size_t num_recorded_received_sharings() const;
+    const vector<typename T::open_type>&
+        get_recorded_received_sharing(size_t index) const;
 
     // The following two functions are needed in AtlasBgin::prove_deg2_rel_*()
     void prepare_open_at_point(const T& secret, int point, const Player &P);

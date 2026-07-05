@@ -70,10 +70,14 @@ private:
     bool have_last_king_partial_mult_evidence = false;
 
     array<T, 2> get_double_sharing();
+    void initialize_reconstruction_factors();
     share_value_type reconstruct_received_e_2t(
             const vector<share_value_type>& sharing) const;
     share_value_type reconstruct_distributed_e_t(
             const vector<share_value_type>& sharing) const;
+    void build_public_opening_king_evidence(
+            size_t transcript_index,
+            const share_value_type& opened_value);
 
 
 protected:

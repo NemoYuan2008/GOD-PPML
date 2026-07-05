@@ -207,9 +207,58 @@ void IndirectShamirMC<T>::exchange(const Player& P)
 }
 
 template<class T>
+void IndirectShamirMC_2t<T>::begin_received_sharing_recording()
+{
+    assert(not record_received_sharings);
+    recorded_received_sharings.clear();
+    record_received_sharings = true;
+}
+
+template<class T>
+void IndirectShamirMC_2t<T>::end_received_sharing_recording()
+{
+    assert(record_received_sharings);
+    record_received_sharings = false;
+}
+
+template<class T>
+void IndirectShamirMC_2t<T>::clear_recorded_received_sharings()
+{
+    assert(not record_received_sharings);
+    recorded_received_sharings.clear();
+}
+
+template<class T>
+size_t IndirectShamirMC_2t<T>::num_recorded_received_sharings() const
+{
+    return recorded_received_sharings.size();
+}
+
+template<class T>
+const vector<typename T::open_type>&
+IndirectShamirMC_2t<T>::get_recorded_received_sharing(size_t index) const
+{
+    return recorded_received_sharings.at(index);
+}
+
+template<class T>
 void IndirectShamirMC_2t<T>::exchange(const Player& P)
 {
     this->oss.resize(P.num_players());
+
+    if (inverse_rec_factors.empty())
+    {
+        opening_rec_factors.reserve(P.num_players());
+        inverse_rec_factors.reserve(P.num_players());
+        for (int i = 0; i < P.num_players(); i++)
+        {
+            auto factor = Shamir<T>::get_rec_factor(i, P.num_players());
+            opening_rec_factors.push_back(factor);
+            inverse_rec_factors.push_back(factor.invert());
+        }
+    }
+    assert(opening_rec_factors.size() == size_t(P.num_players()));
+    assert(inverse_rec_factors.size() == size_t(P.num_players()));
 
     static const auto my_rec_factor = Shamir<T>::get_rec_factor(P.my_num(), P.num_players());
     static vector<vector<bool>> channels;
@@ -235,12 +284,41 @@ void IndirectShamirMC_2t<T>::exchange(const Player& P)
     if (P.my_num() == 0)
     {
         this->os.reset_write_head();
+        size_t opening_index = 0;
         while (this->oss[0].left())
         {
-            T sum;
+            T sum{};
+            vector<typename T::open_type> raw_sharing;
+            if (record_received_sharings)
+                raw_sharing.resize(P.num_players());
             for (int i = 0; i < P.num_players(); i++)
-                sum += this->oss[i].template get<T>();
+            {
+                auto weighted = this->oss[i].template get<T>();
+                sum += weighted;
+                if (record_received_sharings)
+                {
+                    typename T::open_type weighted_value = weighted;
+                    raw_sharing.at(i) =
+                            weighted_value * inverse_rec_factors.at(i);
+                }
+            }
+            if (record_received_sharings)
+            {
+                assert(raw_sharing.size() == size_t(P.num_players()));
+                typename T::open_type reconstructed{};
+                for (int i = 0; i < P.num_players(); i++)
+                    reconstructed += raw_sharing.at(i)
+                            * opening_rec_factors.at(i);
+                typename T::open_type sum_value = sum;
+                assert(reconstructed == sum_value);
+                assert(opening_index < this->secrets.size());
+                typename T::open_type local_secret =
+                        this->secrets.at(opening_index);
+                assert(raw_sharing.at(0) == local_secret);
+                recorded_received_sharings.push_back(raw_sharing);
+            }
             sum.pack(this->os);
+            opening_index++;
         }
         P.send_all(this->os);
     }

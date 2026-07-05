@@ -228,10 +228,22 @@ T AtlasGsz<T>::finalize_mul_pub()
     record.offset = z_verify.size();
     record.length = 1;
     record.transcript = honest.get_last_partial_mult_transcript();
-    record.has_king_evidence = false;
+    record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
+    if (record.has_king_evidence)
+        record.king_evidence = honest.get_last_king_partial_mult_evidence();
+    assert(record.has_king_evidence == (P.my_num() == 0));
     assert(record.transcript.king == 0);
     assert(record.transcript.r_t == T{0});
     assert(record.transcript.e_t - record.transcript.r_t == res);
+    if (record.has_king_evidence)
+    {
+        assert(record.king_evidence.king == 0);
+        assert(record.king_evidence.king == record.transcript.king);
+        assert(record.king_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(record.king_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
     partial_mult_transcripts.push_back(record);
     assert(partial_mult_transcripts.size() == n_records + 1);
 
@@ -343,9 +355,21 @@ T AtlasGsz<T>::finalize_mul_trunc()
     record.offset = z_verify.size();
     record.length = 1;
     record.transcript = honest.get_last_partial_mult_transcript();
-    record.has_king_evidence = false;
+    record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
+    if (record.has_king_evidence)
+        record.king_evidence = honest.get_last_king_partial_mult_evidence();
+    assert(record.has_king_evidence == (P.my_num() == 0));
     assert(record.transcript.king == 0);
     assert(record.transcript.e_t - record.transcript.r_t == pre_trunc);
+    if (record.has_king_evidence)
+    {
+        assert(record.king_evidence.king == 0);
+        assert(record.king_evidence.king == record.transcript.king);
+        assert(record.king_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(record.king_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
     partial_mult_transcripts.push_back(record);
     assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(pre_trunc);
@@ -394,9 +418,21 @@ T AtlasGsz<T>::finalize_dotprod_trunc(int length)
     record.offset = offset;
     record.length = length;
     record.transcript = honest.get_last_partial_mult_transcript();
-    record.has_king_evidence = false;
+    record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
+    if (record.has_king_evidence)
+        record.king_evidence = honest.get_last_king_partial_mult_evidence();
+    assert(record.has_king_evidence == (P.my_num() == 0));
     assert(record.transcript.king == 0);
     assert(record.transcript.e_t - record.transcript.r_t == pre_trunc);
+    if (record.has_king_evidence)
+    {
+        assert(record.king_evidence.king == 0);
+        assert(record.king_evidence.king == record.transcript.king);
+        assert(record.king_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(record.king_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
     partial_mult_transcripts.push_back(record);
     assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(pre_trunc);
