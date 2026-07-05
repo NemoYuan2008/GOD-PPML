@@ -415,6 +415,7 @@ template<class T>
 void Atlas<T>::init_mul_trunc(int length)
 {   
     init_mul();
+    assert(not fixed_king_enabled || fixed_king == 0);
     local_mc_2t.init_open(P, length);
 }
 
@@ -480,9 +481,18 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product)
         r_prime += r_msb << i;
     }
 
-    // TODO: a zero-sharing is needed here for security
-    auto c = product + r;
-    local_mc_2t.prepare_open(c);
+    auto s = get_double_sharing();
+    T r_hat_2t = r + s[0] - s[1];
+    T e_2t = product + r_hat_2t;
+    local_mc_2t.prepare_open(e_2t);
+
+    PartialMultTranscript transcript{};
+    transcript.r_t = r;
+    transcript.r_2t = r_hat_2t;
+    transcript.e_2t = e_2t;
+    transcript.king = 0;
+    assert(transcript.e_2t == product + transcript.r_2t);
+    pending_partial_mult_transcripts.push_back(transcript);
 
 #ifdef DEBUG_MUL_TRUNC
     // Open r, r_bits, r_msb, r_prime for debugging
@@ -546,9 +556,23 @@ T Atlas<T>::finalize_mul_trunc(T* pre_trunc)
     T r_prime = masks.next();
     T r = masks.next();
 
+    size_t transcript_index = next_partial_mult_transcript;
+    assert(transcript_index < pending_partial_mult_transcripts.size());
+    auto& transcript = pending_partial_mult_transcripts.at(transcript_index);
+    next_partial_mult_transcript++;
+    assert(transcript.king == 0);
+    assert(transcript.r_t == r);
+    T e_t = c;
+    transcript.e_t = e_t;
+    last_partial_mult_transcript = transcript;
+    have_last_partial_mult_transcript = true;
+    have_last_king_partial_mult_evidence = false;
+
+    T a = e_t - r;
     if (pre_trunc != nullptr) {
-        *pre_trunc = c - r; // This is needed for verification in the maliciously secure version
+        *pre_trunc = a; // This is needed for verification in the maliciously secure version
     }
+    assert(transcript.e_t - transcript.r_t == a);
 
     c += two_power_k_minus_two;
     typename T::clear c_msb = c >> (k - 1);

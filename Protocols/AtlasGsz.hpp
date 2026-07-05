@@ -282,8 +282,18 @@ void AtlasGsz<T>::exchange_mul_trunc()
 template<class T>
 T AtlasGsz<T>::finalize_mul_trunc()
 {
+    size_t n_records = partial_mult_transcripts.size();
     T pre_trunc;
     T res = honest.finalize_mul_trunc(&pre_trunc);
+    PartialMultTranscriptRecord record{};
+    record.offset = z_verify.size();
+    record.length = 1;
+    record.transcript = honest.get_last_partial_mult_transcript();
+    record.has_king_evidence = false;
+    assert(record.transcript.king == 0);
+    assert(record.transcript.e_t - record.transcript.r_t == pre_trunc);
+    partial_mult_transcripts.push_back(record);
+    assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(pre_trunc);
 
     return res;
@@ -319,9 +329,22 @@ void AtlasGsz<T>::exchange_dotprod_trunc()
 template<class T>
 T AtlasGsz<T>::finalize_dotprod_trunc(int length)
 {
-    dotprod_info[z_verify.size()] = length;
+    size_t n_records = partial_mult_transcripts.size();
+    size_t offset = z_verify.size();
+    assert(length > 0);
+    assert(offset + size_t(length) <= x_verify.size());
+    dotprod_info[offset] = length;
     T pre_trunc;
     T res = honest.finalize_dotprod_trunc(length, &pre_trunc);
+    PartialMultTranscriptRecord record{};
+    record.offset = offset;
+    record.length = length;
+    record.transcript = honest.get_last_partial_mult_transcript();
+    record.has_king_evidence = false;
+    assert(record.transcript.king == 0);
+    assert(record.transcript.e_t - record.transcript.r_t == pre_trunc);
+    partial_mult_transcripts.push_back(record);
+    assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(pre_trunc);
     z_verify.insert(z_verify.end(), length - 1, T{0});
 
