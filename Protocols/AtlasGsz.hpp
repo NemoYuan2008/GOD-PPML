@@ -720,10 +720,35 @@ void AtlasGsz<T>::de_linearization()
 template<class T>
 void AtlasGsz<T>::dimension_reduction()
 {
+    assert(have_current_virtual_transcript);
+    assert(not x_verify.empty());
+    assert(x_verify.size() == y_verify.size());
+
+    int batch_king = current_virtual_transcript.king;
+    assert(have_current_virtual_king_evidence
+            == (P.my_num() == batch_king));
+
+    validate_current_virtual_transcript();
+
+    auto input_transcript = current_virtual_transcript;
+    T input_z = z_de_linearized;
+    typename Atlas<T>::KingPartialMultEvidence input_king_evidence{};
+    if (P.my_num() == batch_king)
+    {
+        input_king_evidence = current_virtual_king_evidence;
+        assert(input_king_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(input_king_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
+
     if (x_verify.size() & 1) {
         x_verify.emplace_back(0);
         y_verify.emplace_back(0);
     }
+    assert(x_verify.size() == y_verify.size());
+    assert((x_verify.size() & 1) == 0);
+
     int half_size = x_verify.size() / 2;
 
     // Stored as f_i(x) = f_coeffs[i][0] + f_coeffs[i][1] * x
@@ -738,6 +763,24 @@ void AtlasGsz<T>::dimension_reduction()
         g_coeffs[i][0] = y_verify[i];
         g_coeffs[i][1] = y_verify[i + half_size] - g_coeffs[i][0];
     }
+
+#ifndef NDEBUG
+    T product_0 = T{0};
+    T product_1 = T{0};
+    T product_2 = T{0};
+    for (int i = 0; i < half_size; ++i)
+    {
+        auto f0 = f_coeffs[i][0];
+        auto f1 = f_coeffs[i][0] + f_coeffs[i][1];
+        auto f2 = f_coeffs[i][0] + f_coeffs[i][1] * 2;
+        auto g0 = g_coeffs[i][0];
+        auto g1 = g_coeffs[i][0] + g_coeffs[i][1];
+        auto g2 = g_coeffs[i][0] + g_coeffs[i][1] * 2;
+        product_0 += f0 * g0;
+        product_1 += f1 * g1;
+        product_2 += f2 * g2;
+    }
+#endif
 
     honest.init_dotprod();
 
@@ -763,28 +806,196 @@ void AtlasGsz<T>::dimension_reduction()
 
     honest.exchange();
 
-    T c_0 = honest.finalize_dotprod();
-    T c_1 = z_de_linearized - c_0;
-    T c_2 = honest.finalize_dotprod();
+    T c_0 = honest.finalize_dotprod(half_size);
+    auto transcript_0 = honest.get_last_partial_mult_transcript();
+    assert(transcript_0.king == batch_king);
+    assert(transcript_0.e_t - transcript_0.r_t == c_0);
+    bool has_evidence_0 = honest.has_last_king_partial_mult_evidence();
+    assert(has_evidence_0 == (P.my_num() == batch_king));
+    typename Atlas<T>::KingPartialMultEvidence evidence_0{};
+    if (P.my_num() == batch_king)
+    {
+        evidence_0 = honest.get_last_king_partial_mult_evidence();
+        assert(evidence_0.king == batch_king);
+        assert(evidence_0.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(evidence_0.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
 
-    // Let h(0) = c_0, h(1) = c_1, h(2) = c_2, we compute the coefficients
-    static const typename T::clear two_inverse = (typename T::clear(2)).invert();
-    vector<typename T::clear> h_coeffs(3);
-    h_coeffs[0] = c_0;
-    h_coeffs[1] = c_1 * 2 - two_inverse * (c_0 * 3 + c_2);
-    h_coeffs[2] = (c_0 + c_2) * two_inverse - c_1;
+    T c_1 = input_z - c_0;
+    typename Atlas<T>::PartialMultTranscript transcript_1{};
+    transcript_1.king = batch_king;
+    transcript_1.r_t = input_transcript.r_t - transcript_0.r_t;
+    transcript_1.r_2t = input_transcript.r_2t - transcript_0.r_2t;
+    transcript_1.e_2t = input_transcript.e_2t - transcript_0.e_2t;
+    transcript_1.e_t = input_transcript.e_t - transcript_0.e_t;
+    assert(transcript_1.e_t - transcript_1.r_t == c_1);
 
+    typename Atlas<T>::KingPartialMultEvidence evidence_1{};
+    if (P.my_num() == batch_king)
+    {
+        evidence_1.king = batch_king;
+        evidence_1.received_e_2t.resize(P.num_players());
+        evidence_1.distributed_e_t.resize(P.num_players());
+        for (int j = 0; j < P.num_players(); j++)
+        {
+            evidence_1.received_e_2t.at(j) =
+                    input_king_evidence.received_e_2t.at(j)
+                    - evidence_0.received_e_2t.at(j);
+            evidence_1.distributed_e_t.at(j) =
+                    input_king_evidence.distributed_e_t.at(j)
+                    - evidence_0.distributed_e_t.at(j);
+        }
 
-    T random_point = local_mc_2t.POpen(get_random(), this->P);
+        assert(evidence_1.received_e_2t.at(batch_king)
+                == typename Atlas<T>::share_value_type(
+                        transcript_1.e_2t));
+        assert(evidence_1.distributed_e_t.at(batch_king)
+                == typename Atlas<T>::share_value_type(
+                        transcript_1.e_t));
+    }
+
+    T c_2 = honest.finalize_dotprod(half_size);
+    auto transcript_2 = honest.get_last_partial_mult_transcript();
+    assert(transcript_2.king == batch_king);
+    assert(transcript_2.e_t - transcript_2.r_t == c_2);
+    bool has_evidence_2 = honest.has_last_king_partial_mult_evidence();
+    assert(has_evidence_2 == (P.my_num() == batch_king));
+    typename Atlas<T>::KingPartialMultEvidence evidence_2{};
+    if (P.my_num() == batch_king)
+    {
+        evidence_2 = honest.get_last_king_partial_mult_evidence();
+        assert(evidence_2.king == batch_king);
+        assert(evidence_2.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(evidence_2.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
+
+#ifndef NDEBUG
+    assert(transcript_0.e_2t == product_0 + transcript_0.r_2t);
+    assert(transcript_0.e_t - transcript_0.r_t == c_0);
+    assert(transcript_1.e_2t == product_1 + transcript_1.r_2t);
+    assert(transcript_1.e_t - transcript_1.r_t == c_1);
+    assert(transcript_2.e_2t == product_2 + transcript_2.r_2t);
+    assert(transcript_2.e_t - transcript_2.r_t == c_2);
+
+    if (P.my_num() == batch_king)
+    {
+        int t = ShamirMachine::s().threshold;
+        typename Atlas<T>::share_value_type evidence_1_received_secret(0);
+        typename Atlas<T>::share_value_type evidence_1_distributed_secret(0);
+        for (int i = 0; i < 2 * t + 1; i++)
+            evidence_1_received_secret +=
+                    evidence_1.received_e_2t.at(i)
+                    * Shamir<T>::get_rec_factor(i, 2 * t + 1);
+        for (int i = 0; i < t + 1; i++)
+            evidence_1_distributed_secret +=
+                    evidence_1.distributed_e_t.at(i)
+                    * Shamir<T>::get_rec_factor(i, t + 1);
+        assert(evidence_1_received_secret
+                == evidence_1_distributed_secret);
+    }
+#endif
+
+    typename T::open_type random_point =
+            local_mc_2t.POpen(get_random(), this->P);
+    static const typename T::open_type two_inverse =
+            (typename T::open_type(2)).invert();
+    typename T::open_type one(1);
+    typename T::open_type two(2);
+    auto L0 = (random_point - one) * (random_point - two)
+            * two_inverse;
+    auto L1 = random_point * (two - random_point);
+    auto L2 = random_point * (random_point - one) * two_inverse;
+
+    assert(L0 + L1 + L2 == one);
+#ifndef NDEBUG
+    typename T::open_type zero(0);
+    auto basis_0 = [&](typename T::open_type q) {
+        return (q - one) * (q - two) * two_inverse;
+    };
+    auto basis_1 = [&](typename T::open_type q) {
+        return q * (two - q);
+    };
+    auto basis_2 = [&](typename T::open_type q) {
+        return q * (q - one) * two_inverse;
+    };
+    assert(basis_0(zero) == one);
+    assert(basis_1(zero) == zero);
+    assert(basis_2(zero) == zero);
+    assert(basis_0(one) == zero);
+    assert(basis_1(one) == one);
+    assert(basis_2(one) == zero);
+    assert(basis_0(two) == zero);
+    assert(basis_1(two) == zero);
+    assert(basis_2(two) == one);
+#endif
 
     // Evaluate f_i(random_point) and g_i(random_point), just put them in x_verify and y_verify
+    vector<T> next_x;
+    vector<T> next_y;
+    next_x.reserve(half_size);
+    next_y.reserve(half_size);
     for (int i = 0; i < half_size; ++i) {
-        x_verify.push_back(f_coeffs[i][0] + f_coeffs[i][1] * random_point);
-        y_verify.push_back(g_coeffs[i][0] + g_coeffs[i][1] * random_point);
+        next_x.push_back(f_coeffs[i][0] + f_coeffs[i][1] * random_point);
+        next_y.push_back(g_coeffs[i][0] + g_coeffs[i][1] * random_point);
     }
-    // Evaluate h(random_point), put it in z_de_linearized
-    z_de_linearized = h_coeffs[0] + h_coeffs[1] * random_point + h_coeffs[2] * random_point * random_point;
+    x_verify = std::move(next_x);
+    y_verify = std::move(next_y);
 
+    z_de_linearized = c_0 * L0 + c_1 * L1 + c_2 * L2;
+
+    typename Atlas<T>::PartialMultTranscript next_virtual_transcript{};
+    next_virtual_transcript.king = batch_king;
+    next_virtual_transcript.r_t =
+            transcript_0.r_t * L0
+            + transcript_1.r_t * L1
+            + transcript_2.r_t * L2;
+    next_virtual_transcript.r_2t =
+            transcript_0.r_2t * L0
+            + transcript_1.r_2t * L1
+            + transcript_2.r_2t * L2;
+    next_virtual_transcript.e_2t =
+            transcript_0.e_2t * L0
+            + transcript_1.e_2t * L1
+            + transcript_2.e_2t * L2;
+    next_virtual_transcript.e_t =
+            transcript_0.e_t * L0
+            + transcript_1.e_t * L1
+            + transcript_2.e_t * L2;
+    current_virtual_transcript = next_virtual_transcript;
+    have_current_virtual_transcript = true;
+
+    if (P.my_num() == batch_king)
+    {
+        typename Atlas<T>::KingPartialMultEvidence next_virtual_evidence{};
+        next_virtual_evidence.king = batch_king;
+        next_virtual_evidence.received_e_2t.resize(P.num_players());
+        next_virtual_evidence.distributed_e_t.resize(P.num_players());
+
+        for (int j = 0; j < P.num_players(); j++)
+        {
+            next_virtual_evidence.received_e_2t.at(j) =
+                    evidence_0.received_e_2t.at(j) * L0
+                    + evidence_1.received_e_2t.at(j) * L1
+                    + evidence_2.received_e_2t.at(j) * L2;
+            next_virtual_evidence.distributed_e_t.at(j) =
+                    evidence_0.distributed_e_t.at(j) * L0
+                    + evidence_1.distributed_e_t.at(j) * L1
+                    + evidence_2.distributed_e_t.at(j) * L2;
+        }
+
+        current_virtual_king_evidence = next_virtual_evidence;
+        have_current_virtual_king_evidence = true;
+    }
+    else
+    {
+        current_virtual_king_evidence =
+                typename Atlas<T>::KingPartialMultEvidence{};
+        have_current_virtual_king_evidence = false;
+    }
 
 #ifdef DEBUG_DIM_REDUCTION
     typename T::MAC_Check debug_mc;
@@ -796,20 +1007,20 @@ void AtlasGsz<T>::dimension_reduction()
         cerr << "f_" << i << "(x) = " << f_0_open << " + " << f_1_open << "x\n"
              << "g_" << i << "(x) = " << g_0_open << " + " << g_1_open << "x\n";
     }
-    auto h_0_open = debug_mc.POpen(h_coeffs[0], this->P);
-    auto h_1_open = debug_mc.POpen(h_coeffs[1], this->P);
-    auto h_2_open = debug_mc.POpen(h_coeffs[2], this->P);
-    cerr << "h(x) = " << h_0_open << " + " << h_1_open << "x + " << h_2_open << "x^2\n";
-
     auto c_0_open = debug_mc.POpen(c_0, this->P);
     auto c_1_open = debug_mc.POpen(c_1, this->P);
     auto c_2_open = debug_mc.POpen(c_2, this->P);
-    cerr << "c_0=" << c_0_open << " c_1=" << c_1_open << " c_2=" << c_2_open << '\n';
+    cerr << "random_point = " << random_point
+         << " L0 = " << L0
+         << " L1 = " << L1
+         << " L2 = " << L2 << '\n';
+    cerr << "c_0=" << c_0_open
+         << " c_1=" << c_1_open
+         << " c_2=" << c_2_open << '\n';
 
     vector<typename T::open_type> x_verify_open, y_verify_open;
     debug_mc.POpen(x_verify_open, x_verify, this->P);
     debug_mc.POpen(y_verify_open, y_verify, this->P);
-    cerr << "random_point = " << random_point << '\n';
     cerr << "x_verify: ";
     for (auto x: x_verify_open) {
         cerr << x << " ";
@@ -820,6 +1031,8 @@ void AtlasGsz<T>::dimension_reduction()
     }
     cerr << '\n' << "z_de_linearized: " << debug_mc.POpen(z_de_linearized, this->P) << '\n';
 #endif
+
+    validate_current_virtual_transcript();
 }
 
 /**
