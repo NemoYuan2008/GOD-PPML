@@ -10,6 +10,8 @@
 
 #include "Tools/Bundle.h"
 
+#include <stdexcept>
+
 
 /**
  * ATLAS protocol (simple version).
@@ -18,6 +20,16 @@
 template<class T>
 class Atlas : public ProtocolBase<T>
 {
+public:
+    struct PartialMultTranscript
+    {
+        T r_t;
+        T r_2t;
+        T e_2t;
+        T e_t;
+        int king;
+    };
+
 private:
     Shamir<T> shamir, shamir2;
 
@@ -29,12 +41,19 @@ private:
     vector<typename T::open_type> reconstruction;
 
     int next_king, base_king;
+    bool fixed_king_enabled = false;
+    int fixed_king = 0;
 
     ShamirInput<T> resharing;
 
     typename T::open_type dotprod_share;
 
     Preprocessing<T>* prep = nullptr;
+
+    vector<PartialMultTranscript> pending_partial_mult_transcripts;
+    size_t next_partial_mult_transcript = 0;
+    PartialMultTranscript last_partial_mult_transcript;
+    bool have_last_partial_mult_transcript = false;
 
     array<T, 2> get_double_sharing();
 
@@ -73,6 +92,8 @@ public:
     void prepare(const typename T::open_type& product);
     void exchange();
     T finalize_mul(int n = -1);
+    void set_fixed_king(int king);
+    const PartialMultTranscript& get_last_partial_mult_transcript() const;
 
     void init_dotprod();
     void prepare_dotprod(const T& x, const T& y);

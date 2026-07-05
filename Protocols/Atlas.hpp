@@ -57,10 +57,14 @@ void Atlas<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC)
 template<class T>
 void Atlas<T>::init_mul()
 {
+    assert(next_partial_mult_transcript == pending_partial_mult_transcripts.size());
     oss.reset();
     oss2.reset();
     masks.clear();
     base_king = next_king;
+    pending_partial_mult_transcripts.clear();
+    next_partial_mult_transcript = 0;
+    have_last_partial_mult_transcript = false;
 }
 
 template<class T>
@@ -73,9 +77,19 @@ template<class T>
 void Atlas<T>::prepare(const typename T::open_type& product)
 {
     auto r = get_double_sharing();
-    (product + r[0]).pack(oss2[next_king]);
-    next_king = (next_king + 1) % P.num_players();
+    int king = fixed_king_enabled ? fixed_king : next_king;
+    T e_2t = product + r[0];
+    e_2t.pack(oss2[king]);
+    if (not fixed_king_enabled)
+        next_king = (next_king + 1) % P.num_players();
     masks.push_back(r[1]);
+
+    PartialMultTranscript transcript{};
+    transcript.r_t = r[1];
+    transcript.r_2t = r[0];
+    transcript.e_2t = e_2t;
+    transcript.king = king;
+    pending_partial_mult_transcripts.push_back(transcript);
 }
 
 template<class T>
@@ -83,6 +97,7 @@ void Atlas<T>::exchange()
 {
     P.send_receive_all(oss2, oss);
     oss.mine = oss2.mine;
+    assert(pending_partial_mult_transcripts.size() == masks.size());
 
     int t = ShamirMachine::s().threshold;
     if (reconstruction.empty())
@@ -90,22 +105,44 @@ void Atlas<T>::exchange()
             reconstruction.push_back(Shamir<T>::get_rec_factor(i, 2 * t + 1));
     resharing.reset_all(P);
 
-    for (size_t j = P.get_player(-base_king); j < masks.size();
-            j += P.num_players())
+    if (fixed_king_enabled)
     {
-        typename T::open_type e;
-        for (int i = 0; i < 2 * t + 1; i++)
+        if (P.my_num() == fixed_king)
         {
-            auto tmp = oss[i].template get<T>();
-            e += tmp * reconstruction.at(i);
+            for (size_t j = 0; j < masks.size(); j++)
+            {
+                typename T::open_type e;
+                for (int i = 0; i < 2 * t + 1; i++)
+                {
+                    auto tmp = oss[i].template get<T>();
+                    e += tmp * reconstruction.at(i);
+                }
+                resharing.add_mine(e);
+            }
         }
-        resharing.add_mine(e);
-    }
 
-    for (size_t i = 0; i < min(masks.size(), size_t(P.num_players())); i++)
+        if (not masks.empty())
+            resharing.add_sender(fixed_king);
+    }
+    else
     {
-        int j = (base_king + i) % P.num_players();
-        resharing.add_sender(j);
+        for (size_t j = P.get_player(-base_king); j < masks.size();
+                j += P.num_players())
+        {
+            typename T::open_type e;
+            for (int i = 0; i < 2 * t + 1; i++)
+            {
+                auto tmp = oss[i].template get<T>();
+                e += tmp * reconstruction.at(i);
+            }
+            resharing.add_mine(e);
+        }
+
+        for (size_t i = 0; i < min(masks.size(), size_t(P.num_players())); i++)
+        {
+            int j = (base_king + i) % P.num_players();
+            resharing.add_sender(j);
+        }
     }
 
     resharing.exchange();
@@ -114,9 +151,38 @@ void Atlas<T>::exchange()
 template<class T>
 T Atlas<T>::finalize_mul(int)
 {
-    T res = resharing.finalize(base_king) - masks.next();
-    base_king = (base_king + 1) % P.num_players();
+    int king = fixed_king_enabled ? fixed_king : base_king;
+    T e_t = resharing.finalize(king);
+    T r_t = masks.next();
+    T res = e_t - r_t;
+    assert(next_partial_mult_transcript < pending_partial_mult_transcripts.size());
+    auto& transcript = pending_partial_mult_transcripts.at(next_partial_mult_transcript++);
+    assert(transcript.king == king);
+    assert(transcript.r_t == r_t);
+    transcript.e_t = e_t;
+    last_partial_mult_transcript = transcript;
+    have_last_partial_mult_transcript = true;
+    if (not fixed_king_enabled)
+        base_king = (base_king + 1) % P.num_players();
     return res;
+}
+
+template<class T>
+void Atlas<T>::set_fixed_king(int king)
+{
+    if (king < 0 || king >= P.num_players())
+        throw std::out_of_range("invalid Atlas fixed king");
+    assert(next_partial_mult_transcript == pending_partial_mult_transcripts.size());
+    fixed_king_enabled = true;
+    fixed_king = king;
+}
+
+template<class T>
+const typename Atlas<T>::PartialMultTranscript&
+Atlas<T>::get_last_partial_mult_transcript() const
+{
+    assert(have_last_partial_mult_transcript);
+    return last_partial_mult_transcript;
 }
 
 template<class T>

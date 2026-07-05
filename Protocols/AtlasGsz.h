@@ -36,6 +36,15 @@ private:
     // this is stored as (index in *_verify) -> length
     unordered_map<int, int> dotprod_info; 
 
+    struct PartialMultTranscriptRecord
+    {
+        size_t offset;
+        int length;
+        typename Atlas<T>::PartialMultTranscript transcript;
+    };
+
+    vector<PartialMultTranscriptRecord> partial_mult_transcripts;
+
 public:
     static const bool uses_triples = false;
 
@@ -62,6 +71,7 @@ public:
     void prepare_mul(const T& x, const T& y, int n = -1);
     void exchange();
     T finalize_mul(int n = -1);
+    void set_fixed_king(int king);
 
     T get_random();
 

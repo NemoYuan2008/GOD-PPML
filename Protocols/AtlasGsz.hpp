@@ -17,9 +17,11 @@
 template<class T>
 AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
 {
+    honest.set_fixed_king(0);
     x_verify.reserve(AtlasConfig::max_before_check);
     y_verify.reserve(AtlasConfig::max_before_check);
     z_verify.reserve(AtlasConfig::max_before_check);
+    partial_mult_transcripts.reserve(AtlasConfig::max_before_check);
 }
 
 template<class T>
@@ -72,8 +74,21 @@ template<class T>
 T AtlasGsz<T>::finalize_mul(int)
 {
     T res = honest.finalize_mul();
+    size_t offset = z_verify.size();
+    assert(offset < x_verify.size());
+    PartialMultTranscriptRecord record;
+    record.offset = offset;
+    record.length = 1;
+    record.transcript = honest.get_last_partial_mult_transcript();
+    partial_mult_transcripts.push_back(record);
     z_verify.push_back(res);
     return res;
+}
+
+template<class T>
+void AtlasGsz<T>::set_fixed_king(int king)
+{
+    honest.set_fixed_king(king);
 }
 
 template<class T>
@@ -106,9 +121,16 @@ void AtlasGsz<T>::next_dotprod()
 template<class T>
 T AtlasGsz<T>::finalize_dotprod(int length)
 {
-    dotprod_info[z_verify.size()] = length;
-
     T res = honest.finalize_dotprod(length);
+    size_t offset = z_verify.size();
+    assert(length > 0);
+    assert(offset + size_t(length) <= x_verify.size());
+    dotprod_info[offset] = length;
+    PartialMultTranscriptRecord record;
+    record.offset = offset;
+    record.length = length;
+    record.transcript = honest.get_last_partial_mult_transcript();
+    partial_mult_transcripts.push_back(record);
     z_verify.push_back(res);
 
     // The dot product result is stored in the first element,
@@ -355,14 +377,17 @@ void AtlasGsz<T>::check()
     y_verify.clear();
     z_verify.clear();
     dotprod_info.clear();
+    partial_mult_transcripts.clear();
 
     if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
         x_verify.shrink_to_fit();
         y_verify.shrink_to_fit();
         z_verify.shrink_to_fit();
+        partial_mult_transcripts.shrink_to_fit();
         x_verify.reserve(AtlasConfig::max_before_check);
         y_verify.reserve(AtlasConfig::max_before_check);
         z_verify.reserve(AtlasConfig::max_before_check);
+        partial_mult_transcripts.reserve(AtlasConfig::max_before_check);
     }
 }
 
