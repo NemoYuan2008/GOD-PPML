@@ -41,6 +41,8 @@ private:
         size_t offset;
         int length;
         typename Atlas<T>::PartialMultTranscript transcript;
+        bool has_king_evidence;
+        typename Atlas<T>::KingPartialMultEvidence king_evidence;
     };
 
     vector<PartialMultTranscriptRecord> partial_mult_transcripts;

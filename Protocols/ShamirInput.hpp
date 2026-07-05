@@ -70,12 +70,26 @@ void ShamirInput<T>::add_mine(const typename T::open_type& input, int n_bits)
     int n = P.num_players();
     int t = threshold;
 
+    vector<share_value_type> recorded_sharing;
+    vector<bool> assigned;
+    if (record_mine_sharings)
+    {
+        recorded_sharing.resize(n);
+        assigned.resize(n, false);
+    }
+
     randomness.resize(t);
     for (int offset = 0; offset < t; offset++)
     {
         int i = P.get_player(1 + offset);
         assert(i != P.my_num());
         randomness[offset].randomize(this->send_prngs[i]);
+        if (record_mine_sharings)
+        {
+            assert(not assigned.at(i));
+            recorded_sharing.at(i) = randomness[offset];
+            assigned.at(i) = true;
+        }
     }
 
     for (int i = threshold; i < n; i++)
@@ -85,13 +99,61 @@ void ShamirInput<T>::add_mine(const typename T::open_type& input, int n_bits)
                 * reconstruction.at(i - threshold).at(0);
         for (int j = 0; j < t; j++)
             x += randomness[j] * reconstruction.at(i - threshold).at(j + 1);
+        if (record_mine_sharings)
+        {
+            assert(not assigned.at(player));
+            recorded_sharing.at(player) = x;
+            assigned.at(player) = true;
+        }
         if (player == P.my_num())
             this->shares.push_back(x);
         else
             x.pack(this->os[player]);
     }
 
+    if (record_mine_sharings)
+    {
+        for (int i = 0; i < n; i++)
+            assert(assigned.at(i));
+        recorded_mine_sharings.push_back(recorded_sharing);
+    }
+
     this->senders[P.my_num()] = true;
+}
+
+template<class T>
+void ShamirInput<T>::begin_mine_sharing_recording()
+{
+    assert(not record_mine_sharings);
+    recorded_mine_sharings.clear();
+    record_mine_sharings = true;
+}
+
+template<class T>
+void ShamirInput<T>::end_mine_sharing_recording()
+{
+    assert(record_mine_sharings);
+    record_mine_sharings = false;
+}
+
+template<class T>
+void ShamirInput<T>::clear_recorded_mine_sharings()
+{
+    assert(not record_mine_sharings);
+    recorded_mine_sharings.clear();
+}
+
+template<class T>
+size_t ShamirInput<T>::num_recorded_mine_sharings() const
+{
+    return recorded_mine_sharings.size();
+}
+
+template<class T>
+const vector<typename ShamirInput<T>::share_value_type>&
+ShamirInput<T>::get_recorded_mine_sharing(size_t index) const
+{
+    return recorded_mine_sharings.at(index);
 }
 
 template<class T>

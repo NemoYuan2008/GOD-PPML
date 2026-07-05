@@ -53,11 +53,18 @@ class ShamirInput : public IndividualInput<T>
 {
     friend class Shamir<T>;
 
+public:
+    typedef typename T::open_type share_value_type;
+
+private:
     vector<vector<typename T::open_type>> reconstruction;
 
     vector<typename T::Scalar> randomness;
 
     int threshold;
+
+    bool record_mine_sharings = false;
+    vector<vector<share_value_type>> recorded_mine_sharings;
 
     void init();
 
@@ -90,6 +97,12 @@ public:
     void add_mine(const typename T::open_type& input, int n_bits = -1);
     void exchange();
     void finalize_other(int player, T& target, octetStream& o, int n_bits = -1);
+
+    void begin_mine_sharing_recording();
+    void end_mine_sharing_recording();
+    void clear_recorded_mine_sharings();
+    size_t num_recorded_mine_sharings() const;
+    const vector<share_value_type>& get_recorded_mine_sharing(size_t index) const;
 };
 
 #endif /* PROTOCOLS_SHAMIRINPUT_H_ */

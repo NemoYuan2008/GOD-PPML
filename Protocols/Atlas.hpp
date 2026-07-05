@@ -48,6 +48,34 @@ array<T, 2> Atlas<T>::get_double_sharing()
 }
 
 template<class T>
+typename Atlas<T>::share_value_type Atlas<T>::reconstruct_received_e_2t(
+        const vector<typename Atlas<T>::share_value_type>& sharing) const
+{
+    int t = ShamirMachine::s().threshold;
+    assert(sharing.size() == size_t(P.num_players()));
+    assert(reconstruction.size() >= size_t(2 * t + 1));
+    share_value_type res{};
+    for (int i = 0; i < 2 * t + 1; i++)
+        res += sharing.at(i) * reconstruction.at(i);
+    return res;
+}
+
+template<class T>
+typename Atlas<T>::share_value_type Atlas<T>::reconstruct_distributed_e_t(
+        const vector<typename Atlas<T>::share_value_type>& sharing) const
+{
+    int t = ShamirMachine::s().threshold;
+
+    assert(sharing.size() == size_t(P.num_players()));
+    assert(reconstruction_t.size() == size_t(t + 1));
+
+    share_value_type res{};
+    for (int i = 0; i < t + 1; i++)
+        res += sharing.at(i) * reconstruction_t.at(i);
+    return res;
+}
+
+template<class T>
 void Atlas<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC)
 {
     this->prep = &prep;
@@ -58,13 +86,18 @@ template<class T>
 void Atlas<T>::init_mul()
 {
     assert(next_partial_mult_transcript == pending_partial_mult_transcripts.size());
+    assert(pending_king_partial_mult_evidence.empty()
+            || pending_king_partial_mult_evidence.size()
+                    == next_partial_mult_transcript);
     oss.reset();
     oss2.reset();
     masks.clear();
     base_king = next_king;
     pending_partial_mult_transcripts.clear();
+    pending_king_partial_mult_evidence.clear();
     next_partial_mult_transcript = 0;
     have_last_partial_mult_transcript = false;
+    have_last_king_partial_mult_evidence = false;
 }
 
 template<class T>
@@ -103,22 +136,60 @@ void Atlas<T>::exchange()
     if (reconstruction.empty())
         for (int i = 0; i < 2 * t + 1; i++)
             reconstruction.push_back(Shamir<T>::get_rec_factor(i, 2 * t + 1));
+    if (reconstruction_t.empty())
+        for (int i = 0; i < t + 1; i++)
+            reconstruction_t.push_back(Shamir<T>::get_rec_factor(i, t + 1));
     resharing.reset_all(P);
 
     if (fixed_king_enabled)
     {
         if (P.my_num() == fixed_king)
         {
+            assert(pending_king_partial_mult_evidence.empty());
+            vector<share_value_type> reconstructed_e_values;
+            reconstructed_e_values.reserve(masks.size());
+            resharing.begin_mine_sharing_recording();
+
             for (size_t j = 0; j < masks.size(); j++)
             {
-                typename T::open_type e;
-                for (int i = 0; i < 2 * t + 1; i++)
+                typename T::open_type e{};
+                KingPartialMultEvidence evidence{};
+                evidence.received_e_2t.resize(P.num_players());
+                evidence.king = fixed_king;
+                for (int i = 0; i < P.num_players(); i++)
                 {
                     auto tmp = oss[i].template get<T>();
-                    e += tmp * reconstruction.at(i);
+                    evidence.received_e_2t.at(i) = tmp;
+                    if (i < 2 * t + 1)
+                        e += evidence.received_e_2t.at(i) * reconstruction.at(i);
                 }
+                assert(evidence.received_e_2t.size() == size_t(P.num_players()));
+                assert(evidence.king == fixed_king);
+                assert(reconstruct_received_e_2t(evidence.received_e_2t) == e);
+                pending_king_partial_mult_evidence.push_back(evidence);
+                reconstructed_e_values.push_back(e);
                 resharing.add_mine(e);
             }
+            resharing.end_mine_sharing_recording();
+
+            assert(resharing.num_recorded_mine_sharings() == masks.size());
+            assert(pending_king_partial_mult_evidence.size() == masks.size());
+            for (size_t j = 0; j < pending_king_partial_mult_evidence.size(); j++)
+            {
+                auto& evidence = pending_king_partial_mult_evidence.at(j);
+                evidence.distributed_e_t = resharing.get_recorded_mine_sharing(j);
+                assert(evidence.received_e_2t.size() == size_t(P.num_players()));
+                assert(evidence.distributed_e_t.size() == size_t(P.num_players()));
+                assert(evidence.king == fixed_king);
+                assert(reconstruct_distributed_e_t(evidence.distributed_e_t)
+                        == reconstructed_e_values.at(j));
+            }
+            resharing.clear_recorded_mine_sharings();
+        }
+        else
+        {
+            assert(pending_king_partial_mult_evidence.empty());
+            resharing.clear_recorded_mine_sharings();
         }
 
         if (not masks.empty())
@@ -155,13 +226,37 @@ T Atlas<T>::finalize_mul(int)
     T e_t = resharing.finalize(king);
     T r_t = masks.next();
     T res = e_t - r_t;
-    assert(next_partial_mult_transcript < pending_partial_mult_transcripts.size());
-    auto& transcript = pending_partial_mult_transcripts.at(next_partial_mult_transcript++);
+    size_t transcript_index = next_partial_mult_transcript;
+    assert(transcript_index < pending_partial_mult_transcripts.size());
+    auto& transcript = pending_partial_mult_transcripts.at(transcript_index);
+    next_partial_mult_transcript++;
     assert(transcript.king == king);
     assert(transcript.r_t == r_t);
     transcript.e_t = e_t;
     last_partial_mult_transcript = transcript;
     have_last_partial_mult_transcript = true;
+    if (fixed_king_enabled && P.my_num() == fixed_king)
+    {
+        assert(transcript_index < pending_king_partial_mult_evidence.size());
+        last_king_partial_mult_evidence =
+                pending_king_partial_mult_evidence.at(transcript_index);
+        have_last_king_partial_mult_evidence = true;
+        assert(last_king_partial_mult_evidence.king == transcript.king);
+        assert(last_king_partial_mult_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(last_king_partial_mult_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+        share_value_type local_e_2t = transcript.e_2t;
+        share_value_type local_e_t = transcript.e_t;
+        assert(last_king_partial_mult_evidence.received_e_2t.at(fixed_king)
+                == local_e_2t);
+        assert(last_king_partial_mult_evidence.distributed_e_t.at(fixed_king)
+                == local_e_t);
+    }
+    else
+    {
+        have_last_king_partial_mult_evidence = false;
+    }
     if (not fixed_king_enabled)
         base_king = (base_king + 1) % P.num_players();
     return res;
@@ -183,6 +278,20 @@ Atlas<T>::get_last_partial_mult_transcript() const
 {
     assert(have_last_partial_mult_transcript);
     return last_partial_mult_transcript;
+}
+
+template<class T>
+bool Atlas<T>::has_last_king_partial_mult_evidence() const
+{
+    return have_last_king_partial_mult_evidence;
+}
+
+template<class T>
+const typename Atlas<T>::KingPartialMultEvidence&
+Atlas<T>::get_last_king_partial_mult_evidence() const
+{
+    assert(have_last_king_partial_mult_evidence);
+    return last_king_partial_mult_evidence;
 }
 
 template<class T>

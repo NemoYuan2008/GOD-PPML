@@ -21,12 +21,21 @@ template<class T>
 class Atlas : public ProtocolBase<T>
 {
 public:
+    typedef typename T::open_type share_value_type;
+
     struct PartialMultTranscript
     {
         T r_t;
         T r_2t;
         T e_2t;
         T e_t;
+        int king;
+    };
+
+    struct KingPartialMultEvidence
+    {
+        vector<share_value_type> received_e_2t;
+        vector<share_value_type> distributed_e_t;
         int king;
     };
 
@@ -39,6 +48,7 @@ private:
     vector<array<T, 2>> double_sharings;
 
     vector<typename T::open_type> reconstruction;
+    vector<typename T::open_type> reconstruction_t;
 
     int next_king, base_king;
     bool fixed_king_enabled = false;
@@ -55,7 +65,15 @@ private:
     PartialMultTranscript last_partial_mult_transcript;
     bool have_last_partial_mult_transcript = false;
 
+    vector<KingPartialMultEvidence> pending_king_partial_mult_evidence;
+    KingPartialMultEvidence last_king_partial_mult_evidence;
+    bool have_last_king_partial_mult_evidence = false;
+
     array<T, 2> get_double_sharing();
+    share_value_type reconstruct_received_e_2t(
+            const vector<share_value_type>& sharing) const;
+    share_value_type reconstruct_distributed_e_t(
+            const vector<share_value_type>& sharing) const;
 
 
 protected:
@@ -94,6 +112,8 @@ public:
     T finalize_mul(int n = -1);
     void set_fixed_king(int king);
     const PartialMultTranscript& get_last_partial_mult_transcript() const;
+    bool has_last_king_partial_mult_evidence() const;
+    const KingPartialMultEvidence& get_last_king_partial_mult_evidence() const;
 
     void init_dotprod();
     void prepare_dotprod(const T& x, const T& y);

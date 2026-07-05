@@ -73,14 +73,22 @@ void AtlasGsz<T>::exchange()
 template<class T>
 T AtlasGsz<T>::finalize_mul(int)
 {
+    size_t n_records = partial_mult_transcripts.size();
     T res = honest.finalize_mul();
     size_t offset = z_verify.size();
     assert(offset < x_verify.size());
-    PartialMultTranscriptRecord record;
+    PartialMultTranscriptRecord record{};
     record.offset = offset;
     record.length = 1;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
+    if (record.has_king_evidence)
+        record.king_evidence = honest.get_last_king_partial_mult_evidence();
+    assert(record.has_king_evidence == (P.my_num() == record.transcript.king));
+    if (record.has_king_evidence)
+        assert(record.king_evidence.king == record.transcript.king);
     partial_mult_transcripts.push_back(record);
+    assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(res);
     return res;
 }
@@ -121,16 +129,24 @@ void AtlasGsz<T>::next_dotprod()
 template<class T>
 T AtlasGsz<T>::finalize_dotprod(int length)
 {
+    size_t n_records = partial_mult_transcripts.size();
     T res = honest.finalize_dotprod(length);
     size_t offset = z_verify.size();
     assert(length > 0);
     assert(offset + size_t(length) <= x_verify.size());
     dotprod_info[offset] = length;
-    PartialMultTranscriptRecord record;
+    PartialMultTranscriptRecord record{};
     record.offset = offset;
     record.length = length;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
+    if (record.has_king_evidence)
+        record.king_evidence = honest.get_last_king_partial_mult_evidence();
+    assert(record.has_king_evidence == (P.my_num() == record.transcript.king));
+    if (record.has_king_evidence)
+        assert(record.king_evidence.king == record.transcript.king);
     partial_mult_transcripts.push_back(record);
+    assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(res);
 
     // The dot product result is stored in the first element,
