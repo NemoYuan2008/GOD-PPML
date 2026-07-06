@@ -48,6 +48,7 @@ private:
 
     void validate_partial_mult_transcript_coverage() const;
     void validate_current_virtual_transcript() const;
+    typename T::open_type sample_agreed_challenge();
 
 public:
     static const bool uses_triples = false;

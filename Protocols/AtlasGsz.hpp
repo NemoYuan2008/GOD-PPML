@@ -148,6 +148,19 @@ void AtlasGsz<T>::validate_current_virtual_transcript() const
 }
 
 template<class T>
+typename T::open_type AtlasGsz<T>::sample_agreed_challenge()
+{
+    vector<T> challenge_sharings;
+    challenge_sharings.push_back(get_random());
+
+    vector<typename T::open_type> opened;
+    malicious_mc.POpen(opened, challenge_sharings, P);
+
+    assert(opened.size() == 1);
+    return opened.at(0);
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 }
@@ -604,7 +617,7 @@ void AtlasGsz<T>::de_linearization()
     have_current_virtual_king_evidence = false;
 
     // Random coin
-    typename T::open_type lambda = local_mc_2t.POpen(get_random(), this->P);
+    typename T::open_type lambda = sample_agreed_challenge();
     typename T::open_type coefficient = 1;
 
     int batch_king = partial_mult_transcripts.front().transcript.king;
@@ -899,8 +912,7 @@ void AtlasGsz<T>::dimension_reduction()
     }
 #endif
 
-    typename T::open_type random_point =
-            local_mc_2t.POpen(get_random(), this->P);
+    typename T::open_type random_point = sample_agreed_challenge();
     static const typename T::open_type two_inverse =
             (typename T::open_type(2)).invert();
     typename T::open_type one(1);
@@ -1036,37 +1048,176 @@ void AtlasGsz<T>::dimension_reduction()
 }
 
 /**
- * Verify the last triple from dimension_reduction
- * 
- * Since we have only one triple left,
- * we use the triple sacrifice technique instead of
- * the original protocol in https://ia.cr/2020/134.
+ * Verify the last tuple from dimension_reduction using GSZ20
+ * Randomization specialized to compression factor 2.
  */
 template<class T>
 void AtlasGsz<T>::randomization()
 {
+    assert(x_verify.size() == 1);
+    assert(y_verify.size() == 1);
+    assert(have_current_virtual_transcript);
+    validate_current_virtual_transcript();
 
-    T a = get_random();
-    T b = get_random();
-    T c = this->mul(a, b);
+    T x_1 = x_verify.at(0);
+    T y_1 = y_verify.at(0);
+    T z_1 = z_de_linearized;
+    auto transcript_1 = current_virtual_transcript;
+    int batch_king = transcript_1.king;
+    assert(have_current_virtual_king_evidence
+            == (P.my_num() == batch_king));
 
-    typename T::clear alpha = local_mc_2t.POpen(get_random(), P);
-    T rho = alpha * x_verify[0] + a;
-    T sigma = y_verify[0] + b;
-
-    local_mc_2t.init_open(P, 2);
-    local_mc_2t.prepare_open(rho);
-    local_mc_2t.prepare_open(sigma);
-    local_mc_2t.exchange(P);
-    auto rho_open = local_mc_2t.finalize_open();
-    auto sigma_open = local_mc_2t.finalize_open();
-
-    T v = alpha * z_de_linearized - c + sigma_open * a + rho_open * b - rho_open * sigma_open;
-    auto v_open = local_mc_2t.POpen(v, P);
-
-    if (v_open != 0) {
-        throw mac_fail("AtlasGsz: Verification failed");
+    typename Atlas<T>::KingPartialMultEvidence evidence_1{};
+    if (P.my_num() == batch_king)
+    {
+        evidence_1 = current_virtual_king_evidence;
+        assert(evidence_1.king == batch_king);
+        assert(evidence_1.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(evidence_1.distributed_e_t.size()
+                == size_t(P.num_players()));
     }
+
+    T x_0 = get_random();
+    T y_0 = get_random();
+    T x_2 = x_1 * 2 - x_0;
+    T y_2 = y_1 * 2 - y_0;
+
+    honest.init_mul();
+    honest.prepare_mul(x_0, y_0);
+    honest.prepare_mul(x_2, y_2);
+    honest.exchange();
+
+    T z_0 = honest.finalize_mul();
+    auto transcript_0 = honest.get_last_partial_mult_transcript();
+    bool has_evidence_0 = honest.has_last_king_partial_mult_evidence();
+    assert(has_evidence_0 == (P.my_num() == batch_king));
+    typename Atlas<T>::KingPartialMultEvidence evidence_0{};
+    if (P.my_num() == batch_king)
+    {
+        evidence_0 = honest.get_last_king_partial_mult_evidence();
+        assert(evidence_0.king == batch_king);
+        assert(evidence_0.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(evidence_0.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
+
+    T z_2 = honest.finalize_mul();
+    auto transcript_2 = honest.get_last_partial_mult_transcript();
+    bool has_evidence_2 = honest.has_last_king_partial_mult_evidence();
+    assert(has_evidence_2 == (P.my_num() == batch_king));
+    typename Atlas<T>::KingPartialMultEvidence evidence_2{};
+    if (P.my_num() == batch_king)
+    {
+        evidence_2 = honest.get_last_king_partial_mult_evidence();
+        assert(evidence_2.king == batch_king);
+        assert(evidence_2.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(evidence_2.distributed_e_t.size()
+                == size_t(P.num_players()));
+    }
+
+    assert(transcript_0.king == batch_king);
+    assert(transcript_1.king == batch_king);
+    assert(transcript_2.king == batch_king);
+    assert(transcript_0.e_2t == x_0 * y_0 + transcript_0.r_2t);
+    assert(transcript_0.e_t - transcript_0.r_t == z_0);
+    assert(transcript_1.e_2t == x_1 * y_1 + transcript_1.r_2t);
+    assert(transcript_1.e_t - transcript_1.r_t == z_1);
+    assert(transcript_2.e_2t == x_2 * y_2 + transcript_2.r_2t);
+    assert(transcript_2.e_t - transcript_2.r_t == z_2);
+
+    typename T::open_type zero(0);
+    typename T::open_type one(1);
+    typename T::open_type two(2);
+    typename T::open_type q = sample_agreed_challenge();
+    while (q == zero || q == one)
+        q = sample_agreed_challenge();
+
+    static const typename T::open_type two_inverse =
+            (typename T::open_type(2)).invert();
+    auto L0 = (q - one) * (q - two) * two_inverse;
+    auto L1 = q * (two - q);
+    auto L2 = q * (q - one) * two_inverse;
+    assert(L0 + L1 + L2 == one);
+
+    T ultimate_x = x_0 * L0 + x_1 * L1 + x_2 * L2;
+    T ultimate_y = y_0 * L0 + y_1 * L1 + y_2 * L2;
+    T ultimate_z = z_0 * L0 + z_1 * L1 + z_2 * L2;
+
+#ifndef NDEBUG
+    assert(ultimate_x == x_0 + (x_1 - x_0) * q);
+    assert(ultimate_y == y_0 + (y_1 - y_0) * q);
+#endif
+
+    typename Atlas<T>::PartialMultTranscript ultimate_transcript{};
+    ultimate_transcript.king = batch_king;
+    ultimate_transcript.r_t =
+            transcript_0.r_t * L0
+            + transcript_1.r_t * L1
+            + transcript_2.r_t * L2;
+    ultimate_transcript.r_2t =
+            transcript_0.r_2t * L0
+            + transcript_1.r_2t * L1
+            + transcript_2.r_2t * L2;
+    ultimate_transcript.e_2t =
+            transcript_0.e_2t * L0
+            + transcript_1.e_2t * L1
+            + transcript_2.e_2t * L2;
+    ultimate_transcript.e_t =
+            transcript_0.e_t * L0
+            + transcript_1.e_t * L1
+            + transcript_2.e_t * L2;
+
+    current_virtual_transcript = ultimate_transcript;
+    have_current_virtual_transcript = true;
+
+    if (P.my_num() == batch_king)
+    {
+        typename Atlas<T>::KingPartialMultEvidence ultimate_evidence{};
+        ultimate_evidence.king = batch_king;
+        ultimate_evidence.received_e_2t.resize(P.num_players());
+        ultimate_evidence.distributed_e_t.resize(P.num_players());
+
+        for (int j = 0; j < P.num_players(); j++)
+        {
+            ultimate_evidence.received_e_2t.at(j) =
+                    evidence_0.received_e_2t.at(j) * L0
+                    + evidence_1.received_e_2t.at(j) * L1
+                    + evidence_2.received_e_2t.at(j) * L2;
+            ultimate_evidence.distributed_e_t.at(j) =
+                    evidence_0.distributed_e_t.at(j) * L0
+                    + evidence_1.distributed_e_t.at(j) * L1
+                    + evidence_2.distributed_e_t.at(j) * L2;
+        }
+
+        current_virtual_king_evidence = ultimate_evidence;
+        have_current_virtual_king_evidence = true;
+    }
+    else
+    {
+        current_virtual_king_evidence =
+                typename Atlas<T>::KingPartialMultEvidence{};
+        have_current_virtual_king_evidence = false;
+    }
+
+    x_verify.assign(1, ultimate_x);
+    y_verify.assign(1, ultimate_y);
+    z_de_linearized = ultimate_z;
+    validate_current_virtual_transcript();
+
+    vector<T> ultimate_tuple;
+    ultimate_tuple.reserve(3);
+    ultimate_tuple.push_back(ultimate_x);
+    ultimate_tuple.push_back(ultimate_y);
+    ultimate_tuple.push_back(ultimate_z);
+    vector<typename T::open_type> opened;
+    malicious_mc.POpen(opened, ultimate_tuple, P);
+    assert(opened.size() == 3);
+
+    if (opened.at(0) * opened.at(1) != opened.at(2))
+        throw mac_fail("AtlasGsz: Verification failed");
 }
 
 template <class T>
