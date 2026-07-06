@@ -72,6 +72,10 @@ void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
         assert(record.transcript.e_t
                 - record.transcript.r_t
                 == z_verify.at(record.offset));
+        validate_double_sharing_decomposition(
+                record.transcript.r_decomposition,
+                record.transcript.r_t,
+                record.transcript.r_2t);
 
         if (record.has_king_evidence)
         {
@@ -106,6 +110,10 @@ void AtlasGsz<T>::validate_current_virtual_transcript() const
     assert(current_virtual_transcript.e_t
             - current_virtual_transcript.r_t
             == z_de_linearized);
+    validate_double_sharing_decomposition(
+            current_virtual_transcript.r_decomposition,
+            current_virtual_transcript.r_t,
+            current_virtual_transcript.r_2t);
 
     int king = current_virtual_transcript.king;
     assert(have_current_virtual_king_evidence == (P.my_num() == king));
@@ -232,6 +240,127 @@ AtlasGsz<T>::collect_degree_2t_vector(
                 * Shamir<T>::get_rec_factor(i, P.num_players());
 
     return result;
+}
+
+template<class T>
+typename Atlas<T>::DoubleSharingDecomposition
+AtlasGsz<T>::zero_double_sharing_decomposition() const
+{
+    typename Atlas<T>::DoubleSharingDecomposition res{};
+    res.dealer_components.resize(P.num_players());
+    res.own_dealer_evidence.r_t_shares.assign(
+            P.num_players(), typename Atlas<T>::share_value_type{});
+    res.own_dealer_evidence.r_2t_shares.assign(
+            P.num_players(), typename Atlas<T>::share_value_type{});
+    res.validated_residual.r_t = T{0};
+    res.validated_residual.r_2t = T{0};
+    for (auto& component : res.dealer_components)
+    {
+        component.r_t = T{0};
+        component.r_2t = T{0};
+    }
+    return res;
+}
+
+template<class T>
+typename Atlas<T>::DealerDoubleSharingContribution
+AtlasGsz<T>::sum_double_sharing_decomposition(
+        const typename Atlas<T>::DoubleSharingDecomposition&
+            decomposition) const
+{
+    assert(decomposition.dealer_components.size() == size_t(P.num_players()));
+    assert(decomposition.own_dealer_evidence.r_t_shares.size()
+            == size_t(P.num_players()));
+    assert(decomposition.own_dealer_evidence.r_2t_shares.size()
+            == size_t(P.num_players()));
+    typename Atlas<T>::DealerDoubleSharingContribution sum{};
+    sum.r_t = decomposition.validated_residual.r_t;
+    sum.r_2t = decomposition.validated_residual.r_2t;
+    for (const auto& component : decomposition.dealer_components)
+    {
+        sum.r_t += component.r_t;
+        sum.r_2t += component.r_2t;
+    }
+    return sum;
+}
+
+template<class T>
+void AtlasGsz<T>::validate_double_sharing_decomposition(
+        const typename Atlas<T>::DoubleSharingDecomposition& decomposition,
+        const T& r_t,
+        const T& r_2t) const
+{
+    auto sum = sum_double_sharing_decomposition(decomposition);
+    assert(sum.r_t == r_t);
+    assert(sum.r_2t == r_2t);
+    assert(decomposition.own_dealer_evidence.r_t_shares.at(P.my_num())
+            == decomposition.dealer_components.at(P.my_num()).r_t);
+    assert(decomposition.own_dealer_evidence.r_2t_shares.at(P.my_num())
+            == decomposition.dealer_components.at(P.my_num()).r_2t);
+}
+
+template<class T>
+void AtlasGsz<T>::add_scaled_double_sharing_decomposition(
+        typename Atlas<T>::DoubleSharingDecomposition& accumulator,
+        const typename Atlas<T>::DoubleSharingDecomposition& source,
+        const typename T::open_type& coefficient) const
+{
+    assert(accumulator.dealer_components.size() == size_t(P.num_players()));
+    assert(source.dealer_components.size() == size_t(P.num_players()));
+    assert(accumulator.own_dealer_evidence.r_t_shares.size()
+            == size_t(P.num_players()));
+    assert(accumulator.own_dealer_evidence.r_2t_shares.size()
+            == size_t(P.num_players()));
+    assert(source.own_dealer_evidence.r_t_shares.size()
+            == size_t(P.num_players()));
+    assert(source.own_dealer_evidence.r_2t_shares.size()
+            == size_t(P.num_players()));
+    accumulator.validated_residual.r_t +=
+            source.validated_residual.r_t * coefficient;
+    accumulator.validated_residual.r_2t +=
+            source.validated_residual.r_2t * coefficient;
+    for (int i = 0; i < P.num_players(); i++)
+    {
+        accumulator.dealer_components.at(i).r_t +=
+                source.dealer_components.at(i).r_t * coefficient;
+        accumulator.dealer_components.at(i).r_2t +=
+                source.dealer_components.at(i).r_2t * coefficient;
+        accumulator.own_dealer_evidence.r_t_shares.at(i) +=
+                source.own_dealer_evidence.r_t_shares.at(i) * coefficient;
+        accumulator.own_dealer_evidence.r_2t_shares.at(i) +=
+                source.own_dealer_evidence.r_2t_shares.at(i) * coefficient;
+    }
+}
+
+template<class T>
+typename Atlas<T>::DoubleSharingDecomposition
+AtlasGsz<T>::subtract_double_sharing_decomposition(
+        const typename Atlas<T>::DoubleSharingDecomposition& left,
+        const typename Atlas<T>::DoubleSharingDecomposition& right) const
+{
+    auto res = zero_double_sharing_decomposition();
+    typename T::open_type one(1);
+    typename T::open_type minus_one = typename T::open_type(0) - one;
+    add_scaled_double_sharing_decomposition(res, left, one);
+    add_scaled_double_sharing_decomposition(res, right, minus_one);
+    return res;
+}
+
+template<class T>
+typename Atlas<T>::DoubleSharingDecomposition
+AtlasGsz<T>::interpolate_double_sharing_decompositions(
+        const typename Atlas<T>::DoubleSharingDecomposition& point_0,
+        const typename Atlas<T>::DoubleSharingDecomposition& point_1,
+        const typename Atlas<T>::DoubleSharingDecomposition& point_2,
+        const typename T::open_type& L0,
+        const typename T::open_type& L1,
+        const typename T::open_type& L2) const
+{
+    auto res = zero_double_sharing_decomposition();
+    add_scaled_double_sharing_decomposition(res, point_0, L0);
+    add_scaled_double_sharing_decomposition(res, point_1, L1);
+    add_scaled_double_sharing_decomposition(res, point_2, L2);
+    return res;
 }
 
 template<class T>
@@ -788,6 +917,8 @@ void AtlasGsz<T>::de_linearization()
     current_virtual_transcript.r_2t = T{0};
     current_virtual_transcript.e_2t = T{0};
     current_virtual_transcript.e_t = T{0};
+    current_virtual_transcript.r_decomposition =
+            zero_double_sharing_decomposition();
     have_current_virtual_transcript = false;
     current_virtual_king_evidence =
             typename Atlas<T>::KingPartialMultEvidence{};
@@ -841,6 +972,10 @@ void AtlasGsz<T>::de_linearization()
                 record.transcript.e_2t * coefficient;
         current_virtual_transcript.e_t +=
                 record.transcript.e_t * coefficient;
+        add_scaled_double_sharing_decomposition(
+                current_virtual_transcript.r_decomposition,
+                record.transcript.r_decomposition,
+                coefficient);
 
         if (P.my_num() == batch_king)
         {
@@ -1020,6 +1155,9 @@ void AtlasGsz<T>::dimension_reduction()
     transcript_1.r_2t = input_transcript.r_2t - transcript_0.r_2t;
     transcript_1.e_2t = input_transcript.e_2t - transcript_0.e_2t;
     transcript_1.e_t = input_transcript.e_t - transcript_0.e_t;
+    transcript_1.r_decomposition = subtract_double_sharing_decomposition(
+            input_transcript.r_decomposition,
+            transcript_0.r_decomposition);
     assert(transcript_1.e_t - transcript_1.r_t == c_1);
 
     typename Atlas<T>::KingPartialMultEvidence evidence_1{};
@@ -1070,6 +1208,18 @@ void AtlasGsz<T>::dimension_reduction()
     assert(transcript_1.e_t - transcript_1.r_t == c_1);
     assert(transcript_2.e_2t == product_2 + transcript_2.r_2t);
     assert(transcript_2.e_t - transcript_2.r_t == c_2);
+    validate_double_sharing_decomposition(
+            transcript_0.r_decomposition,
+            transcript_0.r_t,
+            transcript_0.r_2t);
+    validate_double_sharing_decomposition(
+            transcript_1.r_decomposition,
+            transcript_1.r_t,
+            transcript_1.r_2t);
+    validate_double_sharing_decomposition(
+            transcript_2.r_decomposition,
+            transcript_2.r_t,
+            transcript_2.r_2t);
 
     if (P.my_num() == batch_king)
     {
@@ -1154,6 +1304,18 @@ void AtlasGsz<T>::dimension_reduction()
             transcript_0.e_t * L0
             + transcript_1.e_t * L1
             + transcript_2.e_t * L2;
+    next_virtual_transcript.r_decomposition =
+            interpolate_double_sharing_decompositions(
+                    transcript_0.r_decomposition,
+                    transcript_1.r_decomposition,
+                    transcript_2.r_decomposition,
+                    L0,
+                    L1,
+                    L2);
+    validate_double_sharing_decomposition(
+            next_virtual_transcript.r_decomposition,
+            next_virtual_transcript.r_t,
+            next_virtual_transcript.r_2t);
     current_virtual_transcript = next_virtual_transcript;
     have_current_virtual_transcript = true;
 
@@ -1304,6 +1466,18 @@ void AtlasGsz<T>::randomization()
     assert(transcript_1.e_t - transcript_1.r_t == z_1);
     assert(transcript_2.e_2t == x_2 * y_2 + transcript_2.r_2t);
     assert(transcript_2.e_t - transcript_2.r_t == z_2);
+    validate_double_sharing_decomposition(
+            transcript_0.r_decomposition,
+            transcript_0.r_t,
+            transcript_0.r_2t);
+    validate_double_sharing_decomposition(
+            transcript_1.r_decomposition,
+            transcript_1.r_t,
+            transcript_1.r_2t);
+    validate_double_sharing_decomposition(
+            transcript_2.r_decomposition,
+            transcript_2.r_t,
+            transcript_2.r_2t);
 
     typename T::open_type zero(0);
     typename T::open_type one(1);
@@ -1346,6 +1520,18 @@ void AtlasGsz<T>::randomization()
             transcript_0.e_t * L0
             + transcript_1.e_t * L1
             + transcript_2.e_t * L2;
+    ultimate_transcript.r_decomposition =
+            interpolate_double_sharing_decompositions(
+                    transcript_0.r_decomposition,
+                    transcript_1.r_decomposition,
+                    transcript_2.r_decomposition,
+                    L0,
+                    L1,
+                    L2);
+    validate_double_sharing_decomposition(
+            ultimate_transcript.r_decomposition,
+            ultimate_transcript.r_t,
+            ultimate_transcript.r_2t);
 
     current_virtual_transcript = ultimate_transcript;
     have_current_virtual_transcript = true;
@@ -1438,6 +1624,18 @@ void AtlasGsz<T>::randomization()
     context.delta_2t = collect_degree_2t_vector(published_auxiliary.at(1));
     context.eta_2t = collect_degree_2t_vector(published_auxiliary.at(2));
     context.eta_t = classify_degree_t_sharing(published_auxiliary.at(3));
+    context.local_delta_decomposition =
+            current_virtual_transcript.r_decomposition;
+    validate_double_sharing_decomposition(
+            context.local_delta_decomposition,
+            current_virtual_transcript.r_t,
+            current_virtual_transcript.r_2t);
+    auto local_delta_sum = sum_double_sharing_decomposition(
+            context.local_delta_decomposition);
+    typename T::open_type local_delta_t = local_delta_sum.r_t;
+    typename T::open_type local_delta_2t = local_delta_sum.r_2t;
+    assert(local_delta_t == context.delta_t.shares.at(P.my_num()));
+    assert(local_delta_2t == context.delta_2t.shares.at(P.my_num()));
 
     int king = context.king;
     vector<octetStream> evidence_streams(P.num_players());

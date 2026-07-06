@@ -28,18 +28,120 @@ Atlas<T>::~Atlas()
 }
 
 template<class T>
-array<T, 2> Atlas<T>::get_double_sharing()
+typename Atlas<T>::DoubleSharingDecomposition
+Atlas<T>::zero_double_sharing_decomposition() const
+{
+    DoubleSharingDecomposition res{};
+    res.dealer_components.resize(P.num_players());
+    res.own_dealer_evidence.r_t_shares.assign(
+            P.num_players(), share_value_type{});
+    res.own_dealer_evidence.r_2t_shares.assign(
+            P.num_players(), share_value_type{});
+    res.validated_residual.r_t = T{0};
+    res.validated_residual.r_2t = T{0};
+    for (auto& component : res.dealer_components)
+    {
+        component.r_t = T{0};
+        component.r_2t = T{0};
+    }
+    return res;
+}
+
+template<class T>
+typename Atlas<T>::DealerDoubleSharingContribution
+Atlas<T>::sum_double_sharing_decomposition(
+        const DoubleSharingDecomposition& decomposition) const
+{
+    assert(decomposition.dealer_components.size() == size_t(P.num_players()));
+    assert(decomposition.own_dealer_evidence.r_t_shares.size()
+            == size_t(P.num_players()));
+    assert(decomposition.own_dealer_evidence.r_2t_shares.size()
+            == size_t(P.num_players()));
+    DealerDoubleSharingContribution sum{};
+    sum.r_t = decomposition.validated_residual.r_t;
+    sum.r_2t = decomposition.validated_residual.r_2t;
+    for (const auto& component : decomposition.dealer_components)
+    {
+        sum.r_t += component.r_t;
+        sum.r_2t += component.r_2t;
+    }
+    return sum;
+}
+
+template<class T>
+void Atlas<T>::validate_double_sharing_decomposition(
+        const DoubleSharingDecomposition& decomposition,
+        const T& r_t,
+        const T& r_2t) const
+{
+    auto sum = sum_double_sharing_decomposition(decomposition);
+    assert(sum.r_t == r_t);
+    assert(sum.r_2t == r_2t);
+    assert(decomposition.own_dealer_evidence.r_t_shares.at(P.my_num())
+            == decomposition.dealer_components.at(P.my_num()).r_t);
+    assert(decomposition.own_dealer_evidence.r_2t_shares.at(P.my_num())
+            == decomposition.dealer_components.at(P.my_num()).r_2t);
+}
+
+template<class T>
+typename Atlas<T>::DoubleSharingMaterial Atlas<T>::get_double_sharing()
 {
     if (double_sharings.empty())
     {
         SeededPRNG G;
         PRNG G2 = G;
-        auto random = shamir.get_randoms(G, 0);
-        auto random2 = shamir2.get_randoms(G2, 0);
+        vector<vector<T>> random_dealer_contributions;
+        vector<vector<T>> random2_dealer_contributions;
+        vector<vector<share_value_type>> random_own_dealer_contributions;
+        vector<vector<share_value_type>> random2_own_dealer_contributions;
+        auto random = shamir.get_randoms(G, 0,
+                &random_dealer_contributions,
+                &random_own_dealer_contributions);
+        auto random2 =
+                shamir2.get_randoms(G2, 0,
+                        &random2_dealer_contributions,
+                        &random2_own_dealer_contributions);
         assert(random.size() == random2.size());
+        assert(random.size() == random_dealer_contributions.size());
+        assert(random2.size() == random2_dealer_contributions.size());
+        assert(random.size() == random_own_dealer_contributions.size());
+        assert(random2.size() == random2_own_dealer_contributions.size());
         assert(random.size() % P.num_players() == 0);
         for (size_t i = 0; i < random.size(); i++)
-            double_sharings.push_back({{random2.at(i), random.at(i)}});
+        {
+            DoubleSharingMaterial material{};
+            material.r_t = random.at(i);
+            material.r_2t = random2.at(i);
+            material.decomposition = zero_double_sharing_decomposition();
+            assert(random_dealer_contributions.at(i).size()
+                    == size_t(P.num_players()));
+            assert(random2_dealer_contributions.at(i).size()
+                    == size_t(P.num_players()));
+            assert(random_own_dealer_contributions.at(i).size()
+                    == size_t(P.num_players()));
+            assert(random2_own_dealer_contributions.at(i).size()
+                    == size_t(P.num_players()));
+            for (int dealer = 0; dealer < P.num_players(); dealer++)
+            {
+                material.decomposition.dealer_components.at(dealer).r_t =
+                        random_dealer_contributions.at(i).at(dealer);
+                material.decomposition.dealer_components.at(dealer).r_2t =
+                        random2_dealer_contributions.at(i).at(dealer);
+            }
+            for (int recipient = 0; recipient < P.num_players();
+                    recipient++)
+            {
+                material.decomposition.own_dealer_evidence
+                    .r_t_shares.at(recipient) =
+                        random_own_dealer_contributions.at(i).at(recipient);
+                material.decomposition.own_dealer_evidence
+                    .r_2t_shares.at(recipient) =
+                        random2_own_dealer_contributions.at(i).at(recipient);
+            }
+            validate_double_sharing_decomposition(
+                    material.decomposition, material.r_t, material.r_2t);
+            double_sharings.push_back(material);
+        }
     }
 
     auto res = double_sharings.back();
@@ -159,17 +261,20 @@ void Atlas<T>::prepare(const typename T::open_type& product)
 {
     auto r = get_double_sharing();
     int king = fixed_king_enabled ? fixed_king : next_king;
-    T e_2t = product + r[0];
+    T e_2t = product + r.r_2t;
     e_2t.pack(oss2[king]);
     if (not fixed_king_enabled)
         next_king = (next_king + 1) % P.num_players();
-    masks.push_back(r[1]);
+    masks.push_back(r.r_t);
 
     PartialMultTranscript transcript{};
-    transcript.r_t = r[1];
-    transcript.r_2t = r[0];
+    transcript.r_t = r.r_t;
+    transcript.r_2t = r.r_2t;
     transcript.e_2t = e_2t;
     transcript.king = king;
+    transcript.r_decomposition = r.decomposition;
+    validate_double_sharing_decomposition(
+            transcript.r_decomposition, transcript.r_t, transcript.r_2t);
     pending_partial_mult_transcripts.push_back(transcript);
 }
 
@@ -384,7 +489,7 @@ inline void Atlas<T>::prepare_mul_pub(T x, T y)
 {
     auto rho = get_double_sharing();
     T product = x * y;
-    T o_2t = rho[0] - rho[1];
+    T o_2t = rho.r_2t - rho.r_t;
     T e_2t = product + o_2t;
     local_mc_2t.prepare_open(e_2t);
 
@@ -393,7 +498,30 @@ inline void Atlas<T>::prepare_mul_pub(T x, T y)
     transcript.r_2t = o_2t;
     transcript.e_2t = e_2t;
     transcript.king = 0;
+    transcript.r_decomposition = zero_double_sharing_decomposition();
+    for (int dealer = 0; dealer < P.num_players(); dealer++)
+    {
+        auto& component =
+                transcript.r_decomposition.dealer_components.at(dealer);
+        const auto& rho_component =
+                rho.decomposition.dealer_components.at(dealer);
+        component.r_t = T{0};
+        component.r_2t = rho_component.r_2t - rho_component.r_t;
+    }
+    for (int recipient = 0; recipient < P.num_players(); recipient++)
+    {
+        transcript.r_decomposition.own_dealer_evidence
+            .r_t_shares.at(recipient) = share_value_type{};
+        transcript.r_decomposition.own_dealer_evidence
+            .r_2t_shares.at(recipient) =
+                rho.decomposition.own_dealer_evidence
+                    .r_2t_shares.at(recipient)
+                - rho.decomposition.own_dealer_evidence
+                    .r_t_shares.at(recipient);
+    }
     assert(transcript.e_2t == product + transcript.r_2t);
+    validate_double_sharing_decomposition(
+            transcript.r_decomposition, transcript.r_t, transcript.r_2t);
     pending_partial_mult_transcripts.push_back(transcript);
 }
 
@@ -588,7 +716,7 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product)
     }
 
     auto s = get_double_sharing();
-    T r_hat_2t = r + s[0] - s[1];
+    T r_hat_2t = r + s.r_2t - s.r_t;
     T e_2t = product + r_hat_2t;
     local_mc_2t.prepare_open(e_2t);
 
@@ -597,7 +725,32 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product)
     transcript.r_2t = r_hat_2t;
     transcript.e_2t = e_2t;
     transcript.king = 0;
+    transcript.r_decomposition = zero_double_sharing_decomposition();
+    transcript.r_decomposition.validated_residual.r_t = r;
+    transcript.r_decomposition.validated_residual.r_2t = r;
+    for (int dealer = 0; dealer < P.num_players(); dealer++)
+    {
+        auto& component =
+                transcript.r_decomposition.dealer_components.at(dealer);
+        const auto& s_component =
+                s.decomposition.dealer_components.at(dealer);
+        component.r_t = T{0};
+        component.r_2t = s_component.r_2t - s_component.r_t;
+    }
+    for (int recipient = 0; recipient < P.num_players(); recipient++)
+    {
+        transcript.r_decomposition.own_dealer_evidence
+            .r_t_shares.at(recipient) = share_value_type{};
+        transcript.r_decomposition.own_dealer_evidence
+            .r_2t_shares.at(recipient) =
+                s.decomposition.own_dealer_evidence
+                    .r_2t_shares.at(recipient)
+                - s.decomposition.own_dealer_evidence
+                    .r_t_shares.at(recipient);
+    }
     assert(transcript.e_2t == product + transcript.r_2t);
+    validate_double_sharing_decomposition(
+            transcript.r_decomposition, transcript.r_t, transcript.r_2t);
     pending_partial_mult_transcripts.push_back(transcript);
 
 #ifdef DEBUG_MUL_TRUNC

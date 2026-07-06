@@ -103,6 +103,8 @@ private:
         PublishedDegree2TVector eta_2t;
         PublishedDegreeTSharing eta_t;
         PublishedDegreeTSharing gamma_t;
+        typename Atlas<T>::DoubleSharingDecomposition
+            local_delta_decomposition;
 
         bool has_published_king_evidence = false;
         typename Atlas<T>::KingPartialMultEvidence published_king_evidence;
@@ -134,6 +136,34 @@ private:
             const vector<typename T::open_type>& shares);
     UltimateFailureDecision diagnose_ultimate_failure(
             const UltimateFailureContext& context) const;
+    typename Atlas<T>::DoubleSharingDecomposition
+        zero_double_sharing_decomposition() const;
+    typename Atlas<T>::DealerDoubleSharingContribution
+        sum_double_sharing_decomposition(
+                const typename Atlas<T>::DoubleSharingDecomposition&
+                    decomposition) const;
+    void validate_double_sharing_decomposition(
+            const typename Atlas<T>::DoubleSharingDecomposition&
+                decomposition,
+            const T& r_t,
+            const T& r_2t) const;
+    void add_scaled_double_sharing_decomposition(
+            typename Atlas<T>::DoubleSharingDecomposition& accumulator,
+            const typename Atlas<T>::DoubleSharingDecomposition& source,
+            const typename T::open_type& coefficient) const;
+    typename Atlas<T>::DoubleSharingDecomposition
+        subtract_double_sharing_decomposition(
+                const typename Atlas<T>::DoubleSharingDecomposition& left,
+                const typename Atlas<T>::DoubleSharingDecomposition& right)
+                    const;
+    typename Atlas<T>::DoubleSharingDecomposition
+        interpolate_double_sharing_decompositions(
+                const typename Atlas<T>::DoubleSharingDecomposition& point_0,
+                const typename Atlas<T>::DoubleSharingDecomposition& point_1,
+                const typename Atlas<T>::DoubleSharingDecomposition& point_2,
+                const typename T::open_type& L0,
+                const typename T::open_type& L1,
+                const typename T::open_type& L2) const;
 
 public:
     static const bool uses_triples = false;

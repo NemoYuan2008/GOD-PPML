@@ -23,6 +23,26 @@ class Atlas : public ProtocolBase<T>
 public:
     typedef typename T::open_type share_value_type;
 
+    struct DealerDoubleSharingContribution
+    {
+        T r_t;
+        T r_2t;
+    };
+
+    struct OwnDealerDoubleSharingEvidence
+    {
+        vector<share_value_type> r_t_shares;
+        vector<share_value_type> r_2t_shares;
+    };
+
+    struct DoubleSharingDecomposition
+    {
+        // Recipient-side and dealer-side views used by GSZ20 Check-DoubleRand.
+        vector<DealerDoubleSharingContribution> dealer_components;
+        OwnDealerDoubleSharingEvidence own_dealer_evidence;
+        DealerDoubleSharingContribution validated_residual;
+    };
+
     struct PartialMultTranscript
     {
         T r_t;
@@ -30,6 +50,7 @@ public:
         T e_2t;
         T e_t;
         int king;
+        DoubleSharingDecomposition r_decomposition;
     };
 
     struct KingPartialMultEvidence
@@ -45,7 +66,14 @@ private:
     Bundle<octetStream> oss, oss2;
     PointerVector<T> masks;
 
-    vector<array<T, 2>> double_sharings;
+    struct DoubleSharingMaterial
+    {
+        T r_t;
+        T r_2t;
+        DoubleSharingDecomposition decomposition;
+    };
+
+    vector<DoubleSharingMaterial> double_sharings;
 
     vector<typename T::open_type> reconstruction;
     vector<typename T::open_type> reconstruction_t;
@@ -69,7 +97,14 @@ private:
     KingPartialMultEvidence last_king_partial_mult_evidence;
     bool have_last_king_partial_mult_evidence = false;
 
-    array<T, 2> get_double_sharing();
+    DoubleSharingMaterial get_double_sharing();
+    DoubleSharingDecomposition zero_double_sharing_decomposition() const;
+    DealerDoubleSharingContribution sum_double_sharing_decomposition(
+            const DoubleSharingDecomposition& decomposition) const;
+    void validate_double_sharing_decomposition(
+            const DoubleSharingDecomposition& decomposition,
+            const T& r_t,
+            const T& r_2t) const;
     void initialize_reconstruction_factors();
     share_value_type reconstruct_received_e_2t(
             const vector<share_value_type>& sharing) const;

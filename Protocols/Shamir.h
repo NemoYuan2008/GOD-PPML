@@ -78,7 +78,10 @@ public:
     void next_dotprod();
     T finalize_dotprod(int length);
 
-    vector<T> get_randoms(PRNG& G, int t);
+    vector<T> get_randoms(PRNG& G, int t,
+            vector<vector<T>>* local_dealer_contributions = 0,
+            vector<vector<typename T::open_type>>*
+                own_dealer_full_contributions = 0);
 
     vector<vector<typename T::open_type>>& get_hyper(int t);
     static void get_hyper(vector<vector<typename T::open_type>>& hyper, int t, int n);

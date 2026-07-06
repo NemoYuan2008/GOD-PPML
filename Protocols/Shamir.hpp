@@ -249,7 +249,10 @@ void Shamir<T>::get_hyper(vector<vector<typename T::open_type> >& hyper,
 }
 
 template<class T>
-vector<T> Shamir<T>::get_randoms(PRNG& G, int t)
+vector<T> Shamir<T>::get_randoms(PRNG& G, int t,
+        vector<vector<T>>* local_dealer_contributions,
+        vector<vector<typename T::open_type>>*
+            own_dealer_full_contributions)
 {
     auto& hyper = get_hyper(t);
     if (random_input == 0)
@@ -259,24 +262,82 @@ vector<T> Shamir<T>::get_randoms(PRNG& G, int t)
     auto buffer_size = this->buffer_size;
     if (OnlineOptions::singleton.has_option("verbose_random"))
         fprintf(stderr, "generating %d random elements\n", buffer_size);
+    int n_input_batches = 0;
+    if (own_dealer_full_contributions)
+        input.begin_mine_sharing_recording();
     for (int i = 0; i < buffer_size; i += hyper.size())
+    {
         input.add_from_all(G.get<U>());
+        n_input_batches++;
+    }
+    if (own_dealer_full_contributions)
+        input.end_mine_sharing_recording();
     input.exchange();
+    if (own_dealer_full_contributions)
+        assert(input.num_recorded_mine_sharings()
+                == size_t(n_input_batches));
     vector<U> inputs;
     vector<T> random;
     random.reserve(buffer_size + hyper.size());
-    for (int i = 0; i < buffer_size; i += hyper.size())
+    if (local_dealer_contributions)
+    {
+        local_dealer_contributions->clear();
+        local_dealer_contributions->reserve(buffer_size + hyper.size());
+    }
+    if (own_dealer_full_contributions)
+    {
+        own_dealer_full_contributions->clear();
+        own_dealer_full_contributions->reserve(buffer_size + hyper.size());
+    }
+    int input_batch = 0;
+    for (int i = 0; i < buffer_size; i += hyper.size(), input_batch++)
     {
         inputs.clear();
         for (int j = 0; j < P.num_players(); j++)
             inputs.push_back(input.finalize(j));
+        const vector<typename T::open_type>* recorded_mine_sharing = 0;
+        if (own_dealer_full_contributions)
+        {
+            recorded_mine_sharing =
+                    &input.get_recorded_mine_sharing(input_batch);
+            assert(recorded_mine_sharing->size()
+                    == size_t(P.num_players()));
+        }
         for (size_t j = 0; j < hyper.size(); j++)
         {
             random.push_back({});
+            if (local_dealer_contributions)
+                local_dealer_contributions->push_back(
+                        vector<T>(P.num_players()));
+            if (own_dealer_full_contributions)
+                own_dealer_full_contributions->push_back(
+                        vector<typename T::open_type>(P.num_players()));
             for (int k = 0; k < P.num_players(); k++)
-                random.back() += hyper[j][k] * inputs[k];
+            {
+                T contribution = hyper[j][k] * inputs[k];
+                if (local_dealer_contributions)
+                    local_dealer_contributions->back().at(k) = contribution;
+                random.back() += contribution;
+            }
+            if (own_dealer_full_contributions)
+            {
+                for (int recipient = 0; recipient < P.num_players();
+                        recipient++)
+                    own_dealer_full_contributions->back().at(recipient) =
+                            hyper[j][P.my_num()]
+                            * recorded_mine_sharing->at(recipient);
+            }
+            if (local_dealer_contributions)
+            {
+                T sum{};
+                for (int k = 0; k < P.num_players(); k++)
+                    sum += local_dealer_contributions->back().at(k);
+                assert(sum == random.back());
+            }
         }
     }
+    if (own_dealer_full_contributions)
+        input.clear_recorded_mine_sharings();
     return random;
 }
 
