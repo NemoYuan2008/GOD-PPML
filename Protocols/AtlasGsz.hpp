@@ -161,6 +161,80 @@ typename T::open_type AtlasGsz<T>::sample_agreed_challenge()
 }
 
 template<class T>
+vector<vector<typename T::open_type>> AtlasGsz<T>::broadcast_local_shares(
+        const vector<T>& local_shares)
+{
+    vector<octetStream> streams(P.num_players());
+    for (const auto& share : local_shares)
+    {
+        typename T::open_type local_share = share;
+        local_share.pack(streams.at(P.my_num()));
+    }
+
+    P.Broadcast_Receive(streams);
+    P.Check_Broadcast();
+
+    vector<vector<typename T::open_type>> result(
+            local_shares.size(),
+            vector<typename T::open_type>(P.num_players()));
+
+    for (int player = 0; player < P.num_players(); player++)
+    {
+        for (size_t i = 0; i < local_shares.size(); i++)
+            result.at(i).at(player).unpack(streams.at(player));
+        assert(not streams.at(player).left());
+    }
+
+    for (const auto& shares : result)
+        assert(shares.size() == size_t(P.num_players()));
+
+    return result;
+}
+
+template<class T>
+typename AtlasGsz<T>::PublishedDegreeTSharing
+AtlasGsz<T>::classify_degree_t_sharing(
+        const vector<typename T::open_type>& shares)
+{
+    assert(shares.size() == size_t(P.num_players()));
+
+    PublishedDegreeTSharing result{};
+    result.shares = shares;
+    malicious_mc.init_open(P);
+    vector<typename T::open_type> relative_shares;
+    relative_shares.reserve(P.num_players());
+    for (int i = 0; i < P.num_players(); i++)
+        relative_shares.push_back(result.shares.at(P.get_player(i)));
+    try
+    {
+        result.value = malicious_mc.reconstruct(relative_shares);
+        result.consistent = true;
+    }
+    catch (const mac_fail&)
+    {
+        result.consistent = false;
+    }
+    return result;
+}
+
+template<class T>
+typename AtlasGsz<T>::PublishedDegree2TVector
+AtlasGsz<T>::collect_degree_2t_vector(
+        const vector<typename T::open_type>& shares)
+{
+    assert(shares.size() == size_t(P.num_players()));
+
+    PublishedDegree2TVector result{};
+    result.shares = shares;
+    result.value = typename T::open_type{};
+    for (int i = 0; i < P.num_players(); i++)
+        result.value += result.shares.at(i)
+                * Shamir<T>::get_rec_factor(i, P.num_players());
+
+    return result;
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 }
@@ -533,6 +607,9 @@ void AtlasGsz<T>::prepare_with_solved_bits(const typename T::open_type& product)
 template<class T>
 void AtlasGsz<T>::check()
 {
+    assert(not have_ultimate_failure_context);
+    assert(not ultimate_failure_context.valid);
+
     if (x_verify.empty()) {
         return;
     }
@@ -587,6 +664,8 @@ void AtlasGsz<T>::check()
     current_virtual_king_evidence =
             typename Atlas<T>::KingPartialMultEvidence{};
     have_current_virtual_king_evidence = false;
+    ultimate_failure_context = UltimateFailureContext{};
+    have_ultimate_failure_context = false;
 
     if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
         x_verify.shrink_to_fit();
@@ -1212,12 +1291,127 @@ void AtlasGsz<T>::randomization()
     ultimate_tuple.push_back(ultimate_x);
     ultimate_tuple.push_back(ultimate_y);
     ultimate_tuple.push_back(ultimate_z);
-    vector<typename T::open_type> opened;
-    malicious_mc.POpen(opened, ultimate_tuple, P);
-    assert(opened.size() == 3);
 
-    if (opened.at(0) * opened.at(1) != opened.at(2))
-        throw mac_fail("AtlasGsz: Verification failed");
+    auto published_ultimate = broadcast_local_shares(ultimate_tuple);
+    assert(published_ultimate.size() == 3);
+    auto alpha = classify_degree_t_sharing(published_ultimate.at(0));
+    auto beta = classify_degree_t_sharing(published_ultimate.at(1));
+    auto gamma = classify_degree_t_sharing(published_ultimate.at(2));
+
+    bool ultimate_tuple_passes =
+            alpha.consistent
+            && beta.consistent
+            && gamma.consistent
+            && alpha.value * beta.value == gamma.value;
+
+    if (ultimate_tuple_passes)
+    {
+        ultimate_failure_context = UltimateFailureContext{};
+        have_ultimate_failure_context = false;
+        return;
+    }
+
+    UltimateFailureKind failure_kind =
+            UltimateFailureKind::incorrect_multiplication;
+    if (not alpha.consistent)
+        failure_kind = UltimateFailureKind::inconsistent_alpha;
+    else if (not beta.consistent)
+        failure_kind = UltimateFailureKind::inconsistent_beta;
+    else if (not gamma.consistent)
+        failure_kind = UltimateFailureKind::inconsistent_gamma;
+
+    vector<T> auxiliary_tuple;
+    auxiliary_tuple.reserve(4);
+    auxiliary_tuple.push_back(current_virtual_transcript.r_t);
+    auxiliary_tuple.push_back(current_virtual_transcript.r_2t);
+    auxiliary_tuple.push_back(current_virtual_transcript.e_2t);
+    auxiliary_tuple.push_back(current_virtual_transcript.e_t);
+    auto published_auxiliary = broadcast_local_shares(auxiliary_tuple);
+    assert(published_auxiliary.size() == 4);
+
+    UltimateFailureContext context{};
+    context.valid = true;
+    context.king = current_virtual_transcript.king;
+    context.failure_kind = failure_kind;
+    context.alpha_t = alpha;
+    context.beta_t = beta;
+    context.gamma_t = gamma;
+    context.delta_t = classify_degree_t_sharing(published_auxiliary.at(0));
+    context.delta_2t = collect_degree_2t_vector(published_auxiliary.at(1));
+    context.eta_2t = collect_degree_2t_vector(published_auxiliary.at(2));
+    context.eta_t = classify_degree_t_sharing(published_auxiliary.at(3));
+
+    int king = context.king;
+    vector<octetStream> evidence_streams(P.num_players());
+    if (P.my_num() == king)
+    {
+        assert(have_current_virtual_king_evidence);
+        assert(current_virtual_king_evidence.king == king);
+        assert(current_virtual_king_evidence.received_e_2t.size()
+                == size_t(P.num_players()));
+        assert(current_virtual_king_evidence.distributed_e_t.size()
+                == size_t(P.num_players()));
+
+        for (const auto& share :
+                current_virtual_king_evidence.received_e_2t)
+            share.pack(evidence_streams.at(king));
+        for (const auto& share :
+                current_virtual_king_evidence.distributed_e_t)
+            share.pack(evidence_streams.at(king));
+    }
+
+    P.Broadcast_Receive(evidence_streams);
+    P.Check_Broadcast();
+
+    typename Atlas<T>::KingPartialMultEvidence published_evidence{};
+    published_evidence.king = king;
+    published_evidence.received_e_2t.resize(P.num_players());
+    published_evidence.distributed_e_t.resize(P.num_players());
+    for (int i = 0; i < P.num_players(); i++)
+        published_evidence.received_e_2t.at(i).unpack(
+                evidence_streams.at(king));
+    for (int i = 0; i < P.num_players(); i++)
+        published_evidence.distributed_e_t.at(i).unpack(
+                evidence_streams.at(king));
+    assert(not evidence_streams.at(king).left());
+    for (int i = 0; i < P.num_players(); i++)
+        if (i != king)
+            assert(not evidence_streams.at(i).left());
+
+    assert(published_evidence.king == current_virtual_transcript.king);
+    assert(published_evidence.received_e_2t.size()
+            == size_t(P.num_players()));
+    assert(published_evidence.distributed_e_t.size()
+            == size_t(P.num_players()));
+    if (P.my_num() == king)
+    {
+        assert(published_evidence.received_e_2t
+                == current_virtual_king_evidence.received_e_2t);
+        assert(published_evidence.distributed_e_t
+                == current_virtual_king_evidence.distributed_e_t);
+    }
+
+    for (int i = 0; i < P.num_players(); i++)
+    {
+        if (published_evidence.received_e_2t.at(i)
+                != context.eta_2t.shares.at(i))
+            context.received_eta_2t_mismatch_players.push_back(i);
+
+        if (published_evidence.distributed_e_t.at(i)
+                != context.eta_t.shares.at(i))
+            context.distributed_eta_t_mismatch_players.push_back(i);
+    }
+
+    context.published_king_evidence = published_evidence;
+    context.has_published_king_evidence = true;
+
+    ultimate_failure_context = context;
+    have_ultimate_failure_context = true;
+
+    assert(have_ultimate_failure_context);
+    assert(ultimate_failure_context.valid);
+    throw mac_fail(
+            "AtlasGsz: ultimate tuple failed; failure transcript retained");
 }
 
 template <class T>

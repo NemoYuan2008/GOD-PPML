@@ -40,6 +40,51 @@ private:
 
     vector<PartialMultTranscriptRecord> partial_mult_transcripts;
 
+    enum class UltimateFailureKind
+    {
+        none,
+        inconsistent_alpha,
+        inconsistent_beta,
+        inconsistent_gamma,
+        incorrect_multiplication,
+    };
+
+    struct PublishedDegreeTSharing
+    {
+        vector<typename T::open_type> shares;
+        bool consistent = false;
+        typename T::open_type value{};
+    };
+
+    struct PublishedDegree2TVector
+    {
+        vector<typename T::open_type> shares;
+        typename T::open_type value{};
+    };
+
+    struct UltimateFailureContext
+    {
+        bool valid = false;
+        int king = -1;
+        UltimateFailureKind failure_kind = UltimateFailureKind::none;
+
+        PublishedDegreeTSharing alpha_t;
+        PublishedDegreeTSharing beta_t;
+        PublishedDegreeTSharing delta_t;
+        PublishedDegree2TVector delta_2t;
+        PublishedDegree2TVector eta_2t;
+        PublishedDegreeTSharing eta_t;
+        PublishedDegreeTSharing gamma_t;
+
+        bool has_published_king_evidence = false;
+        typename Atlas<T>::KingPartialMultEvidence published_king_evidence;
+        vector<int> received_eta_2t_mismatch_players;
+        vector<int> distributed_eta_t_mismatch_players;
+    };
+
+    UltimateFailureContext ultimate_failure_context;
+    bool have_ultimate_failure_context = false;
+
     typename Atlas<T>::PartialMultTranscript current_virtual_transcript;
     bool have_current_virtual_transcript = false;
 
@@ -49,6 +94,12 @@ private:
     void validate_partial_mult_transcript_coverage() const;
     void validate_current_virtual_transcript() const;
     typename T::open_type sample_agreed_challenge();
+    vector<vector<typename T::open_type>>
+        broadcast_local_shares(const vector<T>& local_shares);
+    PublishedDegreeTSharing classify_degree_t_sharing(
+            const vector<typename T::open_type>& shares);
+    PublishedDegree2TVector collect_degree_2t_vector(
+            const vector<typename T::open_type>& shares);
 
 public:
     static const bool uses_triples = false;
