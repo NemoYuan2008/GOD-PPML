@@ -235,6 +235,104 @@ AtlasGsz<T>::collect_degree_2t_vector(
 }
 
 template<class T>
+typename AtlasGsz<T>::UltimateFailureDecision
+AtlasGsz<T>::diagnose_ultimate_failure(
+        const UltimateFailureContext& context) const
+{
+    assert(context.valid);
+
+    UltimateFailureDecision decision{};
+    decision.valid = true;
+
+    if (not context.alpha_t.consistent)
+    {
+        decision.action = UltimateFailureAction::analyze_alpha;
+        return decision;
+    }
+
+    if (not context.beta_t.consistent)
+    {
+        decision.action = UltimateFailureAction::analyze_beta;
+        return decision;
+    }
+
+    if (not context.delta_t.consistent
+            || context.delta_t.value != context.delta_2t.value)
+    {
+        decision.action = UltimateFailureAction::check_double_rand;
+        return decision;
+    }
+
+    assert(context.alpha_t.shares.size() == size_t(P.num_players()));
+    assert(context.beta_t.shares.size() == size_t(P.num_players()));
+    assert(context.delta_t.shares.size() == size_t(P.num_players()));
+    assert(context.delta_2t.shares.size() == size_t(P.num_players()));
+    assert(context.eta_2t.shares.size() == size_t(P.num_players()));
+    assert(context.eta_t.shares.size() == size_t(P.num_players()));
+    assert(context.gamma_t.shares.size() == size_t(P.num_players()));
+
+    for (int i = 0; i < P.num_players(); i++)
+    {
+        bool eta_2t_equation =
+                context.eta_2t.shares.at(i)
+                == context.alpha_t.shares.at(i)
+                * context.beta_t.shares.at(i)
+                + context.delta_2t.shares.at(i);
+        bool gamma_equation =
+                context.gamma_t.shares.at(i)
+                == context.eta_t.shares.at(i)
+                - context.delta_t.shares.at(i);
+
+        if (not eta_2t_equation || not gamma_equation)
+        {
+            decision.action =
+                    UltimateFailureAction::identify_corrupted_party;
+            decision.party = i;
+            return decision;
+        }
+    }
+
+    if (not context.king_distributed_eta_t.consistent
+            || context.king_distributed_eta_t.value
+                    != context.king_received_eta_2t.value)
+    {
+        decision.action = UltimateFailureAction::identify_corrupted_party;
+        decision.party = context.king;
+        return decision;
+    }
+
+    if (not context.received_eta_2t_mismatch_players.empty())
+    {
+        decision.action = UltimateFailureAction::king_party_disagreement;
+        decision.king = context.king;
+        decision.counterparty = *min_element(
+                context.received_eta_2t_mismatch_players.begin(),
+                context.received_eta_2t_mismatch_players.end());
+        decision.mismatch_kind =
+                KingEvidenceMismatchKind::received_eta_2t;
+        return decision;
+    }
+
+    if (not context.distributed_eta_t_mismatch_players.empty())
+    {
+        decision.action = UltimateFailureAction::king_party_disagreement;
+        decision.king = context.king;
+        decision.counterparty = *min_element(
+                context.distributed_eta_t_mismatch_players.begin(),
+                context.distributed_eta_t_mismatch_players.end());
+        decision.mismatch_kind =
+                KingEvidenceMismatchKind::distributed_eta_t;
+        return decision;
+    }
+
+#ifndef NDEBUG
+    assert(false);
+#endif
+    decision.valid = false;
+    return decision;
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 }
@@ -1404,12 +1502,18 @@ void AtlasGsz<T>::randomization()
 
     context.published_king_evidence = published_evidence;
     context.has_published_king_evidence = true;
+    context.king_received_eta_2t = collect_degree_2t_vector(
+            context.published_king_evidence.received_e_2t);
+    context.king_distributed_eta_t = classify_degree_t_sharing(
+            context.published_king_evidence.distributed_e_t);
+    context.decision = diagnose_ultimate_failure(context);
 
     ultimate_failure_context = context;
     have_ultimate_failure_context = true;
 
     assert(have_ultimate_failure_context);
     assert(ultimate_failure_context.valid);
+    assert(ultimate_failure_context.decision.valid);
     throw mac_fail(
             "AtlasGsz: ultimate tuple failed; failure transcript retained");
 }

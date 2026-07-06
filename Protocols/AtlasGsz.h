@@ -49,6 +49,34 @@ private:
         incorrect_multiplication,
     };
 
+    enum class UltimateFailureAction
+    {
+        none,
+        analyze_alpha,
+        analyze_beta,
+        check_double_rand,
+        identify_corrupted_party,
+        king_party_disagreement,
+    };
+
+    enum class KingEvidenceMismatchKind
+    {
+        none,
+        received_eta_2t,
+        distributed_eta_t,
+    };
+
+    struct UltimateFailureDecision
+    {
+        bool valid = false;
+        UltimateFailureAction action = UltimateFailureAction::none;
+        int party = -1;
+        int king = -1;
+        int counterparty = -1;
+        KingEvidenceMismatchKind mismatch_kind =
+                KingEvidenceMismatchKind::none;
+    };
+
     struct PublishedDegreeTSharing
     {
         vector<typename T::open_type> shares;
@@ -78,8 +106,12 @@ private:
 
         bool has_published_king_evidence = false;
         typename Atlas<T>::KingPartialMultEvidence published_king_evidence;
+        PublishedDegree2TVector king_received_eta_2t;
+        PublishedDegreeTSharing king_distributed_eta_t;
         vector<int> received_eta_2t_mismatch_players;
         vector<int> distributed_eta_t_mismatch_players;
+
+        UltimateFailureDecision decision;
     };
 
     UltimateFailureContext ultimate_failure_context;
@@ -100,6 +132,8 @@ private:
             const vector<typename T::open_type>& shares);
     PublishedDegree2TVector collect_degree_2t_vector(
             const vector<typename T::open_type>& shares);
+    UltimateFailureDecision diagnose_ultimate_failure(
+            const UltimateFailureContext& context) const;
 
 public:
     static const bool uses_triples = false;
