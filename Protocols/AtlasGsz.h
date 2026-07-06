@@ -66,10 +66,19 @@ private:
         distributed_eta_t,
     };
 
+    enum class UltimateFailureDecisionSource
+    {
+        none,
+        local_transcript_equation,
+        invalid_king_evidence,
+    };
+
     struct UltimateFailureDecision
     {
         bool valid = false;
         UltimateFailureAction action = UltimateFailureAction::none;
+        UltimateFailureDecisionSource source =
+                UltimateFailureDecisionSource::none;
         int party = -1;
         int king = -1;
         int counterparty = -1;
@@ -131,6 +140,49 @@ private:
         CheckDoubleRandDecision decision;
     };
 
+    enum class FaultLocalizationAction
+    {
+        none,
+        needs_analyze_sharing,
+        identify_corrupted_party,
+        identify_disputed_pair,
+    };
+
+    enum class FaultLocalizationSource
+    {
+        none,
+        inconsistent_alpha,
+        inconsistent_beta,
+        local_transcript_equation,
+        invalid_king_evidence,
+        king_party_disagreement,
+        invalid_double_sharing_dealer,
+        double_sharing_dealer_recipient_disagreement,
+    };
+
+    enum class SharingToAnalyze
+    {
+        none,
+        alpha,
+        beta,
+    };
+
+    struct FaultLocalizationOutcome
+    {
+        bool valid = false;
+        FaultLocalizationAction action = FaultLocalizationAction::none;
+        FaultLocalizationSource source = FaultLocalizationSource::none;
+
+        SharingToAnalyze sharing_to_analyze = SharingToAnalyze::none;
+
+        int corrupted_party = -1;
+
+        int disputed_party_a = -1;
+        int disputed_party_b = -1;
+        int primary_party = -1;
+        int counterparty = -1;
+    };
+
     struct UltimateFailureContext
     {
         bool valid = false;
@@ -157,6 +209,7 @@ private:
         vector<int> distributed_eta_t_mismatch_players;
 
         UltimateFailureDecision decision;
+        FaultLocalizationOutcome fault_localization;
     };
 
     UltimateFailureContext ultimate_failure_context;
@@ -182,6 +235,8 @@ private:
     CheckDoubleRandContext run_check_double_rand_diagnosis(
             const typename Atlas<T>::DoubleSharingDecomposition&
                 decomposition);
+    FaultLocalizationOutcome derive_fault_localization_outcome(
+            const UltimateFailureContext& context) const;
     typename Atlas<T>::DoubleSharingDecomposition
         zero_double_sharing_decomposition() const;
     typename Atlas<T>::DealerDoubleSharingContribution

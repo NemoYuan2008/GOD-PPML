@@ -416,6 +416,9 @@ AtlasGsz<T>::diagnose_ultimate_failure(
         {
             decision.action =
                     UltimateFailureAction::identify_corrupted_party;
+            decision.source =
+                    UltimateFailureDecisionSource::
+                        local_transcript_equation;
             decision.party = i;
             return decision;
         }
@@ -426,6 +429,8 @@ AtlasGsz<T>::diagnose_ultimate_failure(
                     != context.king_received_eta_2t.value)
     {
         decision.action = UltimateFailureAction::identify_corrupted_party;
+        decision.source =
+                UltimateFailureDecisionSource::invalid_king_evidence;
         decision.party = context.king;
         return decision;
     }
@@ -632,6 +637,116 @@ AtlasGsz<T>::run_check_double_rand_diagnosis(
 #endif
     context.valid = false;
     return context;
+}
+
+template<class T>
+typename AtlasGsz<T>::FaultLocalizationOutcome
+AtlasGsz<T>::derive_fault_localization_outcome(
+        const UltimateFailureContext& context) const
+{
+    assert(context.valid);
+    assert(context.decision.valid);
+
+    FaultLocalizationOutcome outcome{};
+
+    switch (context.decision.action)
+    {
+    case UltimateFailureAction::analyze_alpha:
+        outcome.valid = true;
+        outcome.action = FaultLocalizationAction::needs_analyze_sharing;
+        outcome.source = FaultLocalizationSource::inconsistent_alpha;
+        outcome.sharing_to_analyze = SharingToAnalyze::alpha;
+        return outcome;
+
+    case UltimateFailureAction::analyze_beta:
+        outcome.valid = true;
+        outcome.action = FaultLocalizationAction::needs_analyze_sharing;
+        outcome.source = FaultLocalizationSource::inconsistent_beta;
+        outcome.sharing_to_analyze = SharingToAnalyze::beta;
+        return outcome;
+
+    case UltimateFailureAction::identify_corrupted_party:
+        outcome.valid = true;
+        outcome.action = FaultLocalizationAction::identify_corrupted_party;
+        outcome.corrupted_party = context.decision.party;
+        if (context.decision.source
+                == UltimateFailureDecisionSource::local_transcript_equation)
+            outcome.source =
+                    FaultLocalizationSource::local_transcript_equation;
+        else if (context.decision.source
+                == UltimateFailureDecisionSource::invalid_king_evidence)
+            outcome.source = FaultLocalizationSource::invalid_king_evidence;
+        else
+        {
+#ifndef NDEBUG
+            assert(false);
+#endif
+            outcome.valid = false;
+            outcome.action = FaultLocalizationAction::none;
+        }
+        return outcome;
+
+    case UltimateFailureAction::king_party_disagreement:
+        outcome.valid = true;
+        outcome.action = FaultLocalizationAction::identify_disputed_pair;
+        outcome.source = FaultLocalizationSource::king_party_disagreement;
+        outcome.primary_party = context.decision.king;
+        outcome.counterparty = context.decision.counterparty;
+        outcome.disputed_party_a = min(
+                outcome.primary_party, outcome.counterparty);
+        outcome.disputed_party_b = max(
+                outcome.primary_party, outcome.counterparty);
+        return outcome;
+
+    case UltimateFailureAction::check_double_rand:
+    {
+        assert(context.has_check_double_rand_context);
+        assert(context.check_double_rand_context.valid);
+        assert(context.check_double_rand_context.decision.valid);
+        const auto& decision =
+                context.check_double_rand_context.decision;
+
+        if (decision.action
+                == CheckDoubleRandAction::identify_corrupted_party)
+        {
+            outcome.valid = true;
+            outcome.action =
+                    FaultLocalizationAction::identify_corrupted_party;
+            outcome.source =
+                    FaultLocalizationSource::invalid_double_sharing_dealer;
+            outcome.corrupted_party = decision.party;
+            assert(decision.dealer == -1
+                    || outcome.corrupted_party == decision.dealer);
+            return outcome;
+        }
+
+        if (decision.action
+                == CheckDoubleRandAction::dealer_recipient_disagreement)
+        {
+            outcome.valid = true;
+            outcome.action =
+                    FaultLocalizationAction::identify_disputed_pair;
+            outcome.source = FaultLocalizationSource::
+                    double_sharing_dealer_recipient_disagreement;
+            outcome.primary_party = decision.dealer;
+            outcome.counterparty = decision.recipient;
+            outcome.disputed_party_a = min(
+                    outcome.primary_party, outcome.counterparty);
+            outcome.disputed_party_b = max(
+                    outcome.primary_party, outcome.counterparty);
+            return outcome;
+        }
+        break;
+    }
+
+    case UltimateFailureAction::none:
+        break;
+    }
+
+#ifndef NDEBUG
+    assert(false);
+#endif
+    return outcome;
 }
 
 template<class T>
@@ -1887,6 +2002,11 @@ void AtlasGsz<T>::randomization()
         assert(context.check_double_rand_context.valid);
         assert(context.check_double_rand_context.decision.valid);
     }
+    context.fault_localization =
+            derive_fault_localization_outcome(context);
+    assert(context.fault_localization.valid);
+    assert(context.fault_localization.action
+            != FaultLocalizationAction::none);
 
     ultimate_failure_context = context;
     have_ultimate_failure_context = true;
