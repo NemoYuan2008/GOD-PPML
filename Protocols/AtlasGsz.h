@@ -90,6 +90,47 @@ private:
         typename T::open_type value{};
     };
 
+    enum class CheckDoubleRandAction
+    {
+        none,
+        identify_corrupted_party,
+        dealer_recipient_disagreement,
+    };
+
+    enum class CheckDoubleRandMismatchKind
+    {
+        none,
+        invalid_dealer_double_sharing,
+        r_t_share_mismatch,
+        r_2t_share_mismatch,
+    };
+
+    struct CheckDoubleRandDecision
+    {
+        bool valid = false;
+        CheckDoubleRandAction action = CheckDoubleRandAction::none;
+        CheckDoubleRandMismatchKind mismatch_kind =
+                CheckDoubleRandMismatchKind::none;
+        int dealer = -1;
+        int recipient = -1;
+        int party = -1;
+    };
+
+    struct CheckDoubleRandContext
+    {
+        bool valid = false;
+
+        vector<typename Atlas<T>::OwnDealerDoubleSharingEvidence>
+            dealer_claims;
+        vector<vector<typename Atlas<T>::DealerDoubleSharingContribution>>
+            recipient_views;
+
+        vector<PublishedDegreeTSharing> dealer_r_t;
+        vector<PublishedDegree2TVector> dealer_r_2t;
+
+        CheckDoubleRandDecision decision;
+    };
+
     struct UltimateFailureContext
     {
         bool valid = false;
@@ -105,6 +146,8 @@ private:
         PublishedDegreeTSharing gamma_t;
         typename Atlas<T>::DoubleSharingDecomposition
             local_delta_decomposition;
+        bool has_check_double_rand_context = false;
+        CheckDoubleRandContext check_double_rand_context;
 
         bool has_published_king_evidence = false;
         typename Atlas<T>::KingPartialMultEvidence published_king_evidence;
@@ -136,6 +179,9 @@ private:
             const vector<typename T::open_type>& shares);
     UltimateFailureDecision diagnose_ultimate_failure(
             const UltimateFailureContext& context) const;
+    CheckDoubleRandContext run_check_double_rand_diagnosis(
+            const typename Atlas<T>::DoubleSharingDecomposition&
+                decomposition);
     typename Atlas<T>::DoubleSharingDecomposition
         zero_double_sharing_decomposition() const;
     typename Atlas<T>::DealerDoubleSharingContribution

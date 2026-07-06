@@ -462,6 +462,179 @@ AtlasGsz<T>::diagnose_ultimate_failure(
 }
 
 template<class T>
+typename AtlasGsz<T>::CheckDoubleRandContext
+AtlasGsz<T>::run_check_double_rand_diagnosis(
+        const typename Atlas<T>::DoubleSharingDecomposition&
+            decomposition)
+{
+    int n = P.num_players();
+    assert(decomposition.dealer_components.size() == size_t(n));
+    assert(decomposition.own_dealer_evidence.r_t_shares.size()
+            == size_t(n));
+    assert(decomposition.own_dealer_evidence.r_2t_shares.size()
+            == size_t(n));
+    assert(decomposition.own_dealer_evidence.r_t_shares.at(P.my_num())
+            == decomposition.dealer_components.at(P.my_num()).r_t);
+    assert(decomposition.own_dealer_evidence.r_2t_shares.at(P.my_num())
+            == decomposition.dealer_components.at(P.my_num()).r_2t);
+
+    vector<octetStream> streams(n);
+    for (int recipient = 0; recipient < n; recipient++)
+        decomposition.own_dealer_evidence.r_t_shares.at(recipient)
+                .pack(streams.at(P.my_num()));
+    for (int recipient = 0; recipient < n; recipient++)
+        decomposition.own_dealer_evidence.r_2t_shares.at(recipient)
+                .pack(streams.at(P.my_num()));
+    for (int dealer = 0; dealer < n; dealer++)
+    {
+        typename T::open_type local_component =
+                decomposition.dealer_components.at(dealer).r_t;
+        local_component.pack(streams.at(P.my_num()));
+    }
+    for (int dealer = 0; dealer < n; dealer++)
+    {
+        typename T::open_type local_component =
+                decomposition.dealer_components.at(dealer).r_2t;
+        local_component.pack(streams.at(P.my_num()));
+    }
+
+    P.Broadcast_Receive(streams);
+    P.Check_Broadcast();
+
+    CheckDoubleRandContext context{};
+    context.valid = true;
+    context.dealer_claims.resize(n);
+    context.recipient_views.resize(
+            n, vector<typename Atlas<T>::DealerDoubleSharingContribution>(n));
+    context.dealer_r_t.resize(n);
+    context.dealer_r_2t.resize(n);
+
+    for (int player = 0; player < n; player++)
+    {
+        auto& dealer_claim = context.dealer_claims.at(player);
+        dealer_claim.r_t_shares.resize(n);
+        dealer_claim.r_2t_shares.resize(n);
+
+        for (int recipient = 0; recipient < n; recipient++)
+            dealer_claim.r_t_shares.at(recipient)
+                    .unpack(streams.at(player));
+        for (int recipient = 0; recipient < n; recipient++)
+            dealer_claim.r_2t_shares.at(recipient)
+                    .unpack(streams.at(player));
+        for (int dealer = 0; dealer < n; dealer++)
+        {
+            typename T::open_type local_component;
+            local_component.unpack(streams.at(player));
+            context.recipient_views.at(player).at(dealer).r_t =
+                    local_component;
+        }
+        for (int dealer = 0; dealer < n; dealer++)
+        {
+            typename T::open_type local_component;
+            local_component.unpack(streams.at(player));
+            context.recipient_views.at(player).at(dealer).r_2t =
+                    local_component;
+        }
+        assert(not streams.at(player).left());
+    }
+
+    assert(context.dealer_claims.size() == size_t(n));
+    assert(context.recipient_views.size() == size_t(n));
+    for (int i = 0; i < n; i++)
+    {
+        assert(context.dealer_claims.at(i).r_t_shares.size()
+                == size_t(n));
+        assert(context.dealer_claims.at(i).r_2t_shares.size()
+                == size_t(n));
+        assert(context.recipient_views.at(i).size() == size_t(n));
+    }
+
+    for (int dealer = 0; dealer < n; dealer++)
+    {
+        context.dealer_r_t.at(dealer) =
+                classify_degree_t_sharing(
+                        context.dealer_claims.at(dealer).r_t_shares);
+        context.dealer_r_2t.at(dealer) =
+                collect_degree_2t_vector(
+                        context.dealer_claims.at(dealer).r_2t_shares);
+    }
+
+    assert(context.dealer_r_t.size() == size_t(n));
+    assert(context.dealer_r_2t.size() == size_t(n));
+
+    for (int dealer = 0; dealer < n; dealer++)
+    {
+        if (not context.dealer_r_t.at(dealer).consistent
+                || context.dealer_r_t.at(dealer).value
+                        != context.dealer_r_2t.at(dealer).value)
+        {
+            context.decision.valid = true;
+            context.decision.action =
+                    CheckDoubleRandAction::identify_corrupted_party;
+            context.decision.mismatch_kind =
+                    CheckDoubleRandMismatchKind::
+                        invalid_dealer_double_sharing;
+            context.decision.dealer = dealer;
+            context.decision.party = dealer;
+            assert(context.dealer_r_t.size() == size_t(n));
+            assert(context.dealer_r_2t.size() == size_t(n));
+            return context;
+        }
+    }
+
+    for (int dealer = 0; dealer < n; dealer++)
+    {
+        for (int recipient = 0; recipient < n; recipient++)
+        {
+            typename T::open_type recipient_r_t =
+                    context.recipient_views.at(recipient)
+                        .at(dealer).r_t;
+            typename T::open_type recipient_r_2t =
+                    context.recipient_views.at(recipient)
+                        .at(dealer).r_2t;
+
+            if (context.dealer_claims.at(dealer)
+                    .r_t_shares.at(recipient) != recipient_r_t)
+            {
+                context.decision.valid = true;
+                context.decision.action =
+                        CheckDoubleRandAction::
+                            dealer_recipient_disagreement;
+                context.decision.mismatch_kind =
+                        CheckDoubleRandMismatchKind::r_t_share_mismatch;
+                context.decision.dealer = dealer;
+                context.decision.recipient = recipient;
+                assert(context.dealer_r_t.size() == size_t(n));
+                assert(context.dealer_r_2t.size() == size_t(n));
+                return context;
+            }
+
+            if (context.dealer_claims.at(dealer)
+                    .r_2t_shares.at(recipient) != recipient_r_2t)
+            {
+                context.decision.valid = true;
+                context.decision.action =
+                        CheckDoubleRandAction::
+                            dealer_recipient_disagreement;
+                context.decision.mismatch_kind =
+                        CheckDoubleRandMismatchKind::r_2t_share_mismatch;
+                context.decision.dealer = dealer;
+                context.decision.recipient = recipient;
+                assert(context.dealer_r_t.size() == size_t(n));
+                assert(context.dealer_r_2t.size() == size_t(n));
+                return context;
+            }
+        }
+    }
+
+#ifndef NDEBUG
+    assert(false);
+#endif
+    context.valid = false;
+    return context;
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 }
@@ -1705,6 +1878,15 @@ void AtlasGsz<T>::randomization()
     context.king_distributed_eta_t = classify_degree_t_sharing(
             context.published_king_evidence.distributed_e_t);
     context.decision = diagnose_ultimate_failure(context);
+    if (context.decision.action == UltimateFailureAction::check_double_rand)
+    {
+        context.check_double_rand_context =
+                run_check_double_rand_diagnosis(
+                        context.local_delta_decomposition);
+        context.has_check_double_rand_context = true;
+        assert(context.check_double_rand_context.valid);
+        assert(context.check_double_rand_context.decision.valid);
+    }
 
     ultimate_failure_context = context;
     have_ultimate_failure_context = true;
