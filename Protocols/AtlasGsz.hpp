@@ -773,6 +773,79 @@ void AtlasGsz<T>::ensure_dispute_control_state_initialized()
 }
 
 template<class T>
+void AtlasGsz<T>::validate_dispute_control_state() const
+{
+    if (not dispute_control_state.initialized)
+        return;
+
+    int n = P.num_players();
+    int t = corruption_threshold();
+    assert(dispute_control_state.corr.size() == size_t(n));
+    assert(dispute_control_state.disp.size() == size_t(n));
+
+    for (int i = 0; i < n; i++)
+    {
+        assert(dispute_control_state.disp.at(i).size() == size_t(n));
+        assert(not dispute_control_state.disp.at(i).at(i));
+        for (int j = 0; j < n; j++)
+            assert(dispute_control_state.disp.at(i).at(j)
+                    == dispute_control_state.disp.at(j).at(i));
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        if (dispute_control_state.corr.at(i))
+        {
+            for (int j = 0; j < n; j++)
+            {
+                if (i == j)
+                    continue;
+                assert(dispute_control_state.disp.at(i).at(j));
+                assert(dispute_control_state.disp.at(j).at(i));
+            }
+        }
+        else
+            assert(count_disputes(i) <= t);
+    }
+}
+
+template<class T>
+int AtlasGsz<T>::corruption_threshold() const
+{
+    return (P.num_players() - 1) / 2;
+}
+
+template<class T>
+bool AtlasGsz<T>::has_dispute_control_state() const
+{
+    return dispute_control_state.initialized;
+}
+
+template<class T>
+vector<int> AtlasGsz<T>::active_parties() const
+{
+    vector<int> res;
+    for (int i = 0; i < P.num_players(); i++)
+        if (is_active_party(i))
+            res.push_back(i);
+    return res;
+}
+
+template<class T>
+bool AtlasGsz<T>::is_active_party(int party) const
+{
+    assert(0 <= party);
+    assert(party < P.num_players());
+    return not is_corrupted_party(party);
+}
+
+template<class T>
+int AtlasGsz<T>::num_active_parties() const
+{
+    return active_parties().size();
+}
+
+template<class T>
 bool AtlasGsz<T>::is_corrupted_party(int party) const
 {
     assert(0 <= party);
@@ -797,6 +870,21 @@ bool AtlasGsz<T>::is_disputed_pair(int a, int b) const
 }
 
 template<class T>
+vector<int> AtlasGsz<T>::disputed_parties_of(int party) const
+{
+    assert(0 <= party);
+    assert(party < P.num_players());
+    vector<int> res;
+    if (not dispute_control_state.initialized)
+        return res;
+
+    for (int i = 0; i < P.num_players(); i++)
+        if (i != party && dispute_control_state.disp.at(party).at(i))
+            res.push_back(i);
+    return res;
+}
+
+template<class T>
 int AtlasGsz<T>::count_disputes(int party) const
 {
     assert(0 <= party);
@@ -813,6 +901,142 @@ int AtlasGsz<T>::count_disputes(int party) const
 }
 
 template<class T>
+int AtlasGsz<T>::count_active_disputes(int party) const
+{
+    assert(0 <= party);
+    assert(party < P.num_players());
+    if (not dispute_control_state.initialized)
+        return 0;
+
+    int res = 0;
+    for (int i = 0; i < P.num_players(); i++)
+        if (i != party
+                && is_active_party(i)
+                && dispute_control_state.disp.at(party).at(i))
+            res++;
+    return res;
+}
+
+template<class T>
+bool AtlasGsz<T>::can_communicate_directly(int sender, int receiver) const
+{
+    assert(0 <= sender);
+    assert(sender < P.num_players());
+    assert(0 <= receiver);
+    assert(receiver < P.num_players());
+    if (sender == receiver)
+        return false;
+    if (not dispute_control_state.initialized)
+        return true;
+
+    return is_active_party(sender)
+            && is_active_party(receiver)
+            && not is_disputed_pair(sender, receiver);
+}
+
+template<class T>
+bool AtlasGsz<T>::share_from_dealer_is_suppressed(
+        int dealer,
+        int recipient) const
+{
+    assert(0 <= dealer);
+    assert(dealer < P.num_players());
+    assert(0 <= recipient);
+    assert(recipient < P.num_players());
+    return is_corrupted_party(dealer)
+            || is_corrupted_party(recipient)
+            || is_disputed_pair(dealer, recipient);
+}
+
+template<class T>
+int AtlasGsz<T>::select_active_king() const
+{
+    auto active = active_parties();
+    assert(not active.empty());
+    if (active.empty())
+        return -1;
+    return active.front();
+}
+
+template<class T>
+vector<int> AtlasGsz<T>::select_T_for_king(int king) const
+{
+    assert(0 <= king);
+    assert(king < P.num_players());
+    assert(is_active_party(king));
+
+    int t = corruption_threshold();
+    vector<int> res;
+    if (not is_active_party(king))
+        return res;
+
+    res.push_back(king);
+    for (int i = 0; i < P.num_players() && res.size() < size_t(t + 1); i++)
+    {
+        if (i == king)
+            continue;
+        if (is_active_party(i) && not is_disputed_pair(king, i))
+            res.push_back(i);
+    }
+
+    assert(res.size() == size_t(t + 1));
+    return res;
+}
+
+template<class T>
+int AtlasGsz<T>::relay_for_disputed_pair(int a, int b) const
+{
+    assert(0 <= a);
+    assert(a < P.num_players());
+    assert(0 <= b);
+    assert(b < P.num_players());
+    assert(a != b);
+    assert(is_active_party(a));
+    assert(is_active_party(b));
+    assert(is_disputed_pair(a, b));
+
+    if (a == b || not is_active_party(a) || not is_active_party(b)
+            || not is_disputed_pair(a, b))
+        return -1;
+
+    for (int r = 0; r < P.num_players(); r++)
+        if (r != a
+                && r != b
+                && is_active_party(r)
+                && not is_disputed_pair(a, r)
+                && not is_disputed_pair(b, r))
+            return r;
+
+#ifndef NDEBUG
+    assert(false);
+#endif
+    return -1;
+}
+
+template<class T>
+bool AtlasGsz<T>::has_relay_for_disputed_pair(int a, int b) const
+{
+    assert(0 <= a);
+    assert(a < P.num_players());
+    assert(0 <= b);
+    assert(b < P.num_players());
+    assert(a != b);
+
+    if (a == b || not is_active_party(a) || not is_active_party(b)
+            || not is_disputed_pair(a, b))
+        return false;
+
+    for (int r = 0; r < P.num_players(); r++)
+        if (r != a
+                && r != b
+                && is_active_party(r)
+                && not is_disputed_pair(a, r)
+                && not is_disputed_pair(b, r))
+            return true;
+    return false;
+}
+
+template<class T>
 void AtlasGsz<T>::record_corrupted_party(
         int party,
         FaultLocalizationApplication& application)
@@ -823,7 +1047,7 @@ void AtlasGsz<T>::record_corrupted_party(
     assert(party < n);
     application.corrupted_party = party;
 
-    int threshold = (n - 1) / 2 + 1;
+    int threshold = corruption_threshold() + 1;
     auto mark_corrupted = [&](int p)
     {
         bool changed = false;
@@ -866,7 +1090,7 @@ void AtlasGsz<T>::record_corrupted_party(
     }
     while (changed);
 
-    ensure_dispute_control_state_initialized();
+    validate_dispute_control_state();
 }
 
 template<class T>
@@ -897,7 +1121,7 @@ void AtlasGsz<T>::record_disputed_pair(
         application.state_updated = true;
     }
 
-    int threshold = (n - 1) / 2 + 1;
+    int threshold = corruption_threshold() + 1;
     auto mark_corrupted = [&](int p)
     {
         bool changed = false;
@@ -938,7 +1162,7 @@ void AtlasGsz<T>::record_disputed_pair(
     }
     while (changed);
 
-    ensure_dispute_control_state_initialized();
+    validate_dispute_control_state();
 }
 
 template<class T>
@@ -971,6 +1195,7 @@ AtlasGsz<T>::apply_fault_localization_outcome(
                 FaultLocalizationApplicationAction::
                     recorded_corrupted_party;
         record_corrupted_party(outcome.corrupted_party, application);
+        validate_dispute_control_state();
         return application;
 
     case FaultLocalizationAction::identify_disputed_pair:
@@ -980,6 +1205,7 @@ AtlasGsz<T>::apply_fault_localization_outcome(
                     recorded_disputed_pair;
         record_disputed_pair(
                 outcome.primary_party, outcome.counterparty, application);
+        validate_dispute_control_state();
         return application;
 
     case FaultLocalizationAction::none:
@@ -1367,6 +1593,14 @@ void AtlasGsz<T>::check()
 {
     assert(not have_ultimate_failure_context);
     assert(not ultimate_failure_context.valid);
+    validate_dispute_control_state();
+
+#ifndef NDEBUG
+    bool dispute_state_was_initialized =
+            dispute_control_state.initialized;
+    auto corr_before_check = dispute_control_state.corr;
+    auto disp_before_check = dispute_control_state.disp;
+#endif
 
     if (x_verify.empty()) {
         return;
@@ -1411,6 +1645,14 @@ void AtlasGsz<T>::check()
         dimension_reduction();
     }
     randomization();
+
+#ifndef NDEBUG
+    assert(dispute_control_state.initialized
+            == dispute_state_was_initialized);
+    assert(dispute_control_state.corr == corr_before_check);
+    assert(dispute_control_state.disp == disp_before_check);
+#endif
+    validate_dispute_control_state();
     
     x_verify.clear();
     y_verify.clear();

@@ -274,9 +274,25 @@ private:
     FaultLocalizationOutcome derive_fault_localization_outcome(
             const UltimateFailureContext& context) const;
     void ensure_dispute_control_state_initialized();
+    void validate_dispute_control_state() const;
+    int corruption_threshold() const;
+    bool has_dispute_control_state() const;
+    vector<int> active_parties() const;
+    bool is_active_party(int party) const;
+    int num_active_parties() const;
     bool is_corrupted_party(int party) const;
     bool is_disputed_pair(int a, int b) const;
+    vector<int> disputed_parties_of(int party) const;
     int count_disputes(int party) const;
+    int count_active_disputes(int party) const;
+    bool can_communicate_directly(int sender, int receiver) const;
+    bool share_from_dealer_is_suppressed(
+            int dealer,
+            int recipient) const;
+    int select_active_king() const;
+    vector<int> select_T_for_king(int king) const;
+    int relay_for_disputed_pair(int a, int b) const;
+    bool has_relay_for_disputed_pair(int a, int b) const;
     void record_corrupted_party(
             int party,
             FaultLocalizationApplication& application);
