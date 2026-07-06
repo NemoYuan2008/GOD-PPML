@@ -9,6 +9,8 @@
 #include "Atlas.h"
 #include "MaliciousShamirMC.h"
 
+#include <cstdint>
+
 /**
  * Maliciously secure ATLAS protocol
  * 
@@ -187,6 +189,77 @@ private:
         vector<typename T::open_type> published_shares;
 
         FaultLocalizationSource source = FaultLocalizationSource::none;
+
+        bool has_registered_snapshot = false;
+        uint64_t registered_snapshot_id = 0;
+    };
+
+    enum class RegisteredSharingDegree
+    {
+        none,
+        degree_t,
+        degree_2t,
+    };
+
+    enum class RegisteredSharingKind
+    {
+        none,
+        checkpoint_input,
+        checkpoint_output,
+        segment_intermediate,
+        analyze_request_snapshot,
+    };
+
+    enum class VerifiableSharingStatus
+    {
+        none,
+        registered,
+        authentication_pending,
+        authenticated,
+        analysis_pending,
+    };
+
+    struct RegisteredVerifiableSharing
+    {
+        bool valid = false;
+        uint64_t id = 0;
+
+        RegisteredSharingDegree degree = RegisteredSharingDegree::none;
+        RegisteredSharingKind kind = RegisteredSharingKind::none;
+        VerifiableSharingStatus status = VerifiableSharingStatus::none;
+
+        T local_share;
+
+        bool has_published_snapshot = false;
+        vector<typename T::open_type> published_shares;
+
+        uint64_t segment_id = 0;
+        uint64_t checkpoint_id = 0;
+    };
+
+    struct CheckpointRecord
+    {
+        bool valid = false;
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        vector<uint64_t> sharing_ids;
+
+        bool sealed = false;
+        bool authentication_requested = false;
+        bool authenticated = false;
+    };
+
+    struct VerifiableSharingRegistry
+    {
+        bool initialized = false;
+
+        uint64_t next_sharing_id = 1;
+        uint64_t next_checkpoint_id = 1;
+        uint64_t current_segment_id = 0;
+
+        vector<RegisteredVerifiableSharing> sharings;
+        vector<CheckpointRecord> checkpoints;
     };
 
     struct FaultLocalizationOutcome
@@ -271,6 +344,7 @@ private:
     };
 
     DisputeControlState dispute_control_state;
+    VerifiableSharingRegistry verifiable_registry;
 
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
@@ -298,7 +372,24 @@ private:
     FaultLocalizationOutcome derive_fault_localization_outcome(
             const UltimateFailureContext& context) const;
     AnalyzeSharingRequest build_analyze_sharing_request(
-            const UltimateFailureContext& context) const;
+            const UltimateFailureContext& context);
+    void ensure_verifiable_registry_initialized();
+    uint64_t register_verifiable_sharing(
+            const T& local_share,
+            RegisteredSharingDegree degree,
+            RegisteredSharingKind kind);
+    uint64_t register_published_degree_t_snapshot(
+            const PublishedDegreeTSharing& published,
+            RegisteredSharingKind kind);
+    RegisteredVerifiableSharing* find_registered_sharing(uint64_t id);
+    const RegisteredVerifiableSharing*
+        find_registered_sharing(uint64_t id) const;
+    uint64_t create_checkpoint_record(
+            const vector<uint64_t>& sharing_ids);
+    void mark_checkpoint_sealed(uint64_t checkpoint_id);
+    void mark_checkpoint_authentication_requested(uint64_t checkpoint_id);
+    void mark_checkpoint_authenticated(uint64_t checkpoint_id);
+    void validate_verifiable_registry() const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;

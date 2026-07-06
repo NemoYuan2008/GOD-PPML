@@ -752,7 +752,7 @@ AtlasGsz<T>::derive_fault_localization_outcome(
 template<class T>
 typename AtlasGsz<T>::AnalyzeSharingRequest
 AtlasGsz<T>::build_analyze_sharing_request(
-        const UltimateFailureContext& context) const
+        const UltimateFailureContext& context)
 {
     assert(context.valid);
     assert(context.fault_localization.valid);
@@ -773,6 +773,17 @@ AtlasGsz<T>::build_analyze_sharing_request(
         request.published_sharing = context.alpha_t;
         request.published_shares = context.alpha_t.shares;
         request.source = FaultLocalizationSource::inconsistent_alpha;
+        request.registered_snapshot_id =
+                register_published_degree_t_snapshot(
+                        context.alpha_t,
+                        RegisteredSharingKind::analyze_request_snapshot);
+        request.has_registered_snapshot = true;
+        {
+            const auto* snapshot = find_registered_sharing(
+                    request.registered_snapshot_id);
+            assert(snapshot != 0);
+            assert(snapshot->published_shares == request.published_shares);
+        }
         return request;
 
     case SharingToAnalyze::beta:
@@ -785,6 +796,17 @@ AtlasGsz<T>::build_analyze_sharing_request(
         request.published_sharing = context.beta_t;
         request.published_shares = context.beta_t.shares;
         request.source = FaultLocalizationSource::inconsistent_beta;
+        request.registered_snapshot_id =
+                register_published_degree_t_snapshot(
+                        context.beta_t,
+                        RegisteredSharingKind::analyze_request_snapshot);
+        request.has_registered_snapshot = true;
+        {
+            const auto* snapshot = find_registered_sharing(
+                    request.registered_snapshot_id);
+            assert(snapshot != 0);
+            assert(snapshot->published_shares == request.published_shares);
+        }
         return request;
 
     case SharingToAnalyze::none:
@@ -795,6 +817,229 @@ AtlasGsz<T>::build_analyze_sharing_request(
     assert(false);
 #endif
     return request;
+}
+
+template<class T>
+void AtlasGsz<T>::ensure_verifiable_registry_initialized()
+{
+    if (not verifiable_registry.initialized)
+    {
+        verifiable_registry.next_sharing_id = 1;
+        verifiable_registry.next_checkpoint_id = 1;
+        verifiable_registry.current_segment_id = 0;
+        verifiable_registry.sharings.clear();
+        verifiable_registry.checkpoints.clear();
+        verifiable_registry.initialized = true;
+    }
+
+    assert(verifiable_registry.next_sharing_id > 0);
+    assert(verifiable_registry.next_checkpoint_id > 0);
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::register_verifiable_sharing(
+        const T& local_share,
+        RegisteredSharingDegree degree,
+        RegisteredSharingKind kind)
+{
+    ensure_verifiable_registry_initialized();
+    assert(degree != RegisteredSharingDegree::none);
+    assert(kind != RegisteredSharingKind::none);
+
+    RegisteredVerifiableSharing record{};
+    record.valid = true;
+    record.id = verifiable_registry.next_sharing_id++;
+    assert(verifiable_registry.next_sharing_id > 0);
+    record.degree = degree;
+    record.kind = kind;
+    record.status = VerifiableSharingStatus::registered;
+    record.local_share = local_share;
+    record.segment_id = verifiable_registry.current_segment_id;
+
+    verifiable_registry.sharings.push_back(record);
+    validate_verifiable_registry();
+    return record.id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::register_published_degree_t_snapshot(
+        const PublishedDegreeTSharing& published,
+        RegisteredSharingKind kind)
+{
+    ensure_verifiable_registry_initialized();
+    assert(kind != RegisteredSharingKind::none);
+    assert(published.shares.size() == size_t(P.num_players()));
+
+    RegisteredVerifiableSharing record{};
+    record.valid = true;
+    record.id = verifiable_registry.next_sharing_id++;
+    assert(verifiable_registry.next_sharing_id > 0);
+    record.degree = RegisteredSharingDegree::degree_t;
+    record.kind = kind;
+    record.status = VerifiableSharingStatus::analysis_pending;
+    record.local_share = T{};
+    record.has_published_snapshot = true;
+    record.published_shares = published.shares;
+    record.segment_id = verifiable_registry.current_segment_id;
+
+    verifiable_registry.sharings.push_back(record);
+    validate_verifiable_registry();
+    return record.id;
+}
+
+template<class T>
+typename AtlasGsz<T>::RegisteredVerifiableSharing*
+AtlasGsz<T>::find_registered_sharing(uint64_t id)
+{
+    for (auto& sharing : verifiable_registry.sharings)
+        if (sharing.id == id)
+            return &sharing;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::RegisteredVerifiableSharing*
+AtlasGsz<T>::find_registered_sharing(uint64_t id) const
+{
+    for (const auto& sharing : verifiable_registry.sharings)
+        if (sharing.id == id)
+            return &sharing;
+    return 0;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_checkpoint_record(
+        const vector<uint64_t>& sharing_ids)
+{
+    ensure_verifiable_registry_initialized();
+    for (auto id : sharing_ids)
+        assert(find_registered_sharing(id) != 0);
+
+    CheckpointRecord checkpoint{};
+    checkpoint.valid = true;
+    checkpoint.checkpoint_id = verifiable_registry.next_checkpoint_id++;
+    assert(verifiable_registry.next_checkpoint_id > 0);
+    checkpoint.segment_id = verifiable_registry.current_segment_id;
+    checkpoint.sharing_ids = sharing_ids;
+
+    for (auto id : sharing_ids)
+    {
+        auto* sharing = find_registered_sharing(id);
+        assert(sharing != 0);
+        sharing->checkpoint_id = checkpoint.checkpoint_id;
+    }
+
+    verifiable_registry.checkpoints.push_back(checkpoint);
+    validate_verifiable_registry();
+    return checkpoint.checkpoint_id;
+}
+
+template<class T>
+void AtlasGsz<T>::mark_checkpoint_sealed(uint64_t checkpoint_id)
+{
+    ensure_verifiable_registry_initialized();
+    bool found = false;
+    for (auto& checkpoint : verifiable_registry.checkpoints)
+        if (checkpoint.checkpoint_id == checkpoint_id)
+        {
+            checkpoint.sealed = true;
+            found = true;
+            break;
+        }
+    if (not found)
+    {
+#ifndef NDEBUG
+        assert(false);
+#endif
+        return;
+    }
+    validate_verifiable_registry();
+}
+
+template<class T>
+void AtlasGsz<T>::mark_checkpoint_authentication_requested(
+        uint64_t checkpoint_id)
+{
+    ensure_verifiable_registry_initialized();
+    bool found = false;
+    for (auto& checkpoint : verifiable_registry.checkpoints)
+        if (checkpoint.checkpoint_id == checkpoint_id)
+        {
+            checkpoint.authentication_requested = true;
+            found = true;
+            break;
+        }
+    if (not found)
+    {
+#ifndef NDEBUG
+        assert(false);
+#endif
+        return;
+    }
+    validate_verifiable_registry();
+}
+
+template<class T>
+void AtlasGsz<T>::mark_checkpoint_authenticated(uint64_t checkpoint_id)
+{
+    ensure_verifiable_registry_initialized();
+    bool found = false;
+    for (auto& checkpoint : verifiable_registry.checkpoints)
+        if (checkpoint.checkpoint_id == checkpoint_id)
+        {
+            checkpoint.authenticated = true;
+            found = true;
+            break;
+        }
+    if (not found)
+    {
+#ifndef NDEBUG
+        assert(false);
+#endif
+        return;
+    }
+    validate_verifiable_registry();
+}
+
+template<class T>
+void AtlasGsz<T>::validate_verifiable_registry() const
+{
+    if (not verifiable_registry.initialized)
+        return;
+
+    assert(verifiable_registry.next_sharing_id > 0);
+    assert(verifiable_registry.next_checkpoint_id > 0);
+
+    for (size_t i = 0; i < verifiable_registry.sharings.size(); i++)
+    {
+        const auto& sharing = verifiable_registry.sharings.at(i);
+        assert(sharing.valid);
+        assert(sharing.id != 0);
+        assert(sharing.degree != RegisteredSharingDegree::none);
+        assert(sharing.kind != RegisteredSharingKind::none);
+        assert(sharing.status != VerifiableSharingStatus::none);
+        if (sharing.has_published_snapshot)
+            assert(sharing.published_shares.size()
+                    == size_t(P.num_players()));
+
+        for (size_t j = i + 1; j < verifiable_registry.sharings.size(); j++)
+            assert(sharing.id != verifiable_registry.sharings.at(j).id);
+    }
+
+    for (size_t i = 0; i < verifiable_registry.checkpoints.size(); i++)
+    {
+        const auto& checkpoint = verifiable_registry.checkpoints.at(i);
+        assert(checkpoint.valid);
+        assert(checkpoint.checkpoint_id != 0);
+
+        for (size_t j = i + 1; j < verifiable_registry.checkpoints.size();
+                j++)
+            assert(checkpoint.checkpoint_id
+                    != verifiable_registry.checkpoints.at(j).checkpoint_id);
+
+        for (auto sharing_id : checkpoint.sharing_ids)
+            assert(find_registered_sharing(sharing_id) != 0);
+    }
 }
 
 template<class T>
@@ -1642,6 +1887,9 @@ void AtlasGsz<T>::check()
     assert(not have_ultimate_failure_context);
     assert(not ultimate_failure_context.valid);
     validate_dispute_control_state();
+#ifndef NDEBUG
+    validate_verifiable_registry();
+#endif
 
 #ifndef NDEBUG
     bool dispute_state_was_initialized =
@@ -1701,6 +1949,9 @@ void AtlasGsz<T>::check()
     assert(dispute_control_state.disp == disp_before_check);
 #endif
     validate_dispute_control_state();
+#ifndef NDEBUG
+    validate_verifiable_registry();
+#endif
     
     x_verify.clear();
     y_verify.clear();
