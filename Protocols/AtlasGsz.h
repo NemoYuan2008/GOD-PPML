@@ -167,6 +167,28 @@ private:
         beta,
     };
 
+    enum class AnalyzeSharingRequestTarget
+    {
+        none,
+        alpha,
+        beta,
+    };
+
+    struct AnalyzeSharingRequest
+    {
+        bool valid = false;
+        AnalyzeSharingRequestTarget target =
+                AnalyzeSharingRequestTarget::none;
+
+        SharingToAnalyze sharing_to_analyze =
+                SharingToAnalyze::none;
+
+        PublishedDegreeTSharing published_sharing;
+        vector<typename T::open_type> published_shares;
+
+        FaultLocalizationSource source = FaultLocalizationSource::none;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -244,6 +266,8 @@ private:
         UltimateFailureDecision decision;
         FaultLocalizationOutcome fault_localization;
         FaultLocalizationApplication fault_application;
+        bool has_analyze_sharing_request = false;
+        AnalyzeSharingRequest analyze_sharing_request;
     };
 
     DisputeControlState dispute_control_state;
@@ -272,6 +296,8 @@ private:
             const typename Atlas<T>::DoubleSharingDecomposition&
                 decomposition);
     FaultLocalizationOutcome derive_fault_localization_outcome(
+            const UltimateFailureContext& context) const;
+    AnalyzeSharingRequest build_analyze_sharing_request(
             const UltimateFailureContext& context) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;

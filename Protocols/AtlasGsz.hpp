@@ -750,6 +750,54 @@ AtlasGsz<T>::derive_fault_localization_outcome(
 }
 
 template<class T>
+typename AtlasGsz<T>::AnalyzeSharingRequest
+AtlasGsz<T>::build_analyze_sharing_request(
+        const UltimateFailureContext& context) const
+{
+    assert(context.valid);
+    assert(context.fault_localization.valid);
+    assert(context.fault_localization.action
+            == FaultLocalizationAction::needs_analyze_sharing);
+
+    AnalyzeSharingRequest request{};
+
+    switch (context.fault_localization.sharing_to_analyze)
+    {
+    case SharingToAnalyze::alpha:
+        assert(context.fault_localization.source
+                == FaultLocalizationSource::inconsistent_alpha);
+        assert(not context.alpha_t.consistent);
+        request.valid = true;
+        request.target = AnalyzeSharingRequestTarget::alpha;
+        request.sharing_to_analyze = SharingToAnalyze::alpha;
+        request.published_sharing = context.alpha_t;
+        request.published_shares = context.alpha_t.shares;
+        request.source = FaultLocalizationSource::inconsistent_alpha;
+        return request;
+
+    case SharingToAnalyze::beta:
+        assert(context.fault_localization.source
+                == FaultLocalizationSource::inconsistent_beta);
+        assert(not context.beta_t.consistent);
+        request.valid = true;
+        request.target = AnalyzeSharingRequestTarget::beta;
+        request.sharing_to_analyze = SharingToAnalyze::beta;
+        request.published_sharing = context.beta_t;
+        request.published_shares = context.beta_t.shares;
+        request.source = FaultLocalizationSource::inconsistent_beta;
+        return request;
+
+    case SharingToAnalyze::none:
+        break;
+    }
+
+#ifndef NDEBUG
+    assert(false);
+#endif
+    return request;
+}
+
+template<class T>
 void AtlasGsz<T>::ensure_dispute_control_state_initialized()
 {
     int n = P.num_players();
@@ -2496,6 +2544,20 @@ void AtlasGsz<T>::randomization()
             apply_fault_localization_outcome(
                     context.fault_localization);
     assert(context.fault_application.valid);
+    if (context.fault_application.action
+            == FaultLocalizationApplicationAction::
+                pending_analyze_sharing)
+    {
+        context.analyze_sharing_request =
+                build_analyze_sharing_request(context);
+        context.has_analyze_sharing_request = true;
+        assert(context.analyze_sharing_request.valid);
+    }
+    else
+    {
+        assert(not context.has_analyze_sharing_request);
+        assert(not context.analyze_sharing_request.valid);
+    }
 
     ultimate_failure_context = context;
     have_ultimate_failure_context = true;
