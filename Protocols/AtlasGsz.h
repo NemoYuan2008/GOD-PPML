@@ -183,6 +183,39 @@ private:
         int counterparty = -1;
     };
 
+    struct DisputeControlState
+    {
+        bool initialized = false;
+        vector<bool> corr;
+        vector<vector<bool>> disp;
+    };
+
+    enum class FaultLocalizationApplicationAction
+    {
+        none,
+        pending_analyze_sharing,
+        recorded_corrupted_party,
+        recorded_disputed_pair,
+    };
+
+    struct FaultLocalizationApplication
+    {
+        bool valid = false;
+        FaultLocalizationApplicationAction action =
+                FaultLocalizationApplicationAction::none;
+
+        bool state_updated = false;
+
+        int corrupted_party = -1;
+
+        int disputed_party_a = -1;
+        int disputed_party_b = -1;
+        int primary_party = -1;
+        int counterparty = -1;
+
+        vector<int> newly_corrupted_parties;
+    };
+
     struct UltimateFailureContext
     {
         bool valid = false;
@@ -210,7 +243,10 @@ private:
 
         UltimateFailureDecision decision;
         FaultLocalizationOutcome fault_localization;
+        FaultLocalizationApplication fault_application;
     };
+
+    DisputeControlState dispute_control_state;
 
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
@@ -237,6 +273,19 @@ private:
                 decomposition);
     FaultLocalizationOutcome derive_fault_localization_outcome(
             const UltimateFailureContext& context) const;
+    void ensure_dispute_control_state_initialized();
+    bool is_corrupted_party(int party) const;
+    bool is_disputed_pair(int a, int b) const;
+    int count_disputes(int party) const;
+    void record_corrupted_party(
+            int party,
+            FaultLocalizationApplication& application);
+    void record_disputed_pair(
+            int a,
+            int b,
+            FaultLocalizationApplication& application);
+    FaultLocalizationApplication apply_fault_localization_outcome(
+            const FaultLocalizationOutcome& outcome);
     typename Atlas<T>::DoubleSharingDecomposition
         zero_double_sharing_decomposition() const;
     typename Atlas<T>::DealerDoubleSharingContribution

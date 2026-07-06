@@ -750,6 +750,249 @@ AtlasGsz<T>::derive_fault_localization_outcome(
 }
 
 template<class T>
+void AtlasGsz<T>::ensure_dispute_control_state_initialized()
+{
+    int n = P.num_players();
+    if (not dispute_control_state.initialized)
+    {
+        dispute_control_state.corr.assign(n, false);
+        dispute_control_state.disp.assign(n, vector<bool>(n, false));
+        dispute_control_state.initialized = true;
+    }
+
+    assert(dispute_control_state.corr.size() == size_t(n));
+    assert(dispute_control_state.disp.size() == size_t(n));
+    for (int i = 0; i < n; i++)
+    {
+        assert(dispute_control_state.disp.at(i).size() == size_t(n));
+        assert(not dispute_control_state.disp.at(i).at(i));
+        for (int j = 0; j < n; j++)
+            assert(dispute_control_state.disp.at(i).at(j)
+                    == dispute_control_state.disp.at(j).at(i));
+    }
+}
+
+template<class T>
+bool AtlasGsz<T>::is_corrupted_party(int party) const
+{
+    assert(0 <= party);
+    assert(party < P.num_players());
+    if (not dispute_control_state.initialized)
+        return false;
+    assert(dispute_control_state.corr.size() == size_t(P.num_players()));
+    return dispute_control_state.corr.at(party);
+}
+
+template<class T>
+bool AtlasGsz<T>::is_disputed_pair(int a, int b) const
+{
+    assert(0 <= a);
+    assert(a < P.num_players());
+    assert(0 <= b);
+    assert(b < P.num_players());
+    if (a == b || not dispute_control_state.initialized)
+        return false;
+    assert(dispute_control_state.disp.size() == size_t(P.num_players()));
+    return dispute_control_state.disp.at(a).at(b);
+}
+
+template<class T>
+int AtlasGsz<T>::count_disputes(int party) const
+{
+    assert(0 <= party);
+    assert(party < P.num_players());
+    if (not dispute_control_state.initialized)
+        return 0;
+    assert(dispute_control_state.disp.size() == size_t(P.num_players()));
+
+    int res = 0;
+    for (int i = 0; i < P.num_players(); i++)
+        if (dispute_control_state.disp.at(party).at(i))
+            res++;
+    return res;
+}
+
+template<class T>
+void AtlasGsz<T>::record_corrupted_party(
+        int party,
+        FaultLocalizationApplication& application)
+{
+    ensure_dispute_control_state_initialized();
+    int n = P.num_players();
+    assert(0 <= party);
+    assert(party < n);
+    application.corrupted_party = party;
+
+    int threshold = (n - 1) / 2 + 1;
+    auto mark_corrupted = [&](int p)
+    {
+        bool changed = false;
+        if (not dispute_control_state.corr.at(p))
+        {
+            dispute_control_state.corr.at(p) = true;
+            application.newly_corrupted_parties.push_back(p);
+            if (application.corrupted_party < 0)
+                application.corrupted_party = p;
+            application.state_updated = true;
+            changed = true;
+        }
+
+        for (int q = 0; q < n; q++)
+        {
+            if (q == p)
+                continue;
+            if (not dispute_control_state.disp.at(p).at(q))
+            {
+                dispute_control_state.disp.at(p).at(q) = true;
+                dispute_control_state.disp.at(q).at(p) = true;
+                application.state_updated = true;
+                changed = true;
+            }
+        }
+        assert(not dispute_control_state.disp.at(p).at(p));
+        return changed;
+    };
+
+    mark_corrupted(party);
+
+    bool changed;
+    do
+    {
+        changed = false;
+        for (int i = 0; i < n; i++)
+            if (not dispute_control_state.corr.at(i)
+                    && count_disputes(i) >= threshold)
+                changed |= mark_corrupted(i);
+    }
+    while (changed);
+
+    ensure_dispute_control_state_initialized();
+}
+
+template<class T>
+void AtlasGsz<T>::record_disputed_pair(
+        int a,
+        int b,
+        FaultLocalizationApplication& application)
+{
+    ensure_dispute_control_state_initialized();
+    int n = P.num_players();
+    assert(0 <= a);
+    assert(a < n);
+    assert(0 <= b);
+    assert(b < n);
+    assert(a != b);
+
+    application.primary_party = a;
+    application.counterparty = b;
+    int x = min(a, b);
+    int y = max(a, b);
+    application.disputed_party_a = x;
+    application.disputed_party_b = y;
+
+    if (not dispute_control_state.disp.at(x).at(y))
+    {
+        dispute_control_state.disp.at(x).at(y) = true;
+        dispute_control_state.disp.at(y).at(x) = true;
+        application.state_updated = true;
+    }
+
+    int threshold = (n - 1) / 2 + 1;
+    auto mark_corrupted = [&](int p)
+    {
+        bool changed = false;
+        if (not dispute_control_state.corr.at(p))
+        {
+            dispute_control_state.corr.at(p) = true;
+            application.newly_corrupted_parties.push_back(p);
+            if (application.corrupted_party < 0)
+                application.corrupted_party = p;
+            application.state_updated = true;
+            changed = true;
+        }
+
+        for (int q = 0; q < n; q++)
+        {
+            if (q == p)
+                continue;
+            if (not dispute_control_state.disp.at(p).at(q))
+            {
+                dispute_control_state.disp.at(p).at(q) = true;
+                dispute_control_state.disp.at(q).at(p) = true;
+                application.state_updated = true;
+                changed = true;
+            }
+        }
+        assert(not dispute_control_state.disp.at(p).at(p));
+        return changed;
+    };
+
+    bool changed;
+    do
+    {
+        changed = false;
+        for (int i = 0; i < n; i++)
+            if (not dispute_control_state.corr.at(i)
+                    && count_disputes(i) >= threshold)
+                changed |= mark_corrupted(i);
+    }
+    while (changed);
+
+    ensure_dispute_control_state_initialized();
+}
+
+template<class T>
+typename AtlasGsz<T>::FaultLocalizationApplication
+AtlasGsz<T>::apply_fault_localization_outcome(
+        const FaultLocalizationOutcome& outcome)
+{
+    FaultLocalizationApplication application{};
+
+    if (not outcome.valid)
+    {
+#ifndef NDEBUG
+        assert(false);
+#endif
+        return application;
+    }
+
+    switch (outcome.action)
+    {
+    case FaultLocalizationAction::needs_analyze_sharing:
+        application.valid = true;
+        application.action =
+                FaultLocalizationApplicationAction::
+                    pending_analyze_sharing;
+        return application;
+
+    case FaultLocalizationAction::identify_corrupted_party:
+        application.valid = true;
+        application.action =
+                FaultLocalizationApplicationAction::
+                    recorded_corrupted_party;
+        record_corrupted_party(outcome.corrupted_party, application);
+        return application;
+
+    case FaultLocalizationAction::identify_disputed_pair:
+        application.valid = true;
+        application.action =
+                FaultLocalizationApplicationAction::
+                    recorded_disputed_pair;
+        record_disputed_pair(
+                outcome.primary_party, outcome.counterparty, application);
+        return application;
+
+    case FaultLocalizationAction::none:
+        break;
+    }
+
+#ifndef NDEBUG
+    assert(false);
+#endif
+    return application;
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 }
@@ -2007,6 +2250,10 @@ void AtlasGsz<T>::randomization()
     assert(context.fault_localization.valid);
     assert(context.fault_localization.action
             != FaultLocalizationAction::none);
+    context.fault_application =
+            apply_fault_localization_outcome(
+                    context.fault_localization);
+    assert(context.fault_application.valid);
 
     ultimate_failure_context = context;
     have_ultimate_failure_context = true;
