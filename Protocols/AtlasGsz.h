@@ -262,6 +262,23 @@ private:
         vector<CheckpointRecord> checkpoints;
     };
 
+    struct SegmentLifecycleState
+    {
+        bool initialized = false;
+
+        uint64_t current_segment_id = 0;
+        uint64_t last_completed_segment_id = 0;
+
+        bool segment_open = false;
+        bool checkpoint_open = false;
+
+        uint64_t current_input_checkpoint_id = 0;
+        uint64_t current_output_checkpoint_id = 0;
+
+        vector<uint64_t> current_segment_input_sharings;
+        vector<uint64_t> current_segment_output_sharings;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -345,6 +362,7 @@ private:
 
     DisputeControlState dispute_control_state;
     VerifiableSharingRegistry verifiable_registry;
+    SegmentLifecycleState segment_lifecycle;
 
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
@@ -390,6 +408,19 @@ private:
     void mark_checkpoint_authentication_requested(uint64_t checkpoint_id);
     void mark_checkpoint_authenticated(uint64_t checkpoint_id);
     void validate_verifiable_registry() const;
+    void ensure_segment_lifecycle_initialized();
+    void validate_segment_lifecycle() const;
+    uint64_t begin_segment();
+    uint64_t current_segment_id() const;
+    uint64_t register_segment_input_sharing(const T& local_share);
+    uint64_t register_segment_output_sharing(const T& local_share);
+    uint64_t create_input_checkpoint_for_current_segment();
+    uint64_t create_output_checkpoint_for_current_segment();
+    void seal_current_output_checkpoint();
+    void mark_current_output_checkpoint_authentication_requested();
+    void mark_current_output_checkpoint_authenticated();
+    void complete_current_segment_successfully();
+    void abandon_current_segment_after_failure();
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;

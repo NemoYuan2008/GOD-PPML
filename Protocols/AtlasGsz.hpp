@@ -1043,6 +1043,270 @@ void AtlasGsz<T>::validate_verifiable_registry() const
 }
 
 template<class T>
+void AtlasGsz<T>::ensure_segment_lifecycle_initialized()
+{
+    ensure_verifiable_registry_initialized();
+
+    if (not segment_lifecycle.initialized)
+    {
+        segment_lifecycle.current_segment_id =
+                verifiable_registry.current_segment_id;
+        segment_lifecycle.last_completed_segment_id = 0;
+        segment_lifecycle.segment_open = false;
+        segment_lifecycle.checkpoint_open = false;
+        segment_lifecycle.current_input_checkpoint_id = 0;
+        segment_lifecycle.current_output_checkpoint_id = 0;
+        segment_lifecycle.current_segment_input_sharings.clear();
+        segment_lifecycle.current_segment_output_sharings.clear();
+        segment_lifecycle.initialized = true;
+    }
+
+    assert(verifiable_registry.initialized);
+    assert(verifiable_registry.current_segment_id
+            == segment_lifecycle.current_segment_id);
+}
+
+template<class T>
+void AtlasGsz<T>::validate_segment_lifecycle() const
+{
+    if (not segment_lifecycle.initialized)
+        return;
+
+    assert(verifiable_registry.initialized);
+    assert(verifiable_registry.current_segment_id
+            == segment_lifecycle.current_segment_id);
+
+    if (not segment_lifecycle.segment_open)
+        assert(not segment_lifecycle.checkpoint_open);
+
+    auto find_checkpoint = [&](uint64_t checkpoint_id)
+        -> const CheckpointRecord*
+    {
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id == checkpoint_id)
+                return &checkpoint;
+        return 0;
+    };
+
+    if (segment_lifecycle.current_input_checkpoint_id != 0)
+    {
+        const auto* checkpoint = find_checkpoint(
+                segment_lifecycle.current_input_checkpoint_id);
+        assert(checkpoint != 0);
+        if (segment_lifecycle.segment_open)
+            assert(checkpoint->segment_id
+                    == segment_lifecycle.current_segment_id);
+    }
+
+    if (segment_lifecycle.current_output_checkpoint_id != 0)
+    {
+        const auto* checkpoint = find_checkpoint(
+                segment_lifecycle.current_output_checkpoint_id);
+        assert(checkpoint != 0);
+        if (segment_lifecycle.segment_open)
+            assert(checkpoint->segment_id
+                    == segment_lifecycle.current_segment_id);
+    }
+
+    for (auto sharing_id :
+            segment_lifecycle.current_segment_input_sharings)
+    {
+        const auto* sharing = find_registered_sharing(sharing_id);
+        assert(sharing != 0);
+        assert(sharing->kind == RegisteredSharingKind::checkpoint_input);
+        if (segment_lifecycle.segment_open)
+            assert(sharing->segment_id
+                    == segment_lifecycle.current_segment_id);
+    }
+
+    for (auto sharing_id :
+            segment_lifecycle.current_segment_output_sharings)
+    {
+        const auto* sharing = find_registered_sharing(sharing_id);
+        assert(sharing != 0);
+        assert(sharing->kind == RegisteredSharingKind::checkpoint_output);
+        if (segment_lifecycle.segment_open)
+            assert(sharing->segment_id
+                    == segment_lifecycle.current_segment_id);
+    }
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::begin_segment()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(not segment_lifecycle.segment_open);
+
+    uint64_t next_segment_id = std::max(
+            segment_lifecycle.current_segment_id,
+            segment_lifecycle.last_completed_segment_id) + 1;
+    assert(next_segment_id != 0);
+
+    segment_lifecycle.current_segment_id = next_segment_id;
+    verifiable_registry.current_segment_id = next_segment_id;
+    segment_lifecycle.current_segment_input_sharings.clear();
+    segment_lifecycle.current_segment_output_sharings.clear();
+    segment_lifecycle.current_input_checkpoint_id = 0;
+    segment_lifecycle.current_output_checkpoint_id = 0;
+    segment_lifecycle.segment_open = true;
+    segment_lifecycle.checkpoint_open = false;
+
+    validate_verifiable_registry();
+    validate_segment_lifecycle();
+    return next_segment_id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::current_segment_id() const
+{
+    if (not segment_lifecycle.initialized)
+        return 0;
+    return segment_lifecycle.current_segment_id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::register_segment_input_sharing(
+        const T& local_share)
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+
+    uint64_t id = register_verifiable_sharing(
+            local_share,
+            RegisteredSharingDegree::degree_t,
+            RegisteredSharingKind::checkpoint_input);
+    segment_lifecycle.current_segment_input_sharings.push_back(id);
+    validate_segment_lifecycle();
+    return id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::register_segment_output_sharing(
+        const T& local_share)
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+
+    uint64_t id = register_verifiable_sharing(
+            local_share,
+            RegisteredSharingDegree::degree_t,
+            RegisteredSharingKind::checkpoint_output);
+    segment_lifecycle.current_segment_output_sharings.push_back(id);
+    validate_segment_lifecycle();
+    return id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_input_checkpoint_for_current_segment()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+    assert(not segment_lifecycle.current_segment_input_sharings.empty());
+    assert(segment_lifecycle.current_input_checkpoint_id == 0);
+
+    uint64_t checkpoint_id = create_checkpoint_record(
+            segment_lifecycle.current_segment_input_sharings);
+    segment_lifecycle.current_input_checkpoint_id = checkpoint_id;
+    validate_segment_lifecycle();
+    return checkpoint_id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_output_checkpoint_for_current_segment()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+    assert(not segment_lifecycle.current_segment_output_sharings.empty());
+    assert(segment_lifecycle.current_output_checkpoint_id == 0);
+
+    uint64_t checkpoint_id = create_checkpoint_record(
+            segment_lifecycle.current_segment_output_sharings);
+    segment_lifecycle.current_output_checkpoint_id = checkpoint_id;
+    segment_lifecycle.checkpoint_open = true;
+    validate_segment_lifecycle();
+    return checkpoint_id;
+}
+
+template<class T>
+void AtlasGsz<T>::seal_current_output_checkpoint()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+    assert(segment_lifecycle.current_output_checkpoint_id != 0);
+
+    mark_checkpoint_sealed(segment_lifecycle.current_output_checkpoint_id);
+    segment_lifecycle.checkpoint_open = false;
+    validate_segment_lifecycle();
+}
+
+template<class T>
+void AtlasGsz<T>::mark_current_output_checkpoint_authentication_requested()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+    assert(segment_lifecycle.current_output_checkpoint_id != 0);
+
+    mark_checkpoint_authentication_requested(
+            segment_lifecycle.current_output_checkpoint_id);
+    validate_segment_lifecycle();
+}
+
+template<class T>
+void AtlasGsz<T>::mark_current_output_checkpoint_authenticated()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+    assert(segment_lifecycle.current_output_checkpoint_id != 0);
+
+    mark_checkpoint_authenticated(
+            segment_lifecycle.current_output_checkpoint_id);
+    validate_segment_lifecycle();
+}
+
+template<class T>
+void AtlasGsz<T>::complete_current_segment_successfully()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+
+    if (segment_lifecycle.current_output_checkpoint_id != 0)
+    {
+        bool sealed = false;
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id
+                    == segment_lifecycle.current_output_checkpoint_id)
+            {
+                sealed = checkpoint.sealed;
+                break;
+            }
+        assert(sealed);
+    }
+
+    segment_lifecycle.last_completed_segment_id =
+            segment_lifecycle.current_segment_id;
+    segment_lifecycle.segment_open = false;
+    segment_lifecycle.checkpoint_open = false;
+
+    validate_verifiable_registry();
+    validate_segment_lifecycle();
+}
+
+template<class T>
+void AtlasGsz<T>::abandon_current_segment_after_failure()
+{
+    ensure_segment_lifecycle_initialized();
+    assert(segment_lifecycle.segment_open);
+
+    // Skeleton only: retain all registered metadata and do not roll back
+    // shares, Corr/Disp, or protocol state.
+    segment_lifecycle.segment_open = false;
+    segment_lifecycle.checkpoint_open = false;
+
+    validate_verifiable_registry();
+    validate_segment_lifecycle();
+}
+
+template<class T>
 void AtlasGsz<T>::ensure_dispute_control_state_initialized()
 {
     int n = P.num_players();
@@ -1889,6 +2153,7 @@ void AtlasGsz<T>::check()
     validate_dispute_control_state();
 #ifndef NDEBUG
     validate_verifiable_registry();
+    validate_segment_lifecycle();
 #endif
 
 #ifndef NDEBUG
@@ -1951,6 +2216,7 @@ void AtlasGsz<T>::check()
     validate_dispute_control_state();
 #ifndef NDEBUG
     validate_verifiable_registry();
+    validate_segment_lifecycle();
 #endif
     
     x_verify.clear();
