@@ -401,6 +401,77 @@ private:
         typename T::open_type actual_tag{};
     };
 
+    enum class AuthenticationVerifierVoteStatus
+    {
+        none,
+        not_ready,
+        holder_share_unavailable,
+        accept,
+        reject,
+    };
+
+    enum class AuthenticationHolderDecisionStatus
+    {
+        none,
+        not_ready,
+        holder_share_unavailable,
+        insufficient_votes,
+        accepted,
+        rejected,
+    };
+
+    struct AuthenticationVerifierVote
+    {
+        bool valid = false;
+
+        AuthenticationVerifierVoteStatus status =
+                AuthenticationVerifierVoteStatus::none;
+
+        uint64_t material_id = 0;
+        uint64_t auth_record_id = 0;
+        uint64_t sharing_id = 0;
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        int verifier = -1;
+        int holder = -1;
+
+        AuthenticationRecordKind kind =
+                AuthenticationRecordKind::none;
+
+        AuthenticationEquationStatus equation_status =
+                AuthenticationEquationStatus::none;
+
+        bool contributes_to_decision = false;
+    };
+
+    struct AuthenticationHolderDecision
+    {
+        bool valid = false;
+
+        AuthenticationHolderDecisionStatus status =
+                AuthenticationHolderDecisionStatus::none;
+
+        uint64_t sharing_id = 0;
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        int holder = -1;
+
+        AuthenticationRecordKind kind =
+                AuthenticationRecordKind::none;
+
+        int decision_threshold = 0;
+        int total_votes = 0;
+        int accept_votes = 0;
+        int reject_votes = 0;
+        int not_ready_votes = 0;
+        int unavailable_votes = 0;
+        int contributing_votes = 0;
+
+        vector<uint64_t> material_ids;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -614,6 +685,25 @@ private:
     bool authentication_equation_passes(uint64_t material_id) const;
     bool all_available_authentication_equations_pass(
             const vector<uint64_t>& material_ids) const;
+    AuthenticationVerifierVote authentication_vote_from_material(
+            uint64_t material_id) const;
+    vector<AuthenticationVerifierVote>
+        authentication_votes_for_sharing(uint64_t sharing_id) const;
+    vector<AuthenticationVerifierVote>
+        authentication_votes_for_checkpoint(uint64_t checkpoint_id) const;
+    AuthenticationHolderDecision authentication_holder_decision_for_sharing(
+            uint64_t sharing_id,
+            int holder) const;
+    vector<AuthenticationHolderDecision>
+        authentication_holder_decisions_for_sharing(
+                uint64_t sharing_id) const;
+    vector<AuthenticationHolderDecision>
+        authentication_holder_decisions_for_checkpoint(
+                uint64_t checkpoint_id) const;
+    void validate_authentication_vote(
+            const AuthenticationVerifierVote& vote) const;
+    void validate_authentication_holder_decision(
+            const AuthenticationHolderDecision& decision) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;

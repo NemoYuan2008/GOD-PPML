@@ -1853,6 +1853,8 @@ void AtlasGsz<T>::validate_authentication_material() const
 
         auto equation = check_authentication_equation(material.id);
         assert(equation.valid);
+        auto vote = authentication_vote_from_material(material.id);
+        validate_authentication_vote(vote);
         if (material.status == AuthenticationMaterialStatus::complete)
         {
             if (holder_share_available_for_material(material))
@@ -1877,6 +1879,20 @@ void AtlasGsz<T>::validate_authentication_material() const
             assert(material.id != other.id);
             assert(material.auth_record_id != other.auth_record_id);
         }
+    }
+
+    vector<uint64_t> sharing_ids;
+    for (const auto& material : authentication_material_state.records)
+        if (std::find(sharing_ids.begin(), sharing_ids.end(),
+                material.sharing_id) == sharing_ids.end())
+            sharing_ids.push_back(material.sharing_id);
+
+    for (auto sharing_id : sharing_ids)
+    {
+        auto decisions =
+                authentication_holder_decisions_for_sharing(sharing_id);
+        for (const auto& decision : decisions)
+            validate_authentication_holder_decision(decision);
     }
 }
 
@@ -2163,6 +2179,385 @@ bool AtlasGsz<T>::all_available_authentication_equations_pass(
             return false;
     }
     return true;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationVerifierVote
+AtlasGsz<T>::authentication_vote_from_material(
+        uint64_t material_id) const
+{
+    AuthenticationVerifierVote vote{};
+    const auto* material = find_authentication_material_record(material_id);
+    assert(material != 0);
+    if (material == 0)
+        return vote;
+
+    auto equation = check_authentication_equation(material_id);
+    assert(equation.valid);
+
+    vote.valid = true;
+    vote.material_id = material->id;
+    vote.auth_record_id = material->auth_record_id;
+    vote.sharing_id = material->sharing_id;
+    vote.checkpoint_id = material->checkpoint_id;
+    vote.segment_id = material->segment_id;
+    vote.verifier = material->verifier;
+    vote.holder = material->holder;
+    vote.kind = material->kind;
+    vote.equation_status = equation.status;
+
+    switch (equation.status)
+    {
+    case AuthenticationEquationStatus::not_ready:
+        vote.status = AuthenticationVerifierVoteStatus::not_ready;
+        break;
+    case AuthenticationEquationStatus::holder_share_unavailable:
+        vote.status =
+                AuthenticationVerifierVoteStatus::
+                    holder_share_unavailable;
+        break;
+    case AuthenticationEquationStatus::pass:
+        vote.status = AuthenticationVerifierVoteStatus::accept;
+        vote.contributes_to_decision = true;
+        break;
+    case AuthenticationEquationStatus::fail:
+        vote.status = AuthenticationVerifierVoteStatus::reject;
+        vote.contributes_to_decision = true;
+        break;
+    case AuthenticationEquationStatus::none:
+        break;
+    }
+
+    validate_authentication_vote(vote);
+    return vote;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationVerifierVote>
+AtlasGsz<T>::authentication_votes_for_sharing(
+        uint64_t sharing_id) const
+{
+    vector<AuthenticationVerifierVote> res;
+    for (auto material_id : authentication_material_for_sharing(sharing_id))
+    {
+        auto vote = authentication_vote_from_material(material_id);
+        validate_authentication_vote(vote);
+        res.push_back(vote);
+    }
+    return res;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationVerifierVote>
+AtlasGsz<T>::authentication_votes_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    vector<AuthenticationVerifierVote> res;
+    for (auto material_id :
+            authentication_material_for_checkpoint(checkpoint_id))
+    {
+        auto vote = authentication_vote_from_material(material_id);
+        validate_authentication_vote(vote);
+        res.push_back(vote);
+    }
+    return res;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationHolderDecision
+AtlasGsz<T>::authentication_holder_decision_for_sharing(
+        uint64_t sharing_id,
+        int holder) const
+{
+    AuthenticationHolderDecision decision{};
+    const auto* sharing = find_registered_sharing(sharing_id);
+    assert(sharing != 0);
+    assert(0 <= holder);
+    assert(holder < P.num_players());
+    assert(is_active_party(holder));
+    if (sharing == 0)
+        return decision;
+
+    decision.valid = true;
+    decision.sharing_id = sharing_id;
+    decision.checkpoint_id = sharing->checkpoint_id;
+    decision.segment_id = sharing->segment_id;
+    decision.holder = holder;
+    decision.decision_threshold = corruption_threshold() + 1;
+
+    switch (sharing->kind)
+    {
+    case RegisteredSharingKind::checkpoint_output:
+        decision.kind =
+                AuthenticationRecordKind::checkpoint_output_share;
+        break;
+    case RegisteredSharingKind::analyze_request_snapshot:
+        decision.kind =
+                AuthenticationRecordKind::analyze_request_snapshot;
+        break;
+    case RegisteredSharingKind::none:
+    case RegisteredSharingKind::checkpoint_input:
+    case RegisteredSharingKind::segment_intermediate:
+        break;
+    }
+
+    auto active = active_parties();
+    int expected_votes = 0;
+    for (auto verifier : active)
+        if (verifier != holder)
+            expected_votes++;
+
+    for (auto material_id : authentication_material_for_sharing(sharing_id))
+    {
+        const auto* material = find_authentication_material_record(
+                material_id);
+        assert(material != 0);
+        if (material->holder != holder)
+            continue;
+        if (not is_active_party(material->verifier))
+            continue;
+
+        auto vote = authentication_vote_from_material(material_id);
+        validate_authentication_vote(vote);
+
+        assert(vote.sharing_id == decision.sharing_id);
+        assert(vote.checkpoint_id == decision.checkpoint_id);
+        assert(vote.segment_id == decision.segment_id);
+        assert(vote.holder == decision.holder);
+        if (decision.kind == AuthenticationRecordKind::none)
+            decision.kind = vote.kind;
+        else
+            assert(decision.kind == vote.kind);
+
+        decision.material_ids.push_back(material_id);
+        decision.total_votes++;
+
+        switch (vote.status)
+        {
+        case AuthenticationVerifierVoteStatus::accept:
+            decision.accept_votes++;
+            decision.contributing_votes++;
+            break;
+        case AuthenticationVerifierVoteStatus::reject:
+            decision.reject_votes++;
+            decision.contributing_votes++;
+            break;
+        case AuthenticationVerifierVoteStatus::not_ready:
+            decision.not_ready_votes++;
+            break;
+        case AuthenticationVerifierVoteStatus::holder_share_unavailable:
+            decision.unavailable_votes++;
+            break;
+        case AuthenticationVerifierVoteStatus::none:
+            break;
+        }
+    }
+
+    assert(0 <= expected_votes);
+    if (expected_votes < decision.decision_threshold)
+        decision.status =
+                AuthenticationHolderDecisionStatus::insufficient_votes;
+    else if (decision.reject_votes >= decision.decision_threshold)
+        decision.status = AuthenticationHolderDecisionStatus::rejected;
+    else if (decision.unavailable_votes > 0)
+        decision.status =
+                AuthenticationHolderDecisionStatus::
+                    holder_share_unavailable;
+    else if (decision.not_ready_votes > 0
+            || decision.total_votes < expected_votes)
+        decision.status = AuthenticationHolderDecisionStatus::not_ready;
+    else if (decision.contributing_votes < expected_votes)
+        decision.status =
+                AuthenticationHolderDecisionStatus::insufficient_votes;
+    else
+        decision.status = AuthenticationHolderDecisionStatus::accepted;
+
+    validate_authentication_holder_decision(decision);
+    return decision;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationHolderDecision>
+AtlasGsz<T>::authentication_holder_decisions_for_sharing(
+        uint64_t sharing_id) const
+{
+    vector<AuthenticationHolderDecision> res;
+    assert(find_registered_sharing(sharing_id) != 0);
+
+    for (auto holder : active_parties())
+    {
+        auto decision = authentication_holder_decision_for_sharing(
+                sharing_id, holder);
+        validate_authentication_holder_decision(decision);
+        res.push_back(decision);
+    }
+    return res;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationHolderDecision>
+AtlasGsz<T>::authentication_holder_decisions_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    vector<AuthenticationHolderDecision> res;
+    const CheckpointRecord* checkpoint = 0;
+    if (verifiable_registry.initialized)
+        for (const auto& candidate : verifiable_registry.checkpoints)
+            if (candidate.checkpoint_id == checkpoint_id)
+            {
+                checkpoint = &candidate;
+                break;
+            }
+    assert(checkpoint != 0);
+    if (checkpoint == 0)
+        return res;
+
+    for (auto sharing_id : checkpoint->sharing_ids)
+    {
+        auto decisions =
+                authentication_holder_decisions_for_sharing(sharing_id);
+        res.insert(res.end(), decisions.begin(), decisions.end());
+    }
+    return res;
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_vote(
+        const AuthenticationVerifierVote& vote) const
+{
+    assert(vote.valid);
+    assert(vote.status != AuthenticationVerifierVoteStatus::none);
+    assert(vote.material_id != 0);
+    assert(vote.auth_record_id != 0);
+    assert(vote.sharing_id != 0);
+    assert(0 <= vote.verifier);
+    assert(vote.verifier < P.num_players());
+    assert(0 <= vote.holder);
+    assert(vote.holder < P.num_players());
+    assert(vote.verifier != vote.holder);
+    assert(vote.kind != AuthenticationRecordKind::none);
+    assert(vote.equation_status != AuthenticationEquationStatus::none);
+
+    const auto* material = find_authentication_material_record(
+            vote.material_id);
+    assert(material != 0);
+    assert(material->auth_record_id == vote.auth_record_id);
+    assert(material->sharing_id == vote.sharing_id);
+    assert(material->checkpoint_id == vote.checkpoint_id);
+    assert(material->segment_id == vote.segment_id);
+    assert(material->verifier == vote.verifier);
+    assert(material->holder == vote.holder);
+    assert(material->kind == vote.kind);
+
+    switch (vote.status)
+    {
+    case AuthenticationVerifierVoteStatus::not_ready:
+        assert(vote.equation_status
+                == AuthenticationEquationStatus::not_ready);
+        assert(not vote.contributes_to_decision);
+        break;
+    case AuthenticationVerifierVoteStatus::holder_share_unavailable:
+        assert(vote.equation_status
+                == AuthenticationEquationStatus::
+                    holder_share_unavailable);
+        assert(not vote.contributes_to_decision);
+        break;
+    case AuthenticationVerifierVoteStatus::accept:
+        assert(vote.equation_status == AuthenticationEquationStatus::pass);
+        assert(vote.contributes_to_decision);
+        break;
+    case AuthenticationVerifierVoteStatus::reject:
+        assert(vote.equation_status == AuthenticationEquationStatus::fail);
+        assert(vote.contributes_to_decision);
+        break;
+    case AuthenticationVerifierVoteStatus::none:
+        assert(false);
+        break;
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_holder_decision(
+        const AuthenticationHolderDecision& decision) const
+{
+    assert(decision.valid);
+    assert(decision.status != AuthenticationHolderDecisionStatus::none);
+    assert(decision.sharing_id != 0);
+    assert(0 <= decision.holder);
+    assert(decision.holder < P.num_players());
+    assert(is_active_party(decision.holder));
+    assert(decision.decision_threshold == corruption_threshold() + 1);
+    assert(0 < decision.decision_threshold);
+    assert(0 <= decision.total_votes);
+    assert(0 <= decision.accept_votes);
+    assert(0 <= decision.reject_votes);
+    assert(0 <= decision.not_ready_votes);
+    assert(0 <= decision.unavailable_votes);
+    assert(0 <= decision.contributing_votes);
+    assert(decision.total_votes
+            == int(decision.material_ids.size()));
+    assert(decision.contributing_votes
+            == decision.accept_votes + decision.reject_votes);
+    assert(decision.total_votes
+            == decision.accept_votes + decision.reject_votes
+            + decision.not_ready_votes + decision.unavailable_votes);
+
+    const auto* sharing = find_registered_sharing(decision.sharing_id);
+    assert(sharing != 0);
+    assert(decision.checkpoint_id == sharing->checkpoint_id);
+    assert(decision.segment_id == sharing->segment_id);
+
+    int expected_votes = 0;
+    for (auto verifier : active_parties())
+        if (verifier != decision.holder)
+            expected_votes++;
+
+    for (auto material_id : decision.material_ids)
+    {
+        const auto* material = find_authentication_material_record(
+                material_id);
+        assert(material != 0);
+        assert(material->sharing_id == decision.sharing_id);
+        assert(material->checkpoint_id == decision.checkpoint_id);
+        assert(material->segment_id == decision.segment_id);
+        assert(is_active_party(material->verifier));
+        assert(material->holder == decision.holder);
+        assert(material->kind == decision.kind);
+    }
+
+    switch (decision.status)
+    {
+    case AuthenticationHolderDecisionStatus::not_ready:
+        assert(decision.reject_votes < decision.decision_threshold);
+        assert(decision.unavailable_votes == 0);
+        assert(decision.not_ready_votes > 0
+                || decision.total_votes < expected_votes);
+        break;
+    case AuthenticationHolderDecisionStatus::holder_share_unavailable:
+        assert(decision.reject_votes < decision.decision_threshold);
+        assert(decision.unavailable_votes > 0);
+        break;
+    case AuthenticationHolderDecisionStatus::insufficient_votes:
+        assert(decision.reject_votes < decision.decision_threshold);
+        assert(expected_votes < decision.decision_threshold
+                || decision.contributing_votes < expected_votes);
+        break;
+    case AuthenticationHolderDecisionStatus::accepted:
+        assert(decision.reject_votes < decision.decision_threshold);
+        assert(decision.not_ready_votes == 0);
+        assert(decision.unavailable_votes == 0);
+        assert(decision.total_votes == expected_votes);
+        assert(decision.contributing_votes == expected_votes);
+        assert(decision.kind != AuthenticationRecordKind::none);
+        break;
+    case AuthenticationHolderDecisionStatus::rejected:
+        assert(decision.reject_votes >= decision.decision_threshold);
+        assert(decision.kind != AuthenticationRecordKind::none);
+        break;
+    case AuthenticationHolderDecisionStatus::none:
+        assert(false);
+        break;
+    }
 }
 
 template<class T>
