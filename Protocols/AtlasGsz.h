@@ -279,6 +279,46 @@ private:
         vector<uint64_t> current_segment_output_sharings;
     };
 
+    enum class AuthenticationPlanStatus
+    {
+        none,
+        planned,
+        requested,
+        authenticated,
+    };
+
+    enum class AuthenticationRecordKind
+    {
+        none,
+        checkpoint_output_share,
+        analyze_request_snapshot,
+    };
+
+    struct AuthenticationPlanRecord
+    {
+        bool valid = false;
+        uint64_t id = 0;
+
+        uint64_t sharing_id = 0;
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        int verifier = -1;
+        int holder = -1;
+
+        AuthenticationRecordKind kind =
+                AuthenticationRecordKind::none;
+        AuthenticationPlanStatus status =
+                AuthenticationPlanStatus::none;
+    };
+
+    struct AuthenticationPlanState
+    {
+        bool initialized = false;
+        uint64_t next_auth_record_id = 1;
+        vector<AuthenticationPlanRecord> records;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -363,6 +403,7 @@ private:
     DisputeControlState dispute_control_state;
     VerifiableSharingRegistry verifiable_registry;
     SegmentLifecycleState segment_lifecycle;
+    AuthenticationPlanState authentication_plan_state;
 
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
@@ -421,6 +462,30 @@ private:
     void mark_current_output_checkpoint_authenticated();
     void complete_current_segment_successfully();
     void abandon_current_segment_after_failure();
+    void ensure_authentication_plan_initialized();
+    void validate_authentication_plan() const;
+    uint64_t create_authentication_plan_record(
+            uint64_t sharing_id,
+            uint64_t checkpoint_id,
+            int verifier,
+            int holder,
+            AuthenticationRecordKind kind);
+    vector<uint64_t> create_checkpoint_authentication_plan(
+            uint64_t checkpoint_id);
+    AuthenticationPlanRecord*
+        find_authentication_plan_record(uint64_t id);
+    const AuthenticationPlanRecord*
+        find_authentication_plan_record(uint64_t id) const;
+    vector<uint64_t> authentication_records_for_checkpoint(
+            uint64_t checkpoint_id) const;
+    vector<uint64_t> authentication_records_for_sharing(
+            uint64_t sharing_id) const;
+    void mark_authentication_record_requested(uint64_t id);
+    void mark_authentication_record_authenticated(uint64_t id);
+    bool checkpoint_authentication_plan_complete(
+            uint64_t checkpoint_id) const;
+    vector<uint64_t> create_analyze_snapshot_authentication_plan(
+            uint64_t registered_snapshot_id);
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;

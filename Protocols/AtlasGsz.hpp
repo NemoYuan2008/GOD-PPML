@@ -1246,8 +1246,19 @@ void AtlasGsz<T>::mark_current_output_checkpoint_authentication_requested()
     assert(segment_lifecycle.segment_open);
     assert(segment_lifecycle.current_output_checkpoint_id != 0);
 
+    auto record_ids = authentication_records_for_checkpoint(
+            segment_lifecycle.current_output_checkpoint_id);
+    if (record_ids.empty())
+        record_ids = create_checkpoint_authentication_plan(
+                segment_lifecycle.current_output_checkpoint_id);
+    assert(not record_ids.empty());
+
+    for (auto record_id : record_ids)
+        mark_authentication_record_requested(record_id);
+
     mark_checkpoint_authentication_requested(
             segment_lifecycle.current_output_checkpoint_id);
+    validate_authentication_plan();
     validate_segment_lifecycle();
 }
 
@@ -1258,8 +1269,21 @@ void AtlasGsz<T>::mark_current_output_checkpoint_authenticated()
     assert(segment_lifecycle.segment_open);
     assert(segment_lifecycle.current_output_checkpoint_id != 0);
 
+    auto record_ids = authentication_records_for_checkpoint(
+            segment_lifecycle.current_output_checkpoint_id);
+    if (record_ids.empty())
+        record_ids = create_checkpoint_authentication_plan(
+                segment_lifecycle.current_output_checkpoint_id);
+    assert(not record_ids.empty());
+
+    for (auto record_id : record_ids)
+        mark_authentication_record_authenticated(record_id);
+    assert(checkpoint_authentication_plan_complete(
+            segment_lifecycle.current_output_checkpoint_id));
+
     mark_checkpoint_authenticated(
             segment_lifecycle.current_output_checkpoint_id);
+    validate_authentication_plan();
     validate_segment_lifecycle();
 }
 
@@ -1304,6 +1328,303 @@ void AtlasGsz<T>::abandon_current_segment_after_failure()
 
     validate_verifiable_registry();
     validate_segment_lifecycle();
+}
+
+template<class T>
+void AtlasGsz<T>::ensure_authentication_plan_initialized()
+{
+    ensure_verifiable_registry_initialized();
+
+    if (not authentication_plan_state.initialized)
+    {
+        authentication_plan_state.next_auth_record_id = 1;
+        authentication_plan_state.records.clear();
+        authentication_plan_state.initialized = true;
+    }
+
+    assert(authentication_plan_state.next_auth_record_id > 0);
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_plan() const
+{
+    if (not authentication_plan_state.initialized)
+        return;
+
+    assert(verifiable_registry.initialized);
+    assert(authentication_plan_state.next_auth_record_id > 0);
+
+    auto checkpoint_exists = [&](uint64_t checkpoint_id)
+    {
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id == checkpoint_id)
+                return true;
+        return false;
+    };
+
+    auto checkpoint_contains_sharing = [&](uint64_t checkpoint_id,
+            uint64_t sharing_id)
+    {
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id == checkpoint_id)
+                return std::find(
+                        checkpoint.sharing_ids.begin(),
+                        checkpoint.sharing_ids.end(),
+                        sharing_id) != checkpoint.sharing_ids.end();
+        return false;
+    };
+
+    for (size_t i = 0; i < authentication_plan_state.records.size(); i++)
+    {
+        const auto& record = authentication_plan_state.records.at(i);
+        assert(record.valid);
+        assert(record.id != 0);
+        assert(record.sharing_id != 0);
+        assert(find_registered_sharing(record.sharing_id) != 0);
+        if (record.checkpoint_id != 0)
+        {
+            assert(checkpoint_exists(record.checkpoint_id));
+            assert(checkpoint_contains_sharing(
+                    record.checkpoint_id, record.sharing_id));
+        }
+        assert(0 <= record.verifier);
+        assert(record.verifier < P.num_players());
+        assert(0 <= record.holder);
+        assert(record.holder < P.num_players());
+        assert(record.verifier != record.holder);
+        assert(record.kind != AuthenticationRecordKind::none);
+        assert(record.status != AuthenticationPlanStatus::none);
+
+        for (size_t j = i + 1;
+                j < authentication_plan_state.records.size(); j++)
+        {
+            const auto& other = authentication_plan_state.records.at(j);
+            assert(record.id != other.id);
+            assert(not (record.sharing_id == other.sharing_id
+                    && record.checkpoint_id == other.checkpoint_id
+                    && record.verifier == other.verifier
+                    && record.holder == other.holder
+                    && record.kind == other.kind));
+        }
+    }
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_authentication_plan_record(
+        uint64_t sharing_id,
+        uint64_t checkpoint_id,
+        int verifier,
+        int holder,
+        AuthenticationRecordKind kind)
+{
+    ensure_authentication_plan_initialized();
+    assert(sharing_id != 0);
+    const auto* sharing = find_registered_sharing(sharing_id);
+    assert(sharing != 0);
+    assert(0 <= verifier);
+    assert(verifier < P.num_players());
+    assert(0 <= holder);
+    assert(holder < P.num_players());
+    assert(verifier != holder);
+    assert(kind != AuthenticationRecordKind::none);
+
+    if (checkpoint_id != 0)
+    {
+        bool found_checkpoint = false;
+        bool contains_sharing = false;
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id == checkpoint_id)
+            {
+                found_checkpoint = true;
+                contains_sharing = std::find(
+                        checkpoint.sharing_ids.begin(),
+                        checkpoint.sharing_ids.end(),
+                        sharing_id) != checkpoint.sharing_ids.end();
+                break;
+            }
+        assert(found_checkpoint);
+        assert(contains_sharing);
+    }
+
+    for (const auto& record : authentication_plan_state.records)
+        if (record.sharing_id == sharing_id
+                && record.checkpoint_id == checkpoint_id
+                && record.verifier == verifier
+                && record.holder == holder
+                && record.kind == kind)
+            return record.id;
+
+    AuthenticationPlanRecord record{};
+    record.valid = true;
+    record.id = authentication_plan_state.next_auth_record_id++;
+    assert(authentication_plan_state.next_auth_record_id > 0);
+    record.sharing_id = sharing_id;
+    record.checkpoint_id = checkpoint_id;
+    record.segment_id = sharing->segment_id;
+    record.verifier = verifier;
+    record.holder = holder;
+    record.kind = kind;
+    record.status = AuthenticationPlanStatus::planned;
+
+    authentication_plan_state.records.push_back(record);
+    validate_authentication_plan();
+    return record.id;
+}
+
+template<class T>
+vector<uint64_t> AtlasGsz<T>::create_checkpoint_authentication_plan(
+        uint64_t checkpoint_id)
+{
+    ensure_authentication_plan_initialized();
+    assert(checkpoint_id != 0);
+
+    const CheckpointRecord* checkpoint = 0;
+    for (const auto& candidate : verifiable_registry.checkpoints)
+        if (candidate.checkpoint_id == checkpoint_id)
+        {
+            checkpoint = &candidate;
+            break;
+        }
+    assert(checkpoint != 0);
+
+    auto active = active_parties();
+    vector<uint64_t> record_ids;
+    for (auto sharing_id : checkpoint->sharing_ids)
+    {
+        const auto* sharing = find_registered_sharing(sharing_id);
+        assert(sharing != 0);
+        assert(sharing->kind == RegisteredSharingKind::checkpoint_output);
+        for (auto verifier : active)
+            for (auto holder : active)
+            {
+                if (verifier == holder)
+                    continue;
+                record_ids.push_back(create_authentication_plan_record(
+                        sharing_id,
+                        checkpoint_id,
+                        verifier,
+                        holder,
+                        AuthenticationRecordKind::checkpoint_output_share));
+            }
+    }
+
+    validate_authentication_plan();
+    return record_ids;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationPlanRecord*
+AtlasGsz<T>::find_authentication_plan_record(uint64_t id)
+{
+    for (auto& record : authentication_plan_state.records)
+        if (record.id == id)
+            return &record;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::AuthenticationPlanRecord*
+AtlasGsz<T>::find_authentication_plan_record(uint64_t id) const
+{
+    for (const auto& record : authentication_plan_state.records)
+        if (record.id == id)
+            return &record;
+    return 0;
+}
+
+template<class T>
+vector<uint64_t> AtlasGsz<T>::authentication_records_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    vector<uint64_t> res;
+    if (not authentication_plan_state.initialized)
+        return res;
+
+    for (const auto& record : authentication_plan_state.records)
+        if (record.checkpoint_id == checkpoint_id)
+            res.push_back(record.id);
+    return res;
+}
+
+template<class T>
+vector<uint64_t> AtlasGsz<T>::authentication_records_for_sharing(
+        uint64_t sharing_id) const
+{
+    vector<uint64_t> res;
+    if (not authentication_plan_state.initialized)
+        return res;
+
+    for (const auto& record : authentication_plan_state.records)
+        if (record.sharing_id == sharing_id)
+            res.push_back(record.id);
+    return res;
+}
+
+template<class T>
+void AtlasGsz<T>::mark_authentication_record_requested(uint64_t id)
+{
+    ensure_authentication_plan_initialized();
+    auto* record = find_authentication_plan_record(id);
+    assert(record != 0);
+    record->status = AuthenticationPlanStatus::requested;
+    validate_authentication_plan();
+}
+
+template<class T>
+void AtlasGsz<T>::mark_authentication_record_authenticated(uint64_t id)
+{
+    ensure_authentication_plan_initialized();
+    auto* record = find_authentication_plan_record(id);
+    assert(record != 0);
+    record->status = AuthenticationPlanStatus::authenticated;
+    validate_authentication_plan();
+}
+
+template<class T>
+bool AtlasGsz<T>::checkpoint_authentication_plan_complete(
+        uint64_t checkpoint_id) const
+{
+    auto record_ids = authentication_records_for_checkpoint(checkpoint_id);
+    if (record_ids.empty())
+        return false;
+
+    for (auto record_id : record_ids)
+    {
+        const auto* record = find_authentication_plan_record(record_id);
+        assert(record != 0);
+        if (record->status != AuthenticationPlanStatus::authenticated)
+            return false;
+    }
+    return true;
+}
+
+template<class T>
+vector<uint64_t> AtlasGsz<T>::create_analyze_snapshot_authentication_plan(
+        uint64_t registered_snapshot_id)
+{
+    ensure_authentication_plan_initialized();
+    const auto* sharing = find_registered_sharing(registered_snapshot_id);
+    assert(sharing != 0);
+    assert(sharing->kind == RegisteredSharingKind::analyze_request_snapshot);
+    assert(sharing->degree == RegisteredSharingDegree::degree_t);
+
+    auto active = active_parties();
+    vector<uint64_t> record_ids;
+    for (auto verifier : active)
+        for (auto holder : active)
+        {
+            if (verifier == holder)
+                continue;
+            record_ids.push_back(create_authentication_plan_record(
+                    registered_snapshot_id,
+                    0,
+                    verifier,
+                    holder,
+                    AuthenticationRecordKind::analyze_request_snapshot));
+        }
+
+    validate_authentication_plan();
+    return record_ids;
 }
 
 template<class T>
@@ -2154,6 +2475,7 @@ void AtlasGsz<T>::check()
 #ifndef NDEBUG
     validate_verifiable_registry();
     validate_segment_lifecycle();
+    validate_authentication_plan();
 #endif
 
 #ifndef NDEBUG
@@ -2217,6 +2539,7 @@ void AtlasGsz<T>::check()
 #ifndef NDEBUG
     validate_verifiable_registry();
     validate_segment_lifecycle();
+    validate_authentication_plan();
 #endif
     
     x_verify.clear();
