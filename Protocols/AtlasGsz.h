@@ -582,6 +582,45 @@ private:
         bool has_insufficient_votes = false;
     };
 
+    enum class AuthenticationOutcomeHookAction
+    {
+        none,
+        no_action,
+        would_wait_for_material,
+        would_request_holder_share_recovery,
+        would_report_insufficient_votes,
+        would_accept_checkpoint,
+        would_reject_checkpoint,
+    };
+
+    struct AuthenticationOutcomeHookResult
+    {
+        bool valid = false;
+
+        AuthenticationOutcomeHookAction action =
+                AuthenticationOutcomeHookAction::none;
+
+        AuthenticationDecisionOutcomeAction outcome_action =
+                AuthenticationDecisionOutcomeAction::none;
+
+        AuthenticationCheckpointDecisionStatus checkpoint_status =
+                AuthenticationCheckpointDecisionStatus::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<int> rejected_holder_ids;
+
+        bool performed_action = false;
+        bool would_wait = false;
+        bool would_accept = false;
+        bool would_reject = false;
+        bool would_need_recovery = false;
+        bool would_report_insufficient = false;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -827,6 +866,13 @@ private:
                 uint64_t checkpoint_id) const;
     AuthenticationDecisionOutcome
         current_output_checkpoint_authentication_outcome() const;
+    AuthenticationOutcomeHookResult inspect_authentication_outcome_hook(
+            const AuthenticationDecisionOutcome& outcome) const;
+    AuthenticationOutcomeHookResult
+        inspect_authentication_outcome_hook_for_checkpoint(
+                uint64_t checkpoint_id) const;
+    AuthenticationOutcomeHookResult
+        inspect_current_output_checkpoint_authentication_hook() const;
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
@@ -837,6 +883,8 @@ private:
             const AuthenticationCheckpointDecision& decision) const;
     void validate_authentication_decision_outcome(
             const AuthenticationDecisionOutcome& outcome) const;
+    void validate_authentication_outcome_hook_result(
+            const AuthenticationOutcomeHookResult& result) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
