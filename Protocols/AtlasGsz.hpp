@@ -4633,17 +4633,20 @@ void AtlasGsz<T>::randomization()
     ultimate_tuple.push_back(ultimate_y);
     ultimate_tuple.push_back(ultimate_z);
 
-    auto published_ultimate = broadcast_local_shares(ultimate_tuple);
-    assert(published_ultimate.size() == 3);
-    auto alpha = classify_degree_t_sharing(published_ultimate.at(0));
-    auto beta = classify_degree_t_sharing(published_ultimate.at(1));
-    auto gamma = classify_degree_t_sharing(published_ultimate.at(2));
-
-    bool ultimate_tuple_passes =
-            alpha.consistent
-            && beta.consistent
-            && gamma.consistent
-            && alpha.value * beta.value == gamma.value;
+    bool ultimate_tuple_passes = false;
+    vector<typename T::open_type> opened_ultimate;
+    try
+    {
+        malicious_mc.POpen(opened_ultimate, ultimate_tuple, P);
+        assert(opened_ultimate.size() == 3);
+        ultimate_tuple_passes =
+                opened_ultimate.at(0) * opened_ultimate.at(1)
+                == opened_ultimate.at(2);
+    }
+    catch (const mac_fail&)
+    {
+        ultimate_tuple_passes = false;
+    }
 
     if (ultimate_tuple_passes)
     {
@@ -4651,6 +4654,12 @@ void AtlasGsz<T>::randomization()
         have_ultimate_failure_context = false;
         return;
     }
+
+    auto published_ultimate = broadcast_local_shares(ultimate_tuple);
+    assert(published_ultimate.size() == 3);
+    auto alpha = classify_degree_t_sharing(published_ultimate.at(0));
+    auto beta = classify_degree_t_sharing(published_ultimate.at(1));
+    auto gamma = classify_degree_t_sharing(published_ultimate.at(2));
 
     UltimateFailureKind failure_kind =
             UltimateFailureKind::incorrect_multiplication;
