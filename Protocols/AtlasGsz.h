@@ -368,6 +368,39 @@ private:
         vector<AuthenticationMaterialRecord> records;
     };
 
+    enum class AuthenticationEquationStatus
+    {
+        none,
+        not_ready,
+        holder_share_unavailable,
+        pass,
+        fail,
+    };
+
+    struct AuthenticationEquationResult
+    {
+        bool valid = false;
+
+        AuthenticationEquationStatus status =
+                AuthenticationEquationStatus::none;
+
+        uint64_t material_id = 0;
+        uint64_t auth_record_id = 0;
+        uint64_t sharing_id = 0;
+
+        int verifier = -1;
+        int holder = -1;
+
+        bool has_holder_share = false;
+        typename T::open_type holder_share{};
+
+        bool has_expected_tag = false;
+        typename T::open_type expected_tag{};
+
+        bool has_actual_tag = false;
+        typename T::open_type actual_tag{};
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -566,6 +599,21 @@ private:
     bool authentication_material_complete(uint64_t material_id) const;
     void create_material_placeholders_for_auth_records(
             const vector<uint64_t>& auth_record_ids);
+    bool holder_share_available_for_material(
+            const AuthenticationMaterialRecord& material) const;
+    typename T::open_type holder_share_for_material(
+            const AuthenticationMaterialRecord& material) const;
+    AuthenticationEquationResult check_authentication_equation(
+            uint64_t material_id) const;
+    vector<AuthenticationEquationResult>
+        check_authentication_equations_for_checkpoint(
+                uint64_t checkpoint_id) const;
+    vector<AuthenticationEquationResult>
+        check_authentication_equations_for_sharing(
+                uint64_t sharing_id) const;
+    bool authentication_equation_passes(uint64_t material_id) const;
+    bool all_available_authentication_equations_pass(
+            const vector<uint64_t>& material_ids) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;

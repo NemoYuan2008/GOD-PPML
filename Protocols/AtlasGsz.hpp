@@ -943,9 +943,25 @@ void AtlasGsz<T>::validate_analyze_sharing_request(
                     == AuthenticationRecordKind::
                         analyze_request_snapshot);
             assert(material->status
-                    == AuthenticationMaterialStatus::placeholder);
-            assert(not material->has_verifier_key);
-            assert(not material->has_holder_tag);
+                    == AuthenticationMaterialStatus::placeholder
+                    || material->status
+                        == AuthenticationMaterialStatus::
+                            verifier_key_assigned
+                    || material->status
+                        == AuthenticationMaterialStatus::
+                            holder_tag_assigned
+                    || material->status
+                        == AuthenticationMaterialStatus::complete);
+            if (material->status == AuthenticationMaterialStatus::complete
+                    && holder_share_available_for_material(*material))
+            {
+                auto equation =
+                        check_authentication_equation(material->id);
+                assert(equation.valid);
+                assert(equation.status == AuthenticationEquationStatus::pass
+                        || equation.status
+                            == AuthenticationEquationStatus::fail);
+            }
             assert(is_active_party(material->verifier));
             assert(is_active_party(material->holder));
             assert(material->verifier != material->holder);
@@ -1835,6 +1851,24 @@ void AtlasGsz<T>::validate_authentication_material() const
             assert(material.has_holder_tag);
         }
 
+        auto equation = check_authentication_equation(material.id);
+        assert(equation.valid);
+        if (material.status == AuthenticationMaterialStatus::complete)
+        {
+            if (holder_share_available_for_material(material))
+                assert(equation.status == AuthenticationEquationStatus::pass
+                        || equation.status
+                            == AuthenticationEquationStatus::fail);
+            else
+                assert(equation.status
+                        == AuthenticationEquationStatus::
+                            holder_share_unavailable);
+        }
+        else
+        {
+            assert(equation.status == AuthenticationEquationStatus::not_ready);
+        }
+
         for (size_t j = i + 1;
                 j < authentication_material_state.records.size(); j++)
         {
@@ -2001,6 +2035,134 @@ void AtlasGsz<T>::create_material_placeholders_for_auth_records(
     for (auto auth_record_id : auth_record_ids)
         create_authentication_material_placeholder(auth_record_id);
     validate_authentication_material();
+}
+
+template<class T>
+bool AtlasGsz<T>::holder_share_available_for_material(
+        const AuthenticationMaterialRecord& material) const
+{
+    const auto* sharing = find_registered_sharing(material.sharing_id);
+    assert(sharing != 0);
+    assert(0 <= material.holder);
+    assert(material.holder < P.num_players());
+
+    if (sharing->has_published_snapshot)
+    {
+        assert(sharing->published_shares.size()
+                == size_t(P.num_players()));
+        return true;
+    }
+
+    return material.holder == P.my_num();
+}
+
+template<class T>
+typename T::open_type AtlasGsz<T>::holder_share_for_material(
+        const AuthenticationMaterialRecord& material) const
+{
+    assert(holder_share_available_for_material(material));
+    const auto* sharing = find_registered_sharing(material.sharing_id);
+    assert(sharing != 0);
+
+    if (sharing->has_published_snapshot)
+        return sharing->published_shares.at(material.holder);
+
+    typename T::open_type share = sharing->local_share;
+    return share;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationEquationResult
+AtlasGsz<T>::check_authentication_equation(uint64_t material_id) const
+{
+    AuthenticationEquationResult result{};
+    const auto* material = find_authentication_material_record(material_id);
+    assert(material != 0);
+    if (material == 0)
+        return result;
+
+    result.valid = true;
+    result.material_id = material->id;
+    result.auth_record_id = material->auth_record_id;
+    result.sharing_id = material->sharing_id;
+    result.verifier = material->verifier;
+    result.holder = material->holder;
+
+    bool complete = material->status == AuthenticationMaterialStatus::complete
+            && material->has_verifier_key
+            && material->has_holder_tag;
+    if (not complete)
+    {
+        result.status = AuthenticationEquationStatus::not_ready;
+        return result;
+    }
+
+    if (not holder_share_available_for_material(*material))
+    {
+        result.status =
+                AuthenticationEquationStatus::holder_share_unavailable;
+        return result;
+    }
+
+    result.has_holder_share = true;
+    result.holder_share = holder_share_for_material(*material);
+    result.has_expected_tag = true;
+    result.expected_tag =
+            material->verifier_key_mu * result.holder_share
+            + material->verifier_key_nu;
+    result.has_actual_tag = true;
+    result.actual_tag = material->holder_tag;
+    result.status = result.actual_tag == result.expected_tag
+            ? AuthenticationEquationStatus::pass
+            : AuthenticationEquationStatus::fail;
+    return result;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationEquationResult>
+AtlasGsz<T>::check_authentication_equations_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    vector<AuthenticationEquationResult> res;
+    for (auto material_id :
+            authentication_material_for_checkpoint(checkpoint_id))
+        res.push_back(check_authentication_equation(material_id));
+    return res;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationEquationResult>
+AtlasGsz<T>::check_authentication_equations_for_sharing(
+        uint64_t sharing_id) const
+{
+    vector<AuthenticationEquationResult> res;
+    for (auto material_id :
+            authentication_material_for_sharing(sharing_id))
+        res.push_back(check_authentication_equation(material_id));
+    return res;
+}
+
+template<class T>
+bool AtlasGsz<T>::authentication_equation_passes(
+        uint64_t material_id) const
+{
+    auto result = check_authentication_equation(material_id);
+    return result.valid
+            && result.status == AuthenticationEquationStatus::pass;
+}
+
+template<class T>
+bool AtlasGsz<T>::all_available_authentication_equations_pass(
+        const vector<uint64_t>& material_ids) const
+{
+    for (auto material_id : material_ids)
+    {
+        auto result = check_authentication_equation(material_id);
+        assert(result.valid);
+        if (result.status == AuthenticationEquationStatus::fail)
+            return false;
+    }
+    return true;
 }
 
 template<class T>
