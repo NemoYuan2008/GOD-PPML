@@ -1911,6 +1911,10 @@ void AtlasGsz<T>::validate_authentication_material() const
         auto checkpoint_decision =
                 authentication_checkpoint_decision(checkpoint_id);
         validate_authentication_checkpoint_decision(checkpoint_decision);
+        auto outcome =
+                authentication_decision_outcome_from_checkpoint_decision(
+                        checkpoint_decision);
+        validate_authentication_decision_outcome(outcome);
     }
 }
 
@@ -2671,6 +2675,90 @@ AtlasGsz<T>::current_output_checkpoint_authentication_decision() const
 }
 
 template<class T>
+typename AtlasGsz<T>::AuthenticationDecisionOutcome
+AtlasGsz<T>::authentication_decision_outcome_from_checkpoint_decision(
+        const AuthenticationCheckpointDecision& decision) const
+{
+    AuthenticationDecisionOutcome outcome{};
+    assert(decision.valid);
+    assert(decision.status != AuthenticationCheckpointDecisionStatus::none);
+    if (not decision.valid
+            || decision.status == AuthenticationCheckpointDecisionStatus::none)
+        return outcome;
+
+    validate_authentication_checkpoint_decision(decision);
+
+    outcome.valid = true;
+    outcome.checkpoint_status = decision.status;
+    outcome.checkpoint_id = decision.checkpoint_id;
+    outcome.segment_id = decision.segment_id;
+    outcome.expected_sharings = decision.expected_sharings;
+    outcome.accepted_sharings = decision.accepted_sharings;
+    outcome.rejected_sharings = decision.rejected_sharings;
+    outcome.not_ready_sharings = decision.not_ready_sharings;
+    outcome.unavailable_sharings = decision.unavailable_sharings;
+    outcome.insufficient_sharings = decision.insufficient_sharings;
+    outcome.sharing_ids = decision.sharing_ids;
+    outcome.rejected_sharing_ids = decision.rejected_sharing_ids;
+    outcome.rejected_holder_ids = decision.rejected_holder_ids;
+
+    switch (decision.status)
+    {
+    case AuthenticationCheckpointDecisionStatus::accepted:
+        outcome.action =
+                AuthenticationDecisionOutcomeAction::accept_checkpoint;
+        outcome.would_accept_checkpoint = true;
+        break;
+    case AuthenticationCheckpointDecisionStatus::rejected:
+        outcome.action =
+                AuthenticationDecisionOutcomeAction::reject_checkpoint;
+        outcome.would_reject_checkpoint = true;
+        break;
+    case AuthenticationCheckpointDecisionStatus::holder_share_unavailable:
+        outcome.action =
+                AuthenticationDecisionOutcomeAction::
+                    holder_share_unavailable;
+        outcome.has_unavailable_holder_share = true;
+        break;
+    case AuthenticationCheckpointDecisionStatus::not_ready:
+        outcome.action =
+                AuthenticationDecisionOutcomeAction::wait_for_material;
+        outcome.needs_more_authentication_material = true;
+        break;
+    case AuthenticationCheckpointDecisionStatus::insufficient_votes:
+        outcome.action =
+                AuthenticationDecisionOutcomeAction::insufficient_votes;
+        outcome.has_insufficient_votes = true;
+        break;
+    case AuthenticationCheckpointDecisionStatus::none:
+        assert(false);
+        return AuthenticationDecisionOutcome{};
+    }
+
+    validate_authentication_decision_outcome(outcome);
+    return outcome;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationDecisionOutcome
+AtlasGsz<T>::authentication_decision_outcome_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    auto decision = authentication_checkpoint_decision(checkpoint_id);
+    return authentication_decision_outcome_from_checkpoint_decision(
+            decision);
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationDecisionOutcome
+AtlasGsz<T>::current_output_checkpoint_authentication_outcome() const
+{
+    auto decision = current_output_checkpoint_authentication_decision();
+    return authentication_decision_outcome_from_checkpoint_decision(
+            decision);
+}
+
+template<class T>
 void AtlasGsz<T>::validate_authentication_vote(
         const AuthenticationVerifierVote& vote) const
 {
@@ -3016,6 +3104,125 @@ void AtlasGsz<T>::validate_authentication_checkpoint_decision(
         assert(decision.rejected_holder_ids.empty());
         break;
     case AuthenticationCheckpointDecisionStatus::none:
+        assert(false);
+        break;
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_decision_outcome(
+        const AuthenticationDecisionOutcome& outcome) const
+{
+    assert(outcome.valid);
+    assert(outcome.action != AuthenticationDecisionOutcomeAction::none);
+    assert(outcome.checkpoint_status
+            != AuthenticationCheckpointDecisionStatus::none);
+    assert(outcome.checkpoint_id != 0);
+    assert(0 <= outcome.expected_sharings);
+    assert(0 <= outcome.accepted_sharings);
+    assert(0 <= outcome.rejected_sharings);
+    assert(0 <= outcome.not_ready_sharings);
+    assert(0 <= outcome.unavailable_sharings);
+    assert(0 <= outcome.insufficient_sharings);
+    assert(outcome.rejected_sharings
+            == int(outcome.rejected_sharing_ids.size()));
+
+    int total_sharings =
+            outcome.accepted_sharings + outcome.rejected_sharings
+            + outcome.not_ready_sharings + outcome.unavailable_sharings
+            + outcome.insufficient_sharings;
+    assert(total_sharings == int(outcome.sharing_ids.size()));
+
+    const auto decision =
+            authentication_checkpoint_decision(outcome.checkpoint_id);
+    validate_authentication_checkpoint_decision(decision);
+    assert(outcome.checkpoint_status == decision.status);
+    assert(outcome.segment_id == decision.segment_id);
+    assert(outcome.expected_sharings == decision.expected_sharings);
+    assert(outcome.accepted_sharings == decision.accepted_sharings);
+    assert(outcome.rejected_sharings == decision.rejected_sharings);
+    assert(outcome.not_ready_sharings == decision.not_ready_sharings);
+    assert(outcome.unavailable_sharings == decision.unavailable_sharings);
+    assert(outcome.insufficient_sharings == decision.insufficient_sharings);
+    assert(outcome.sharing_ids == decision.sharing_ids);
+    assert(outcome.rejected_sharing_ids
+            == decision.rejected_sharing_ids);
+    assert(outcome.rejected_holder_ids == decision.rejected_holder_ids);
+
+    for (auto sharing_id : outcome.rejected_sharing_ids)
+        assert(std::find(outcome.sharing_ids.begin(),
+                outcome.sharing_ids.end(), sharing_id)
+                != outcome.sharing_ids.end());
+
+    for (auto holder : outcome.rejected_holder_ids)
+    {
+        assert(0 <= holder);
+        assert(holder < P.num_players());
+        assert(is_active_party(holder));
+    }
+
+    int control_flags =
+            int(outcome.would_accept_checkpoint)
+            + int(outcome.would_reject_checkpoint)
+            + int(outcome.needs_more_authentication_material)
+            + int(outcome.has_unavailable_holder_share)
+            + int(outcome.has_insufficient_votes);
+    assert(control_flags == 1);
+
+    switch (outcome.action)
+    {
+    case AuthenticationDecisionOutcomeAction::accept_checkpoint:
+        assert(outcome.checkpoint_status
+                == AuthenticationCheckpointDecisionStatus::accepted);
+        assert(outcome.would_accept_checkpoint);
+        assert(not outcome.would_reject_checkpoint);
+        assert(not outcome.needs_more_authentication_material);
+        assert(not outcome.has_unavailable_holder_share);
+        assert(not outcome.has_insufficient_votes);
+        assert(outcome.rejected_sharing_ids.empty());
+        assert(outcome.rejected_holder_ids.empty());
+        break;
+    case AuthenticationDecisionOutcomeAction::reject_checkpoint:
+        assert(outcome.checkpoint_status
+                == AuthenticationCheckpointDecisionStatus::rejected);
+        assert(not outcome.would_accept_checkpoint);
+        assert(outcome.would_reject_checkpoint);
+        assert(not outcome.needs_more_authentication_material);
+        assert(not outcome.has_unavailable_holder_share);
+        assert(not outcome.has_insufficient_votes);
+        assert(outcome.rejected_sharings > 0);
+        assert(not outcome.rejected_sharing_ids.empty());
+        break;
+    case AuthenticationDecisionOutcomeAction::wait_for_material:
+        assert(outcome.checkpoint_status
+                == AuthenticationCheckpointDecisionStatus::not_ready);
+        assert(not outcome.would_accept_checkpoint);
+        assert(not outcome.would_reject_checkpoint);
+        assert(outcome.needs_more_authentication_material);
+        assert(not outcome.has_unavailable_holder_share);
+        assert(not outcome.has_insufficient_votes);
+        break;
+    case AuthenticationDecisionOutcomeAction::holder_share_unavailable:
+        assert(outcome.checkpoint_status
+                == AuthenticationCheckpointDecisionStatus::
+                    holder_share_unavailable);
+        assert(not outcome.would_accept_checkpoint);
+        assert(not outcome.would_reject_checkpoint);
+        assert(not outcome.needs_more_authentication_material);
+        assert(outcome.has_unavailable_holder_share);
+        assert(not outcome.has_insufficient_votes);
+        break;
+    case AuthenticationDecisionOutcomeAction::insufficient_votes:
+        assert(outcome.checkpoint_status
+                == AuthenticationCheckpointDecisionStatus::
+                    insufficient_votes);
+        assert(not outcome.would_accept_checkpoint);
+        assert(not outcome.would_reject_checkpoint);
+        assert(not outcome.needs_more_authentication_material);
+        assert(not outcome.has_unavailable_holder_share);
+        assert(outcome.has_insufficient_votes);
+        break;
+    case AuthenticationDecisionOutcomeAction::none:
         assert(false);
         break;
     }

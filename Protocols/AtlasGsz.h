@@ -541,6 +541,47 @@ private:
         vector<int> rejected_holder_ids;
     };
 
+    enum class AuthenticationDecisionOutcomeAction
+    {
+        none,
+        wait_for_material,
+        holder_share_unavailable,
+        insufficient_votes,
+        accept_checkpoint,
+        reject_checkpoint,
+    };
+
+    struct AuthenticationDecisionOutcome
+    {
+        bool valid = false;
+
+        AuthenticationDecisionOutcomeAction action =
+                AuthenticationDecisionOutcomeAction::none;
+
+        AuthenticationCheckpointDecisionStatus checkpoint_status =
+                AuthenticationCheckpointDecisionStatus::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        int expected_sharings = 0;
+        int accepted_sharings = 0;
+        int rejected_sharings = 0;
+        int not_ready_sharings = 0;
+        int unavailable_sharings = 0;
+        int insufficient_sharings = 0;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<int> rejected_holder_ids;
+
+        bool would_accept_checkpoint = false;
+        bool would_reject_checkpoint = false;
+        bool needs_more_authentication_material = false;
+        bool has_unavailable_holder_share = false;
+        bool has_insufficient_votes = false;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -778,6 +819,14 @@ private:
             uint64_t checkpoint_id) const;
     AuthenticationCheckpointDecision
         current_output_checkpoint_authentication_decision() const;
+    AuthenticationDecisionOutcome
+        authentication_decision_outcome_from_checkpoint_decision(
+                const AuthenticationCheckpointDecision& decision) const;
+    AuthenticationDecisionOutcome
+        authentication_decision_outcome_for_checkpoint(
+                uint64_t checkpoint_id) const;
+    AuthenticationDecisionOutcome
+        current_output_checkpoint_authentication_outcome() const;
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
@@ -786,6 +835,8 @@ private:
             const AuthenticationSharingDecision& decision) const;
     void validate_authentication_checkpoint_decision(
             const AuthenticationCheckpointDecision& decision) const;
+    void validate_authentication_decision_outcome(
+            const AuthenticationDecisionOutcome& outcome) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
