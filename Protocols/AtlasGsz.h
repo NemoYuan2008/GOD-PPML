@@ -195,6 +195,9 @@ private:
 
         bool has_authentication_plan = false;
         vector<uint64_t> authentication_plan_record_ids;
+
+        bool has_authentication_material = false;
+        vector<uint64_t> authentication_material_record_ids;
     };
 
     enum class RegisteredSharingDegree
@@ -322,6 +325,49 @@ private:
         vector<AuthenticationPlanRecord> records;
     };
 
+    enum class AuthenticationMaterialStatus
+    {
+        none,
+        placeholder,
+        verifier_key_assigned,
+        holder_tag_assigned,
+        complete,
+    };
+
+    struct AuthenticationMaterialRecord
+    {
+        bool valid = false;
+        uint64_t id = 0;
+
+        uint64_t auth_record_id = 0;
+        uint64_t sharing_id = 0;
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        int verifier = -1;
+        int holder = -1;
+
+        AuthenticationRecordKind kind =
+                AuthenticationRecordKind::none;
+
+        AuthenticationMaterialStatus status =
+                AuthenticationMaterialStatus::none;
+
+        bool has_verifier_key = false;
+        typename T::open_type verifier_key_mu{};
+        typename T::open_type verifier_key_nu{};
+
+        bool has_holder_tag = false;
+        typename T::open_type holder_tag{};
+    };
+
+    struct AuthenticationMaterialState
+    {
+        bool initialized = false;
+        uint64_t next_material_id = 1;
+        vector<AuthenticationMaterialRecord> records;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -407,6 +453,7 @@ private:
     VerifiableSharingRegistry verifiable_registry;
     SegmentLifecycleState segment_lifecycle;
     AuthenticationPlanState authentication_plan_state;
+    AuthenticationMaterialState authentication_material_state;
 
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
@@ -491,6 +538,34 @@ private:
             uint64_t checkpoint_id) const;
     vector<uint64_t> create_analyze_snapshot_authentication_plan(
             uint64_t registered_snapshot_id);
+    void ensure_authentication_material_initialized();
+    void validate_authentication_material() const;
+    uint64_t create_authentication_material_placeholder(
+            uint64_t auth_record_id);
+    AuthenticationMaterialRecord*
+        find_authentication_material_record(uint64_t id);
+    const AuthenticationMaterialRecord*
+        find_authentication_material_record(uint64_t id) const;
+    AuthenticationMaterialRecord*
+        find_authentication_material_for_auth_record(
+                uint64_t auth_record_id);
+    const AuthenticationMaterialRecord*
+        find_authentication_material_for_auth_record(
+                uint64_t auth_record_id) const;
+    vector<uint64_t> authentication_material_for_checkpoint(
+            uint64_t checkpoint_id) const;
+    vector<uint64_t> authentication_material_for_sharing(
+            uint64_t sharing_id) const;
+    void assign_authentication_verifier_key_placeholder(
+            uint64_t material_id,
+            const typename T::open_type& mu,
+            const typename T::open_type& nu);
+    void assign_authentication_holder_tag_placeholder(
+            uint64_t material_id,
+            const typename T::open_type& tag);
+    bool authentication_material_complete(uint64_t material_id) const;
+    void create_material_placeholders_for_auth_records(
+            const vector<uint64_t>& auth_record_ids);
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;

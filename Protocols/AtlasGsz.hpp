@@ -788,6 +788,17 @@ AtlasGsz<T>::build_analyze_sharing_request(
                 create_analyze_snapshot_authentication_plan(
                         request.registered_snapshot_id);
         request.has_authentication_plan = true;
+        create_material_placeholders_for_auth_records(
+                request.authentication_plan_record_ids);
+        for (auto record_id : request.authentication_plan_record_ids)
+        {
+            const auto* material =
+                    find_authentication_material_for_auth_record(record_id);
+            assert(material != 0);
+            request.authentication_material_record_ids.push_back(
+                    material->id);
+        }
+        request.has_authentication_material = true;
         validate_analyze_sharing_request(request);
         return request;
 
@@ -816,6 +827,17 @@ AtlasGsz<T>::build_analyze_sharing_request(
                 create_analyze_snapshot_authentication_plan(
                         request.registered_snapshot_id);
         request.has_authentication_plan = true;
+        create_material_placeholders_for_auth_records(
+                request.authentication_plan_record_ids);
+        for (auto record_id : request.authentication_plan_record_ids)
+        {
+            const auto* material =
+                    find_authentication_material_for_auth_record(record_id);
+            assert(material != 0);
+            request.authentication_material_record_ids.push_back(
+                    material->id);
+        }
+        request.has_authentication_material = true;
         validate_analyze_sharing_request(request);
         return request;
 
@@ -842,6 +864,8 @@ void AtlasGsz<T>::validate_analyze_sharing_request(
         assert(request.registered_snapshot_id == 0);
         assert(not request.has_authentication_plan);
         assert(request.authentication_plan_record_ids.empty());
+        assert(not request.has_authentication_material);
+        assert(request.authentication_material_record_ids.empty());
         return;
     }
 
@@ -901,6 +925,40 @@ void AtlasGsz<T>::validate_analyze_sharing_request(
     else
     {
         assert(request.authentication_plan_record_ids.empty());
+    }
+
+    if (request.has_authentication_material)
+    {
+        assert(request.has_authentication_plan);
+        assert(request.authentication_material_record_ids.size()
+                == request.authentication_plan_record_ids.size());
+        for (auto material_id : request.authentication_material_record_ids)
+        {
+            const auto* material =
+                    find_authentication_material_record(material_id);
+            assert(material != 0);
+            assert(material->sharing_id == request.registered_snapshot_id);
+            assert(material->checkpoint_id == 0);
+            assert(material->kind
+                    == AuthenticationRecordKind::
+                        analyze_request_snapshot);
+            assert(material->status
+                    == AuthenticationMaterialStatus::placeholder);
+            assert(not material->has_verifier_key);
+            assert(not material->has_holder_tag);
+            assert(is_active_party(material->verifier));
+            assert(is_active_party(material->holder));
+            assert(material->verifier != material->holder);
+            assert(std::find(
+                    request.authentication_plan_record_ids.begin(),
+                    request.authentication_plan_record_ids.end(),
+                    material->auth_record_id)
+                    != request.authentication_plan_record_ids.end());
+        }
+    }
+    else
+    {
+        assert(request.authentication_material_record_ids.empty());
     }
 }
 
@@ -1337,12 +1395,14 @@ void AtlasGsz<T>::mark_current_output_checkpoint_authentication_requested()
         record_ids = create_checkpoint_authentication_plan(
                 segment_lifecycle.current_output_checkpoint_id);
     assert(not record_ids.empty());
+    create_material_placeholders_for_auth_records(record_ids);
 
     for (auto record_id : record_ids)
         mark_authentication_record_requested(record_id);
 
     mark_checkpoint_authentication_requested(
             segment_lifecycle.current_output_checkpoint_id);
+    validate_authentication_material();
     validate_authentication_plan();
     validate_segment_lifecycle();
 }
@@ -1360,6 +1420,7 @@ void AtlasGsz<T>::mark_current_output_checkpoint_authenticated()
         record_ids = create_checkpoint_authentication_plan(
                 segment_lifecycle.current_output_checkpoint_id);
     assert(not record_ids.empty());
+    create_material_placeholders_for_auth_records(record_ids);
 
     for (auto record_id : record_ids)
         mark_authentication_record_authenticated(record_id);
@@ -1368,6 +1429,7 @@ void AtlasGsz<T>::mark_current_output_checkpoint_authenticated()
 
     mark_checkpoint_authenticated(
             segment_lifecycle.current_output_checkpoint_id);
+    validate_authentication_material();
     validate_authentication_plan();
     validate_segment_lifecycle();
 }
@@ -1710,6 +1772,235 @@ vector<uint64_t> AtlasGsz<T>::create_analyze_snapshot_authentication_plan(
 
     validate_authentication_plan();
     return record_ids;
+}
+
+template<class T>
+void AtlasGsz<T>::ensure_authentication_material_initialized()
+{
+    ensure_authentication_plan_initialized();
+
+    if (not authentication_material_state.initialized)
+    {
+        authentication_material_state.next_material_id = 1;
+        authentication_material_state.records.clear();
+        authentication_material_state.initialized = true;
+    }
+
+    assert(authentication_material_state.next_material_id > 0);
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_material() const
+{
+    if (not authentication_material_state.initialized)
+        return;
+
+    assert(authentication_plan_state.initialized);
+    assert(authentication_material_state.next_material_id > 0);
+
+    for (size_t i = 0; i < authentication_material_state.records.size(); i++)
+    {
+        const auto& material =
+                authentication_material_state.records.at(i);
+        assert(material.valid);
+        assert(material.id != 0);
+        assert(material.auth_record_id != 0);
+
+        const auto* plan_record = find_authentication_plan_record(
+                material.auth_record_id);
+        assert(plan_record != 0);
+        assert(material.sharing_id == plan_record->sharing_id);
+        assert(material.checkpoint_id == plan_record->checkpoint_id);
+        assert(material.segment_id == plan_record->segment_id);
+        assert(material.verifier == plan_record->verifier);
+        assert(material.holder == plan_record->holder);
+        assert(material.kind == plan_record->kind);
+        assert(0 <= material.verifier);
+        assert(material.verifier < P.num_players());
+        assert(0 <= material.holder);
+        assert(material.holder < P.num_players());
+        assert(material.verifier != material.holder);
+        assert(material.kind != AuthenticationRecordKind::none);
+        assert(material.status != AuthenticationMaterialStatus::none);
+
+        if (material.status
+                == AuthenticationMaterialStatus::verifier_key_assigned)
+            assert(material.has_verifier_key);
+        if (material.status
+                == AuthenticationMaterialStatus::holder_tag_assigned)
+            assert(material.has_holder_tag);
+        if (material.status == AuthenticationMaterialStatus::complete)
+        {
+            assert(material.has_verifier_key);
+            assert(material.has_holder_tag);
+        }
+
+        for (size_t j = i + 1;
+                j < authentication_material_state.records.size(); j++)
+        {
+            const auto& other =
+                    authentication_material_state.records.at(j);
+            assert(material.id != other.id);
+            assert(material.auth_record_id != other.auth_record_id);
+        }
+    }
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_authentication_material_placeholder(
+        uint64_t auth_record_id)
+{
+    ensure_authentication_material_initialized();
+    assert(auth_record_id != 0);
+    const auto* plan_record =
+            find_authentication_plan_record(auth_record_id);
+    assert(plan_record != 0);
+
+    if (const auto* existing =
+            find_authentication_material_for_auth_record(auth_record_id))
+        return existing->id;
+
+    AuthenticationMaterialRecord material{};
+    material.valid = true;
+    material.id = authentication_material_state.next_material_id++;
+    assert(authentication_material_state.next_material_id > 0);
+    material.auth_record_id = auth_record_id;
+    material.sharing_id = plan_record->sharing_id;
+    material.checkpoint_id = plan_record->checkpoint_id;
+    material.segment_id = plan_record->segment_id;
+    material.verifier = plan_record->verifier;
+    material.holder = plan_record->holder;
+    material.kind = plan_record->kind;
+    material.status = AuthenticationMaterialStatus::placeholder;
+
+    authentication_material_state.records.push_back(material);
+    validate_authentication_material();
+    return material.id;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationMaterialRecord*
+AtlasGsz<T>::find_authentication_material_record(uint64_t id)
+{
+    for (auto& material : authentication_material_state.records)
+        if (material.id == id)
+            return &material;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::AuthenticationMaterialRecord*
+AtlasGsz<T>::find_authentication_material_record(uint64_t id) const
+{
+    for (const auto& material : authentication_material_state.records)
+        if (material.id == id)
+            return &material;
+    return 0;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationMaterialRecord*
+AtlasGsz<T>::find_authentication_material_for_auth_record(
+        uint64_t auth_record_id)
+{
+    for (auto& material : authentication_material_state.records)
+        if (material.auth_record_id == auth_record_id)
+            return &material;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::AuthenticationMaterialRecord*
+AtlasGsz<T>::find_authentication_material_for_auth_record(
+        uint64_t auth_record_id) const
+{
+    for (const auto& material : authentication_material_state.records)
+        if (material.auth_record_id == auth_record_id)
+            return &material;
+    return 0;
+}
+
+template<class T>
+vector<uint64_t> AtlasGsz<T>::authentication_material_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    vector<uint64_t> res;
+    if (not authentication_material_state.initialized)
+        return res;
+
+    for (const auto& material : authentication_material_state.records)
+        if (material.checkpoint_id == checkpoint_id)
+            res.push_back(material.id);
+    return res;
+}
+
+template<class T>
+vector<uint64_t> AtlasGsz<T>::authentication_material_for_sharing(
+        uint64_t sharing_id) const
+{
+    vector<uint64_t> res;
+    if (not authentication_material_state.initialized)
+        return res;
+
+    for (const auto& material : authentication_material_state.records)
+        if (material.sharing_id == sharing_id)
+            res.push_back(material.id);
+    return res;
+}
+
+template<class T>
+void AtlasGsz<T>::assign_authentication_verifier_key_placeholder(
+        uint64_t material_id,
+        const typename T::open_type& mu,
+        const typename T::open_type& nu)
+{
+    ensure_authentication_material_initialized();
+    auto* material = find_authentication_material_record(material_id);
+    assert(material != 0);
+    material->has_verifier_key = true;
+    material->verifier_key_mu = mu;
+    material->verifier_key_nu = nu;
+    material->status = material->has_holder_tag
+            ? AuthenticationMaterialStatus::complete
+            : AuthenticationMaterialStatus::verifier_key_assigned;
+    validate_authentication_material();
+}
+
+template<class T>
+void AtlasGsz<T>::assign_authentication_holder_tag_placeholder(
+        uint64_t material_id,
+        const typename T::open_type& tag)
+{
+    ensure_authentication_material_initialized();
+    auto* material = find_authentication_material_record(material_id);
+    assert(material != 0);
+    material->has_holder_tag = true;
+    material->holder_tag = tag;
+    material->status = material->has_verifier_key
+            ? AuthenticationMaterialStatus::complete
+            : AuthenticationMaterialStatus::holder_tag_assigned;
+    validate_authentication_material();
+}
+
+template<class T>
+bool AtlasGsz<T>::authentication_material_complete(
+        uint64_t material_id) const
+{
+    const auto* material = find_authentication_material_record(material_id);
+    assert(material != 0);
+    return material != 0
+            && material->status == AuthenticationMaterialStatus::complete
+            && material->has_verifier_key
+            && material->has_holder_tag;
+}
+
+template<class T>
+void AtlasGsz<T>::create_material_placeholders_for_auth_records(
+        const vector<uint64_t>& auth_record_ids)
+{
+    for (auto auth_record_id : auth_record_ids)
+        create_authentication_material_placeholder(auth_record_id);
+    validate_authentication_material();
 }
 
 template<class T>
@@ -2561,6 +2852,7 @@ void AtlasGsz<T>::check()
     validate_verifiable_registry();
     validate_segment_lifecycle();
     validate_authentication_plan();
+    validate_authentication_material();
 #endif
 
 #ifndef NDEBUG
@@ -2625,6 +2917,7 @@ void AtlasGsz<T>::check()
     validate_verifiable_registry();
     validate_segment_lifecycle();
     validate_authentication_plan();
+    validate_authentication_material();
 #endif
     
     x_verify.clear();
