@@ -192,6 +192,9 @@ private:
 
         bool has_registered_snapshot = false;
         uint64_t registered_snapshot_id = 0;
+
+        bool has_authentication_plan = false;
+        vector<uint64_t> authentication_plan_record_ids;
     };
 
     enum class RegisteredSharingDegree
@@ -432,6 +435,8 @@ private:
             const UltimateFailureContext& context) const;
     AnalyzeSharingRequest build_analyze_sharing_request(
             const UltimateFailureContext& context);
+    void validate_analyze_sharing_request(
+            const AnalyzeSharingRequest& request) const;
     void ensure_verifiable_registry_initialized();
     uint64_t register_verifiable_sharing(
             const T& local_share,

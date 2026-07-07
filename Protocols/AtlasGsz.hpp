@@ -784,6 +784,11 @@ AtlasGsz<T>::build_analyze_sharing_request(
             assert(snapshot != 0);
             assert(snapshot->published_shares == request.published_shares);
         }
+        request.authentication_plan_record_ids =
+                create_analyze_snapshot_authentication_plan(
+                        request.registered_snapshot_id);
+        request.has_authentication_plan = true;
+        validate_analyze_sharing_request(request);
         return request;
 
     case SharingToAnalyze::beta:
@@ -807,6 +812,11 @@ AtlasGsz<T>::build_analyze_sharing_request(
             assert(snapshot != 0);
             assert(snapshot->published_shares == request.published_shares);
         }
+        request.authentication_plan_record_ids =
+                create_analyze_snapshot_authentication_plan(
+                        request.registered_snapshot_id);
+        request.has_authentication_plan = true;
+        validate_analyze_sharing_request(request);
         return request;
 
     case SharingToAnalyze::none:
@@ -817,6 +827,81 @@ AtlasGsz<T>::build_analyze_sharing_request(
     assert(false);
 #endif
     return request;
+}
+
+template<class T>
+void AtlasGsz<T>::validate_analyze_sharing_request(
+        const AnalyzeSharingRequest& request) const
+{
+    if (not request.valid)
+    {
+        assert(request.target == AnalyzeSharingRequestTarget::none);
+        assert(request.sharing_to_analyze == SharingToAnalyze::none);
+        assert(request.source == FaultLocalizationSource::none);
+        assert(not request.has_registered_snapshot);
+        assert(request.registered_snapshot_id == 0);
+        assert(not request.has_authentication_plan);
+        assert(request.authentication_plan_record_ids.empty());
+        return;
+    }
+
+    assert(request.target == AnalyzeSharingRequestTarget::alpha
+            || request.target == AnalyzeSharingRequestTarget::beta);
+    assert(request.sharing_to_analyze == SharingToAnalyze::alpha
+            || request.sharing_to_analyze == SharingToAnalyze::beta);
+    assert(request.published_shares
+            == request.published_sharing.shares);
+
+    if (request.target == AnalyzeSharingRequestTarget::alpha)
+    {
+        assert(request.sharing_to_analyze == SharingToAnalyze::alpha);
+        assert(request.source == FaultLocalizationSource::inconsistent_alpha);
+    }
+    else
+    {
+        assert(request.sharing_to_analyze == SharingToAnalyze::beta);
+        assert(request.source == FaultLocalizationSource::inconsistent_beta);
+    }
+
+    if (request.has_registered_snapshot)
+    {
+        const auto* snapshot = find_registered_sharing(
+                request.registered_snapshot_id);
+        assert(snapshot != 0);
+        assert(snapshot->kind
+                == RegisteredSharingKind::analyze_request_snapshot);
+        assert(snapshot->degree == RegisteredSharingDegree::degree_t);
+        assert(snapshot->has_published_snapshot);
+        assert(snapshot->published_shares == request.published_shares);
+    }
+    else
+    {
+        assert(request.registered_snapshot_id == 0);
+    }
+
+    if (request.has_authentication_plan)
+    {
+        assert(request.has_registered_snapshot);
+        assert(not request.authentication_plan_record_ids.empty());
+        for (auto record_id : request.authentication_plan_record_ids)
+        {
+            const auto* record = find_authentication_plan_record(record_id);
+            assert(record != 0);
+            assert(record->sharing_id == request.registered_snapshot_id);
+            assert(record->checkpoint_id == 0);
+            assert(record->kind
+                    == AuthenticationRecordKind::
+                        analyze_request_snapshot);
+            assert(record->status == AuthenticationPlanStatus::planned);
+            assert(is_active_party(record->verifier));
+            assert(is_active_party(record->holder));
+            assert(record->verifier != record->holder);
+        }
+    }
+    else
+    {
+        assert(request.authentication_plan_record_ids.empty());
+    }
 }
 
 template<class T>
@@ -3392,11 +3477,15 @@ void AtlasGsz<T>::randomization()
                 build_analyze_sharing_request(context);
         context.has_analyze_sharing_request = true;
         assert(context.analyze_sharing_request.valid);
+        validate_analyze_sharing_request(
+                context.analyze_sharing_request);
     }
     else
     {
         assert(not context.has_analyze_sharing_request);
         assert(not context.analyze_sharing_request.valid);
+        validate_analyze_sharing_request(
+                context.analyze_sharing_request);
     }
 
     ultimate_failure_context = context;
