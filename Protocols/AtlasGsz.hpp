@@ -1889,10 +1889,28 @@ void AtlasGsz<T>::validate_authentication_material() const
 
     for (auto sharing_id : sharing_ids)
     {
+        auto sharing_decision =
+                authentication_sharing_decision(sharing_id);
+        validate_authentication_sharing_decision(sharing_decision);
+
         auto decisions =
                 authentication_holder_decisions_for_sharing(sharing_id);
         for (const auto& decision : decisions)
             validate_authentication_holder_decision(decision);
+    }
+
+    vector<uint64_t> checkpoint_ids;
+    for (const auto& material : authentication_material_state.records)
+        if (material.checkpoint_id != 0
+                && std::find(checkpoint_ids.begin(), checkpoint_ids.end(),
+                    material.checkpoint_id) == checkpoint_ids.end())
+            checkpoint_ids.push_back(material.checkpoint_id);
+
+    for (auto checkpoint_id : checkpoint_ids)
+    {
+        auto checkpoint_decision =
+                authentication_checkpoint_decision(checkpoint_id);
+        validate_authentication_checkpoint_decision(checkpoint_decision);
     }
 }
 
@@ -2422,6 +2440,237 @@ AtlasGsz<T>::authentication_holder_decisions_for_checkpoint(
 }
 
 template<class T>
+typename AtlasGsz<T>::AuthenticationSharingDecision
+AtlasGsz<T>::authentication_sharing_decision(
+        uint64_t sharing_id) const
+{
+    AuthenticationSharingDecision decision{};
+    const auto* sharing = find_registered_sharing(sharing_id);
+    assert(sharing != 0);
+    if (sharing == 0)
+        return decision;
+
+    decision.valid = true;
+    decision.sharing_id = sharing_id;
+    decision.checkpoint_id = sharing->checkpoint_id;
+    decision.segment_id = sharing->segment_id;
+    decision.expected_holders = int(active_parties().size());
+
+    switch (sharing->kind)
+    {
+    case RegisteredSharingKind::checkpoint_output:
+        decision.kind =
+                AuthenticationRecordKind::checkpoint_output_share;
+        break;
+    case RegisteredSharingKind::analyze_request_snapshot:
+        decision.kind =
+                AuthenticationRecordKind::analyze_request_snapshot;
+        break;
+    case RegisteredSharingKind::none:
+    case RegisteredSharingKind::checkpoint_input:
+    case RegisteredSharingKind::segment_intermediate:
+        break;
+    }
+
+    auto holder_decisions =
+            authentication_holder_decisions_for_sharing(sharing_id);
+    for (const auto& holder_decision : holder_decisions)
+    {
+        validate_authentication_holder_decision(holder_decision);
+        assert(holder_decision.sharing_id == decision.sharing_id);
+        assert(holder_decision.checkpoint_id == decision.checkpoint_id);
+        assert(holder_decision.segment_id == decision.segment_id);
+        assert(is_active_party(holder_decision.holder));
+
+        if (decision.kind == AuthenticationRecordKind::none)
+            decision.kind = holder_decision.kind;
+        else if (holder_decision.kind != AuthenticationRecordKind::none)
+            assert(decision.kind == holder_decision.kind);
+
+        decision.holder_ids.push_back(holder_decision.holder);
+        decision.total_holder_decisions++;
+
+        switch (holder_decision.status)
+        {
+        case AuthenticationHolderDecisionStatus::accepted:
+            decision.accepted_holders++;
+            break;
+        case AuthenticationHolderDecisionStatus::rejected:
+            decision.rejected_holders++;
+            decision.rejected_holder_ids.push_back(
+                    holder_decision.holder);
+            break;
+        case AuthenticationHolderDecisionStatus::not_ready:
+            decision.not_ready_holders++;
+            break;
+        case AuthenticationHolderDecisionStatus::holder_share_unavailable:
+            decision.unavailable_holders++;
+            break;
+        case AuthenticationHolderDecisionStatus::insufficient_votes:
+            decision.insufficient_holders++;
+            break;
+        case AuthenticationHolderDecisionStatus::none:
+            break;
+        }
+    }
+
+    if (decision.rejected_holders > 0)
+        decision.status = AuthenticationSharingDecisionStatus::rejected;
+    else if (decision.unavailable_holders > 0)
+        decision.status =
+                AuthenticationSharingDecisionStatus::
+                    holder_share_unavailable;
+    else if (decision.not_ready_holders > 0)
+        decision.status = AuthenticationSharingDecisionStatus::not_ready;
+    else if (decision.insufficient_holders > 0
+            || decision.total_holder_decisions < decision.expected_holders)
+        decision.status =
+                AuthenticationSharingDecisionStatus::insufficient_votes;
+    else if (decision.expected_holders > 0
+            && decision.accepted_holders == decision.expected_holders
+            && decision.total_holder_decisions == decision.expected_holders)
+        decision.status = AuthenticationSharingDecisionStatus::accepted;
+    else
+        decision.status =
+                AuthenticationSharingDecisionStatus::insufficient_votes;
+
+    validate_authentication_sharing_decision(decision);
+    return decision;
+}
+
+template<class T>
+vector<typename AtlasGsz<T>::AuthenticationSharingDecision>
+AtlasGsz<T>::authentication_sharing_decisions_for_checkpoint(
+        uint64_t checkpoint_id) const
+{
+    vector<AuthenticationSharingDecision> res;
+    const CheckpointRecord* checkpoint = 0;
+    if (verifiable_registry.initialized)
+        for (const auto& candidate : verifiable_registry.checkpoints)
+            if (candidate.checkpoint_id == checkpoint_id)
+            {
+                checkpoint = &candidate;
+                break;
+            }
+    assert(checkpoint != 0);
+    if (checkpoint == 0)
+        return res;
+
+    for (auto sharing_id : checkpoint->sharing_ids)
+    {
+        auto decision = authentication_sharing_decision(sharing_id);
+        validate_authentication_sharing_decision(decision);
+        res.push_back(decision);
+    }
+    return res;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationCheckpointDecision
+AtlasGsz<T>::authentication_checkpoint_decision(
+        uint64_t checkpoint_id) const
+{
+    AuthenticationCheckpointDecision decision{};
+    const CheckpointRecord* checkpoint = 0;
+    if (verifiable_registry.initialized)
+        for (const auto& candidate : verifiable_registry.checkpoints)
+            if (candidate.checkpoint_id == checkpoint_id)
+            {
+                checkpoint = &candidate;
+                break;
+            }
+    assert(checkpoint != 0);
+    if (checkpoint == 0)
+        return decision;
+
+    decision.valid = true;
+    decision.checkpoint_id = checkpoint_id;
+    decision.segment_id = checkpoint->segment_id;
+    decision.expected_sharings = int(checkpoint->sharing_ids.size());
+
+    auto sharing_decisions =
+            authentication_sharing_decisions_for_checkpoint(checkpoint_id);
+    for (const auto& sharing_decision : sharing_decisions)
+    {
+        validate_authentication_sharing_decision(sharing_decision);
+        assert(sharing_decision.checkpoint_id == decision.checkpoint_id);
+        assert(sharing_decision.segment_id == decision.segment_id);
+
+        decision.sharing_ids.push_back(sharing_decision.sharing_id);
+        decision.total_sharing_decisions++;
+
+        switch (sharing_decision.status)
+        {
+        case AuthenticationSharingDecisionStatus::accepted:
+            decision.accepted_sharings++;
+            break;
+        case AuthenticationSharingDecisionStatus::rejected:
+            decision.rejected_sharings++;
+            decision.rejected_sharing_ids.push_back(
+                    sharing_decision.sharing_id);
+            for (auto holder : sharing_decision.rejected_holder_ids)
+                if (std::find(decision.rejected_holder_ids.begin(),
+                        decision.rejected_holder_ids.end(), holder)
+                        == decision.rejected_holder_ids.end())
+                    decision.rejected_holder_ids.push_back(holder);
+            break;
+        case AuthenticationSharingDecisionStatus::not_ready:
+            decision.not_ready_sharings++;
+            break;
+        case AuthenticationSharingDecisionStatus::holder_share_unavailable:
+            decision.unavailable_sharings++;
+            break;
+        case AuthenticationSharingDecisionStatus::insufficient_votes:
+            decision.insufficient_sharings++;
+            break;
+        case AuthenticationSharingDecisionStatus::none:
+            break;
+        }
+    }
+
+    if (decision.rejected_sharings > 0)
+        decision.status = AuthenticationCheckpointDecisionStatus::rejected;
+    else if (decision.unavailable_sharings > 0)
+        decision.status =
+                AuthenticationCheckpointDecisionStatus::
+                    holder_share_unavailable;
+    else if (decision.not_ready_sharings > 0)
+        decision.status =
+                AuthenticationCheckpointDecisionStatus::not_ready;
+    else if (decision.insufficient_sharings > 0
+            || decision.total_sharing_decisions < decision.expected_sharings)
+        decision.status =
+                AuthenticationCheckpointDecisionStatus::insufficient_votes;
+    else if (decision.expected_sharings > 0
+            && decision.accepted_sharings == decision.expected_sharings
+            && decision.total_sharing_decisions == decision.expected_sharings)
+        decision.status = AuthenticationCheckpointDecisionStatus::accepted;
+    else
+        decision.status =
+                AuthenticationCheckpointDecisionStatus::insufficient_votes;
+
+    validate_authentication_checkpoint_decision(decision);
+    return decision;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationCheckpointDecision
+AtlasGsz<T>::current_output_checkpoint_authentication_decision() const
+{
+    AuthenticationCheckpointDecision decision{};
+    assert(segment_lifecycle.initialized);
+    if (not segment_lifecycle.initialized)
+        return decision;
+
+    assert(segment_lifecycle.current_output_checkpoint_id != 0);
+    if (segment_lifecycle.current_output_checkpoint_id == 0)
+        return decision;
+
+    return authentication_checkpoint_decision(
+            segment_lifecycle.current_output_checkpoint_id);
+}
+
+template<class T>
 void AtlasGsz<T>::validate_authentication_vote(
         const AuthenticationVerifierVote& vote) const
 {
@@ -2555,6 +2804,218 @@ void AtlasGsz<T>::validate_authentication_holder_decision(
         assert(decision.kind != AuthenticationRecordKind::none);
         break;
     case AuthenticationHolderDecisionStatus::none:
+        assert(false);
+        break;
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_sharing_decision(
+        const AuthenticationSharingDecision& decision) const
+{
+    assert(decision.valid);
+    assert(decision.status != AuthenticationSharingDecisionStatus::none);
+    assert(decision.sharing_id != 0);
+    assert(0 <= decision.expected_holders);
+    assert(0 <= decision.total_holder_decisions);
+    assert(0 <= decision.accepted_holders);
+    assert(0 <= decision.rejected_holders);
+    assert(0 <= decision.not_ready_holders);
+    assert(0 <= decision.unavailable_holders);
+    assert(0 <= decision.insufficient_holders);
+    assert(decision.total_holder_decisions
+            == int(decision.holder_ids.size()));
+    assert(decision.rejected_holders
+            == int(decision.rejected_holder_ids.size()));
+    assert(decision.total_holder_decisions
+            == decision.accepted_holders + decision.rejected_holders
+            + decision.not_ready_holders + decision.unavailable_holders
+            + decision.insufficient_holders);
+
+    const auto* sharing = find_registered_sharing(decision.sharing_id);
+    assert(sharing != 0);
+    assert(decision.checkpoint_id == sharing->checkpoint_id);
+    assert(decision.segment_id == sharing->segment_id);
+    assert(decision.expected_holders == int(active_parties().size()));
+
+    for (size_t i = 0; i < decision.holder_ids.size(); i++)
+    {
+        int holder = decision.holder_ids.at(i);
+        assert(0 <= holder);
+        assert(holder < P.num_players());
+        assert(is_active_party(holder));
+        for (size_t j = i + 1; j < decision.holder_ids.size(); j++)
+            assert(holder != decision.holder_ids.at(j));
+    }
+
+    for (auto holder : decision.rejected_holder_ids)
+    {
+        assert(std::find(decision.holder_ids.begin(),
+                decision.holder_ids.end(), holder)
+                != decision.holder_ids.end());
+        auto holder_decision =
+                authentication_holder_decision_for_sharing(
+                        decision.sharing_id, holder);
+        assert(holder_decision.status
+                == AuthenticationHolderDecisionStatus::rejected);
+    }
+
+    switch (decision.status)
+    {
+    case AuthenticationSharingDecisionStatus::rejected:
+        assert(decision.rejected_holders > 0);
+        assert(decision.kind != AuthenticationRecordKind::none);
+        break;
+    case AuthenticationSharingDecisionStatus::holder_share_unavailable:
+        assert(decision.rejected_holders == 0);
+        assert(decision.unavailable_holders > 0);
+        break;
+    case AuthenticationSharingDecisionStatus::not_ready:
+        assert(decision.rejected_holders == 0);
+        assert(decision.unavailable_holders == 0);
+        assert(decision.not_ready_holders > 0);
+        break;
+    case AuthenticationSharingDecisionStatus::insufficient_votes:
+        assert(decision.rejected_holders == 0);
+        assert(decision.unavailable_holders == 0);
+        assert(decision.not_ready_holders == 0);
+        assert(decision.insufficient_holders > 0
+                || decision.total_holder_decisions
+                    < decision.expected_holders
+                || decision.expected_holders == 0);
+        break;
+    case AuthenticationSharingDecisionStatus::accepted:
+        assert(decision.expected_holders > 0);
+        assert(decision.total_holder_decisions
+                == decision.expected_holders);
+        assert(decision.accepted_holders == decision.expected_holders);
+        assert(decision.rejected_holders == 0);
+        assert(decision.not_ready_holders == 0);
+        assert(decision.unavailable_holders == 0);
+        assert(decision.insufficient_holders == 0);
+        assert(decision.kind != AuthenticationRecordKind::none);
+        break;
+    case AuthenticationSharingDecisionStatus::none:
+        assert(false);
+        break;
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_checkpoint_decision(
+        const AuthenticationCheckpointDecision& decision) const
+{
+    assert(decision.valid);
+    assert(decision.status != AuthenticationCheckpointDecisionStatus::none);
+    assert(decision.checkpoint_id != 0);
+    assert(0 <= decision.expected_sharings);
+    assert(0 <= decision.total_sharing_decisions);
+    assert(0 <= decision.accepted_sharings);
+    assert(0 <= decision.rejected_sharings);
+    assert(0 <= decision.not_ready_sharings);
+    assert(0 <= decision.unavailable_sharings);
+    assert(0 <= decision.insufficient_sharings);
+    assert(decision.total_sharing_decisions
+            == int(decision.sharing_ids.size()));
+    assert(decision.rejected_sharings
+            == int(decision.rejected_sharing_ids.size()));
+    assert(decision.total_sharing_decisions
+            == decision.accepted_sharings + decision.rejected_sharings
+            + decision.not_ready_sharings + decision.unavailable_sharings
+            + decision.insufficient_sharings);
+
+    const CheckpointRecord* checkpoint = 0;
+    if (verifiable_registry.initialized)
+        for (const auto& candidate : verifiable_registry.checkpoints)
+            if (candidate.checkpoint_id == decision.checkpoint_id)
+            {
+                checkpoint = &candidate;
+                break;
+            }
+    assert(checkpoint != 0);
+    assert(decision.segment_id == checkpoint->segment_id);
+    assert(decision.expected_sharings
+            == int(checkpoint->sharing_ids.size()));
+
+    for (size_t i = 0; i < decision.sharing_ids.size(); i++)
+    {
+        auto sharing_id = decision.sharing_ids.at(i);
+        assert(std::find(checkpoint->sharing_ids.begin(),
+                checkpoint->sharing_ids.end(), sharing_id)
+                != checkpoint->sharing_ids.end());
+        for (size_t j = i + 1; j < decision.sharing_ids.size(); j++)
+            assert(sharing_id != decision.sharing_ids.at(j));
+    }
+
+    for (auto sharing_id : decision.rejected_sharing_ids)
+    {
+        assert(std::find(decision.sharing_ids.begin(),
+                decision.sharing_ids.end(), sharing_id)
+                != decision.sharing_ids.end());
+        auto sharing_decision =
+                authentication_sharing_decision(sharing_id);
+        assert(sharing_decision.status
+                == AuthenticationSharingDecisionStatus::rejected);
+    }
+
+    for (auto holder : decision.rejected_holder_ids)
+    {
+        assert(0 <= holder);
+        assert(holder < P.num_players());
+        assert(is_active_party(holder));
+        bool found = false;
+        for (auto sharing_id : decision.rejected_sharing_ids)
+        {
+            auto sharing_decision =
+                    authentication_sharing_decision(sharing_id);
+            if (std::find(sharing_decision.rejected_holder_ids.begin(),
+                    sharing_decision.rejected_holder_ids.end(), holder)
+                    != sharing_decision.rejected_holder_ids.end())
+            {
+                found = true;
+                break;
+            }
+        }
+        assert(found);
+    }
+
+    switch (decision.status)
+    {
+    case AuthenticationCheckpointDecisionStatus::rejected:
+        assert(decision.rejected_sharings > 0);
+        assert(not decision.rejected_holder_ids.empty());
+        break;
+    case AuthenticationCheckpointDecisionStatus::holder_share_unavailable:
+        assert(decision.rejected_sharings == 0);
+        assert(decision.unavailable_sharings > 0);
+        break;
+    case AuthenticationCheckpointDecisionStatus::not_ready:
+        assert(decision.rejected_sharings == 0);
+        assert(decision.unavailable_sharings == 0);
+        assert(decision.not_ready_sharings > 0);
+        break;
+    case AuthenticationCheckpointDecisionStatus::insufficient_votes:
+        assert(decision.rejected_sharings == 0);
+        assert(decision.unavailable_sharings == 0);
+        assert(decision.not_ready_sharings == 0);
+        assert(decision.insufficient_sharings > 0
+                || decision.total_sharing_decisions
+                    < decision.expected_sharings
+                || decision.expected_sharings == 0);
+        break;
+    case AuthenticationCheckpointDecisionStatus::accepted:
+        assert(decision.expected_sharings > 0);
+        assert(decision.total_sharing_decisions
+                == decision.expected_sharings);
+        assert(decision.accepted_sharings == decision.expected_sharings);
+        assert(decision.rejected_sharings == 0);
+        assert(decision.not_ready_sharings == 0);
+        assert(decision.unavailable_sharings == 0);
+        assert(decision.insufficient_sharings == 0);
+        assert(decision.rejected_sharing_ids.empty());
+        assert(decision.rejected_holder_ids.empty());
+        break;
+    case AuthenticationCheckpointDecisionStatus::none:
         assert(false);
         break;
     }

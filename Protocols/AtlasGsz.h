@@ -472,6 +472,75 @@ private:
         vector<uint64_t> material_ids;
     };
 
+    enum class AuthenticationSharingDecisionStatus
+    {
+        none,
+        not_ready,
+        holder_share_unavailable,
+        insufficient_votes,
+        accepted,
+        rejected,
+    };
+
+    enum class AuthenticationCheckpointDecisionStatus
+    {
+        none,
+        not_ready,
+        holder_share_unavailable,
+        insufficient_votes,
+        accepted,
+        rejected,
+    };
+
+    struct AuthenticationSharingDecision
+    {
+        bool valid = false;
+
+        AuthenticationSharingDecisionStatus status =
+                AuthenticationSharingDecisionStatus::none;
+
+        uint64_t sharing_id = 0;
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        AuthenticationRecordKind kind =
+                AuthenticationRecordKind::none;
+
+        int expected_holders = 0;
+        int total_holder_decisions = 0;
+        int accepted_holders = 0;
+        int rejected_holders = 0;
+        int not_ready_holders = 0;
+        int unavailable_holders = 0;
+        int insufficient_holders = 0;
+
+        vector<int> holder_ids;
+        vector<int> rejected_holder_ids;
+    };
+
+    struct AuthenticationCheckpointDecision
+    {
+        bool valid = false;
+
+        AuthenticationCheckpointDecisionStatus status =
+                AuthenticationCheckpointDecisionStatus::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        int expected_sharings = 0;
+        int total_sharing_decisions = 0;
+        int accepted_sharings = 0;
+        int rejected_sharings = 0;
+        int not_ready_sharings = 0;
+        int unavailable_sharings = 0;
+        int insufficient_sharings = 0;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<int> rejected_holder_ids;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -700,10 +769,23 @@ private:
     vector<AuthenticationHolderDecision>
         authentication_holder_decisions_for_checkpoint(
                 uint64_t checkpoint_id) const;
+    AuthenticationSharingDecision authentication_sharing_decision(
+            uint64_t sharing_id) const;
+    vector<AuthenticationSharingDecision>
+        authentication_sharing_decisions_for_checkpoint(
+                uint64_t checkpoint_id) const;
+    AuthenticationCheckpointDecision authentication_checkpoint_decision(
+            uint64_t checkpoint_id) const;
+    AuthenticationCheckpointDecision
+        current_output_checkpoint_authentication_decision() const;
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
             const AuthenticationHolderDecision& decision) const;
+    void validate_authentication_sharing_decision(
+            const AuthenticationSharingDecision& decision) const;
+    void validate_authentication_checkpoint_decision(
+            const AuthenticationCheckpointDecision& decision) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
