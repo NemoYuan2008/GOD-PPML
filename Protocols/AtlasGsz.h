@@ -621,6 +621,65 @@ private:
         bool would_report_insufficient = false;
     };
 
+    enum class AuthenticationAnalyzePlanAction
+    {
+        none,
+        no_action,
+        would_analyze_rejected_sharings,
+        wait_for_material,
+        holder_share_unavailable,
+        insufficient_votes,
+    };
+
+    struct AuthenticationAnalyzeSharingPlanEntry
+    {
+        bool valid = false;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+        uint64_t sharing_id = 0;
+
+        AuthenticationRecordKind kind =
+                AuthenticationRecordKind::none;
+
+        AuthenticationSharingDecisionStatus sharing_status =
+                AuthenticationSharingDecisionStatus::none;
+
+        vector<int> rejected_holder_ids;
+
+        bool would_analyze_sharing = false;
+        bool performed_action = false;
+    };
+
+    struct AuthenticationAnalyzeSharingPlan
+    {
+        bool valid = false;
+
+        AuthenticationAnalyzePlanAction action =
+                AuthenticationAnalyzePlanAction::none;
+
+        AuthenticationOutcomeHookAction hook_action =
+                AuthenticationOutcomeHookAction::none;
+
+        AuthenticationDecisionOutcomeAction outcome_action =
+                AuthenticationDecisionOutcomeAction::none;
+
+        AuthenticationCheckpointDecisionStatus checkpoint_status =
+                AuthenticationCheckpointDecisionStatus::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<int> rejected_holder_ids;
+
+        vector<AuthenticationAnalyzeSharingPlanEntry> entries;
+
+        bool would_create_analyze_requests = false;
+        bool performed_action = false;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -873,6 +932,17 @@ private:
                 uint64_t checkpoint_id) const;
     AuthenticationOutcomeHookResult
         inspect_current_output_checkpoint_authentication_hook() const;
+    AuthenticationAnalyzeSharingPlanEntry
+        authentication_analyze_plan_entry_for_rejected_sharing(
+                uint64_t sharing_id) const;
+    AuthenticationAnalyzeSharingPlan
+        authentication_analyze_plan_from_hook_result(
+                const AuthenticationOutcomeHookResult& hook_result) const;
+    AuthenticationAnalyzeSharingPlan
+        authentication_analyze_plan_for_checkpoint(
+                uint64_t checkpoint_id) const;
+    AuthenticationAnalyzeSharingPlan
+        current_output_checkpoint_authentication_analyze_plan() const;
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
@@ -885,6 +955,10 @@ private:
             const AuthenticationDecisionOutcome& outcome) const;
     void validate_authentication_outcome_hook_result(
             const AuthenticationOutcomeHookResult& result) const;
+    void validate_authentication_analyze_plan_entry(
+            const AuthenticationAnalyzeSharingPlanEntry& entry) const;
+    void validate_authentication_analyze_sharing_plan(
+            const AuthenticationAnalyzeSharingPlan& plan) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
