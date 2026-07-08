@@ -69,6 +69,17 @@ Expected output for `0-dot` and `0-dot-input`, allowing tiny fixed-point drift:
 [1, 4, 9]
 ```
 
+To run the tests, use:
+
+```sh
+conda run -n pytorch ./compile.py 0-dot-input
+./Scripts/atlas-gsz.sh 0-dot-input # omitting -N defaults to 3 parties 
+./Scripts/atlas-gsz.sh -N 5 0-dot-input # for 5 parties
+```
+
+Note that `./compile.py`-ing a test case will overwrite a previous program's input,
+so be sure to compile when switching cases.
+
 ## Critical implementation constraints
 
 Do not undo the optimized ultimate tuple opening cleanup.
