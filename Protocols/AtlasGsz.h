@@ -1228,6 +1228,84 @@ private:
         uint64_t ultimate_failure_snapshot_id = 0;
     };
 
+    enum class PendingAnalyzeSharingExecutionAttemptRunAction
+    {
+        none,
+        no_retained_execution_attempt,
+        inconsistent_state,
+        ready_authentication_rejection,
+        ready_ultimate_failure,
+    };
+
+    struct PendingAnalyzeSharingExecutionAttemptRunPlan
+    {
+        bool valid = false;
+
+        PendingAnalyzeSharingExecutionAttemptRunAction action =
+                PendingAnalyzeSharingExecutionAttemptRunAction::none;
+
+        bool execution_attempt_record_found = false;
+        bool execution_attempt_record_structurally_valid = false;
+
+        bool metadata_complete = false;
+        bool execution_inputs_metadata_complete = false;
+
+        bool state_updated = false;
+        bool performed_action = false;
+
+        uint64_t execution_attempt_record_id = 0;
+        uint64_t dispatch_record_id = 0;
+        uint64_t pending_request_id = 0;
+        size_t pending_request_index = 0;
+
+        PendingAnalyzeSharingSource source =
+                PendingAnalyzeSharingSource::none;
+        PendingAnalyzeSharingTarget target =
+                PendingAnalyzeSharingTarget::none;
+
+        bool is_authentication_rejection_request = false;
+        bool is_ultimate_failure_request = false;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+        uint64_t sharing_id = 0;
+        uint64_t registered_checkpoint_output_sharing_id = 0;
+
+        uint64_t registered_snapshot_id = 0;
+        uint64_t ultimate_failure_snapshot_id = 0;
+
+        vector<int> rejected_holder_ids;
+
+        vector<uint64_t> authentication_plan_record_ids;
+        vector<uint64_t> authentication_material_record_ids;
+        vector<int> authentication_verifier_ids;
+        vector<int> authentication_holder_ids;
+
+        bool future_requires_analyze_sharing = false;
+        bool future_requires_localization = false;
+        bool future_requires_dispute_control_update = false;
+        bool future_requires_segment_recovery_or_retry = false;
+
+        bool planned_analyze_checkpoint_output_sharing = false;
+        bool planned_analyze_published_snapshot = false;
+        bool planned_localize_corrupted_party_or_disputed_pair = false;
+        bool planned_feed_dispute_control_update = false;
+        bool planned_feed_segment_recovery = false;
+
+        bool would_analyze_checkpoint_output_sharing = false;
+        bool would_analyze_published_snapshot = false;
+        bool would_feed_localization = false;
+        bool would_feed_dispute_control_update = false;
+        bool would_feed_segment_recovery_or_retry = false;
+
+        bool would_execute_analyze_sharing = false;
+        bool would_use_checkpoint_output_sharing = false;
+        bool would_use_published_snapshot = false;
+        bool would_feed_run_localization = false;
+        bool would_feed_run_dispute_control_update = false;
+        bool would_feed_run_segment_recovery_or_retry = false;
+    };
+
     enum class SegmentRecoveryDecisionAction
     {
         none,
@@ -1595,6 +1673,18 @@ private:
             const;
     void validate_pending_analyze_sharing_execution_attempt_result(
             const PendingAnalyzeSharingExecutionAttemptResult& result)
+            const;
+    PendingAnalyzeSharingExecutionAttemptRunPlan
+        inspect_pending_analyze_sharing_execution_attempt_run_plan(
+                uint64_t execution_attempt_record_id) const;
+    PendingAnalyzeSharingExecutionAttemptRunPlan
+        inspect_pending_analyze_sharing_execution_attempt_run_plan_for_dispatch_record(
+                uint64_t dispatch_record_id) const;
+    PendingAnalyzeSharingExecutionAttemptRunPlan
+        inspect_next_pending_analyze_sharing_execution_attempt_run_plan()
+            const;
+    void validate_pending_analyze_sharing_execution_attempt_run_plan(
+            const PendingAnalyzeSharingExecutionAttemptRunPlan& plan)
             const;
     void ensure_verifiable_registry_initialized();
     uint64_t register_verifiable_sharing(

@@ -5276,6 +5276,1318 @@ void AtlasGsz<T>::validate_pending_analyze_sharing_execution_attempt_result(
 }
 
 template<class T>
+typename AtlasGsz<T>::PendingAnalyzeSharingExecutionAttemptRunPlan
+AtlasGsz<T>::inspect_pending_analyze_sharing_execution_attempt_run_plan(
+        uint64_t execution_attempt_record_id) const
+{
+#ifndef NDEBUG
+    bool pending_state_was_initialized =
+            pending_analyze_sharing_state.initialized;
+    uint64_t next_pending_request_id_before =
+            pending_analyze_sharing_state.next_request_id;
+    auto pending_requests_before =
+            pending_analyze_sharing_state.requests;
+
+    bool dispatch_state_was_initialized =
+            pending_analyze_sharing_dispatch_state.initialized;
+    uint64_t next_dispatch_record_id_before =
+            pending_analyze_sharing_dispatch_state
+                .next_dispatch_record_id;
+    auto dispatch_records_before =
+            pending_analyze_sharing_dispatch_state.records;
+
+    bool attempt_state_was_initialized =
+            pending_analyze_sharing_execution_attempt_state.initialized;
+    uint64_t next_attempt_record_id_before =
+            pending_analyze_sharing_execution_attempt_state
+                .next_execution_attempt_record_id;
+    auto attempt_records_before =
+            pending_analyze_sharing_execution_attempt_state.records;
+
+    bool dispute_state_was_initialized =
+            dispute_control_state.initialized;
+    auto corr_before_inspection = dispute_control_state.corr;
+    auto disp_before_inspection = dispute_control_state.disp;
+
+    bool segment_lifecycle_was_initialized =
+            segment_lifecycle.initialized;
+    uint64_t lifecycle_current_segment_before =
+            segment_lifecycle.current_segment_id;
+    uint64_t lifecycle_last_completed_before =
+            segment_lifecycle.last_completed_segment_id;
+    bool lifecycle_segment_open_before = segment_lifecycle.segment_open;
+    bool lifecycle_checkpoint_open_before =
+            segment_lifecycle.checkpoint_open;
+    uint64_t lifecycle_input_checkpoint_before =
+            segment_lifecycle.current_input_checkpoint_id;
+    uint64_t lifecycle_output_checkpoint_before =
+            segment_lifecycle.current_output_checkpoint_id;
+    auto lifecycle_input_sharings_before =
+            segment_lifecycle.current_segment_input_sharings;
+    auto lifecycle_output_sharings_before =
+            segment_lifecycle.current_segment_output_sharings;
+
+    bool verifiable_registry_was_initialized =
+            verifiable_registry.initialized;
+    uint64_t next_sharing_id_before =
+            verifiable_registry.next_sharing_id;
+    uint64_t next_checkpoint_id_before =
+            verifiable_registry.next_checkpoint_id;
+    uint64_t registry_current_segment_before =
+            verifiable_registry.current_segment_id;
+    auto sharings_before = verifiable_registry.sharings;
+    auto checkpoints_before = verifiable_registry.checkpoints;
+
+    bool authentication_plan_was_initialized =
+            authentication_plan_state.initialized;
+    uint64_t next_auth_record_id_before =
+            authentication_plan_state.next_auth_record_id;
+    auto auth_records_before = authentication_plan_state.records;
+
+    bool authentication_material_was_initialized =
+            authentication_material_state.initialized;
+    uint64_t next_material_id_before =
+            authentication_material_state.next_material_id;
+    auto auth_material_before = authentication_material_state.records;
+
+    bool have_ultimate_failure_context_before =
+            have_ultimate_failure_context;
+    bool ultimate_context_valid_before = ultimate_failure_context.valid;
+    int ultimate_context_king_before = ultimate_failure_context.king;
+    UltimateFailureKind ultimate_failure_kind_before =
+            ultimate_failure_context.failure_kind;
+    bool ultimate_decision_valid_before =
+            ultimate_failure_context.decision.valid;
+    UltimateFailureAction ultimate_decision_action_before =
+            ultimate_failure_context.decision.action;
+    UltimateFailureDecisionSource ultimate_decision_source_before =
+            ultimate_failure_context.decision.source;
+    int ultimate_decision_party_before =
+            ultimate_failure_context.decision.party;
+    int ultimate_decision_king_before =
+            ultimate_failure_context.decision.king;
+    int ultimate_decision_counterparty_before =
+            ultimate_failure_context.decision.counterparty;
+    KingEvidenceMismatchKind ultimate_decision_mismatch_before =
+            ultimate_failure_context.decision.mismatch_kind;
+    bool ultimate_fault_valid_before =
+            ultimate_failure_context.fault_localization.valid;
+    FaultLocalizationAction ultimate_fault_action_before =
+            ultimate_failure_context.fault_localization.action;
+    FaultLocalizationSource ultimate_fault_source_before =
+            ultimate_failure_context.fault_localization.source;
+    SharingToAnalyze ultimate_fault_sharing_before =
+            ultimate_failure_context.fault_localization.sharing_to_analyze;
+    int ultimate_fault_corrupted_party_before =
+            ultimate_failure_context.fault_localization.corrupted_party;
+    int ultimate_fault_disputed_a_before =
+            ultimate_failure_context.fault_localization.disputed_party_a;
+    int ultimate_fault_disputed_b_before =
+            ultimate_failure_context.fault_localization.disputed_party_b;
+    int ultimate_fault_primary_before =
+            ultimate_failure_context.fault_localization.primary_party;
+    int ultimate_fault_counterparty_before =
+            ultimate_failure_context.fault_localization.counterparty;
+    bool ultimate_application_valid_before =
+            ultimate_failure_context.fault_application.valid;
+    FaultLocalizationApplicationAction ultimate_application_action_before =
+            ultimate_failure_context.fault_application.action;
+    bool ultimate_application_state_updated_before =
+            ultimate_failure_context.fault_application.state_updated;
+    bool ultimate_has_analyze_request_before =
+            ultimate_failure_context.has_analyze_sharing_request;
+    bool ultimate_analyze_request_valid_before =
+            ultimate_failure_context.analyze_sharing_request.valid;
+    AnalyzeSharingRequestTarget ultimate_analyze_request_target_before =
+            ultimate_failure_context.analyze_sharing_request.target;
+    SharingToAnalyze ultimate_analyze_request_sharing_before =
+            ultimate_failure_context.analyze_sharing_request
+                .sharing_to_analyze;
+    FaultLocalizationSource ultimate_analyze_request_source_before =
+            ultimate_failure_context.analyze_sharing_request.source;
+    bool ultimate_analyze_request_has_snapshot_before =
+            ultimate_failure_context.analyze_sharing_request
+                .has_registered_snapshot;
+    uint64_t ultimate_analyze_request_snapshot_before =
+            ultimate_failure_context.analyze_sharing_request
+                .registered_snapshot_id;
+    bool ultimate_analyze_request_has_plan_before =
+            ultimate_failure_context.analyze_sharing_request
+                .has_authentication_plan;
+    bool ultimate_analyze_request_has_material_before =
+            ultimate_failure_context.analyze_sharing_request
+                .has_authentication_material;
+    auto ultimate_analyze_request_plan_ids_before =
+            ultimate_failure_context.analyze_sharing_request
+                .authentication_plan_record_ids;
+    auto ultimate_analyze_request_material_ids_before =
+            ultimate_failure_context.analyze_sharing_request
+                .authentication_material_record_ids;
+    bool ultimate_has_enqueue_result_before =
+            ultimate_failure_context.has_analyze_enqueue_result;
+    UltimateFailureAnalyzeEnqueueAction ultimate_enqueue_action_before =
+            ultimate_failure_context.analyze_enqueue_result.action;
+    bool ultimate_enqueue_state_updated_before =
+            ultimate_failure_context.analyze_enqueue_result.state_updated;
+    SharingToAnalyze ultimate_enqueue_sharing_before =
+            ultimate_failure_context.analyze_enqueue_result
+                .sharing_to_analyze;
+    FaultLocalizationSource ultimate_enqueue_source_before =
+            ultimate_failure_context.analyze_enqueue_result.source;
+    PendingAnalyzeSharingTarget ultimate_enqueue_target_before =
+            ultimate_failure_context.analyze_enqueue_result.target;
+    uint64_t ultimate_enqueue_request_id_before =
+            ultimate_failure_context.analyze_enqueue_result
+                .pending_request_id;
+    uint64_t ultimate_enqueue_snapshot_id_before =
+            ultimate_failure_context.analyze_enqueue_result
+                .registered_snapshot_id;
+    auto ultimate_enqueue_plan_ids_before =
+            ultimate_failure_context.analyze_enqueue_result
+                .authentication_plan_record_ids;
+    auto ultimate_enqueue_material_ids_before =
+            ultimate_failure_context.analyze_enqueue_result
+                .authentication_material_record_ids;
+
+    auto assert_pending_request_unchanged =
+            [&](const PendingAnalyzeSharingRequest& after,
+                    const PendingAnalyzeSharingRequest& before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.id == before.id);
+        assert(after.source == before.source);
+        assert(after.target == before.target);
+        assert(after.checkpoint_id == before.checkpoint_id);
+        assert(after.segment_id == before.segment_id);
+        assert(after.sharing_id == before.sharing_id);
+        assert(after.registered_snapshot_id
+                == before.registered_snapshot_id);
+        assert(after.authentication_plan_record_ids
+                == before.authentication_plan_record_ids);
+        assert(after.authentication_material_record_ids
+                == before.authentication_material_record_ids);
+        assert(after.rejected_holder_ids == before.rejected_holder_ids);
+    };
+
+    auto assert_dispatch_record_unchanged =
+            [&](const PendingAnalyzeSharingDispatchRecord& after,
+                    const PendingAnalyzeSharingDispatchRecord& before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.dispatch_record_id == before.dispatch_record_id);
+        assert(after.status == before.status);
+        assert(after.pending_request_id == before.pending_request_id);
+        assert(after.pending_request_index
+                == before.pending_request_index);
+        assert(after.source == before.source);
+        assert(after.target == before.target);
+        assert(after.is_authentication_rejection_request
+                == before.is_authentication_rejection_request);
+        assert(after.is_ultimate_failure_request
+                == before.is_ultimate_failure_request);
+        assert(after.checkpoint_id == before.checkpoint_id);
+        assert(after.segment_id == before.segment_id);
+        assert(after.sharing_id == before.sharing_id);
+        assert(after.registered_checkpoint_output_sharing_id
+                == before.registered_checkpoint_output_sharing_id);
+        assert(after.registered_snapshot_id
+                == before.registered_snapshot_id);
+        assert(after.ultimate_failure_snapshot_id
+                == before.ultimate_failure_snapshot_id);
+        assert(after.rejected_holder_ids == before.rejected_holder_ids);
+        assert(after.authentication_plan_record_ids
+                == before.authentication_plan_record_ids);
+        assert(after.authentication_material_record_ids
+                == before.authentication_material_record_ids);
+        assert(after.authentication_verifier_ids
+                == before.authentication_verifier_ids);
+        assert(after.authentication_holder_ids
+                == before.authentication_holder_ids);
+        assert(after.future_requires_analyze_sharing
+                == before.future_requires_analyze_sharing);
+        assert(after.future_requires_localization
+                == before.future_requires_localization);
+        assert(after.future_requires_dispute_control_update
+                == before.future_requires_dispute_control_update);
+        assert(after.future_requires_segment_recovery_or_retry
+                == before.future_requires_segment_recovery_or_retry);
+        assert(after.planned_analyze_checkpoint_output_sharing
+                == before.planned_analyze_checkpoint_output_sharing);
+        assert(after.planned_analyze_published_snapshot
+                == before.planned_analyze_published_snapshot);
+        assert(after.planned_localize_corrupted_party_or_disputed_pair
+                == before.planned_localize_corrupted_party_or_disputed_pair);
+        assert(after.planned_feed_dispute_control_update
+                == before.planned_feed_dispute_control_update);
+        assert(after.planned_feed_segment_recovery
+                == before.planned_feed_segment_recovery);
+    };
+
+    auto assert_attempt_record_unchanged =
+            [&](const PendingAnalyzeSharingExecutionAttemptRecord& after,
+                    const PendingAnalyzeSharingExecutionAttemptRecord&
+                        before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.execution_attempt_record_id
+                == before.execution_attempt_record_id);
+        assert(after.status == before.status);
+        assert(after.dispatch_record_id == before.dispatch_record_id);
+        assert(after.pending_request_id == before.pending_request_id);
+        assert(after.pending_request_index
+                == before.pending_request_index);
+        assert(after.source == before.source);
+        assert(after.target == before.target);
+        assert(after.is_authentication_rejection_request
+                == before.is_authentication_rejection_request);
+        assert(after.is_ultimate_failure_request
+                == before.is_ultimate_failure_request);
+        assert(after.checkpoint_id == before.checkpoint_id);
+        assert(after.segment_id == before.segment_id);
+        assert(after.sharing_id == before.sharing_id);
+        assert(after.registered_checkpoint_output_sharing_id
+                == before.registered_checkpoint_output_sharing_id);
+        assert(after.registered_snapshot_id
+                == before.registered_snapshot_id);
+        assert(after.ultimate_failure_snapshot_id
+                == before.ultimate_failure_snapshot_id);
+        assert(after.rejected_holder_ids == before.rejected_holder_ids);
+        assert(after.authentication_plan_record_ids
+                == before.authentication_plan_record_ids);
+        assert(after.authentication_material_record_ids
+                == before.authentication_material_record_ids);
+        assert(after.authentication_verifier_ids
+                == before.authentication_verifier_ids);
+        assert(after.authentication_holder_ids
+                == before.authentication_holder_ids);
+        assert(after.future_requires_analyze_sharing
+                == before.future_requires_analyze_sharing);
+        assert(after.future_requires_localization
+                == before.future_requires_localization);
+        assert(after.future_requires_dispute_control_update
+                == before.future_requires_dispute_control_update);
+        assert(after.future_requires_segment_recovery_or_retry
+                == before.future_requires_segment_recovery_or_retry);
+        assert(after.planned_analyze_checkpoint_output_sharing
+                == before.planned_analyze_checkpoint_output_sharing);
+        assert(after.planned_analyze_published_snapshot
+                == before.planned_analyze_published_snapshot);
+        assert(after.planned_localize_corrupted_party_or_disputed_pair
+                == before.planned_localize_corrupted_party_or_disputed_pair);
+        assert(after.planned_feed_dispute_control_update
+                == before.planned_feed_dispute_control_update);
+        assert(after.planned_feed_segment_recovery
+                == before.planned_feed_segment_recovery);
+        assert(after.would_analyze_checkpoint_output_sharing
+                == before.would_analyze_checkpoint_output_sharing);
+        assert(after.would_analyze_published_snapshot
+                == before.would_analyze_published_snapshot);
+        assert(after.would_feed_localization
+                == before.would_feed_localization);
+        assert(after.would_feed_dispute_control_update
+                == before.would_feed_dispute_control_update);
+        assert(after.would_feed_segment_recovery_or_retry
+                == before.would_feed_segment_recovery_or_retry);
+        assert(after.metadata_complete == before.metadata_complete);
+        assert(after.execution_inputs_metadata_complete
+                == before.execution_inputs_metadata_complete);
+    };
+
+    auto assert_sharing_unchanged =
+            [&](const RegisteredVerifiableSharing& after,
+                    const RegisteredVerifiableSharing& before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.id == before.id);
+        assert(after.degree == before.degree);
+        assert(after.kind == before.kind);
+        assert(after.status == before.status);
+        assert(after.has_published_snapshot
+                == before.has_published_snapshot);
+        assert(after.published_shares == before.published_shares);
+        assert(after.segment_id == before.segment_id);
+        assert(after.checkpoint_id == before.checkpoint_id);
+    };
+
+    auto assert_checkpoint_unchanged =
+            [&](const CheckpointRecord& after,
+                    const CheckpointRecord& before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.checkpoint_id == before.checkpoint_id);
+        assert(after.segment_id == before.segment_id);
+        assert(after.sharing_ids == before.sharing_ids);
+        assert(after.sealed == before.sealed);
+        assert(after.authentication_requested
+                == before.authentication_requested);
+        assert(after.authenticated == before.authenticated);
+    };
+
+    auto assert_auth_record_unchanged =
+            [&](const AuthenticationPlanRecord& after,
+                    const AuthenticationPlanRecord& before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.id == before.id);
+        assert(after.sharing_id == before.sharing_id);
+        assert(after.checkpoint_id == before.checkpoint_id);
+        assert(after.segment_id == before.segment_id);
+        assert(after.verifier == before.verifier);
+        assert(after.holder == before.holder);
+        assert(after.kind == before.kind);
+        assert(after.status == before.status);
+    };
+
+    auto assert_auth_material_unchanged =
+            [&](const AuthenticationMaterialRecord& after,
+                    const AuthenticationMaterialRecord& before)
+    {
+        assert(after.valid == before.valid);
+        assert(after.id == before.id);
+        assert(after.auth_record_id == before.auth_record_id);
+        assert(after.sharing_id == before.sharing_id);
+        assert(after.checkpoint_id == before.checkpoint_id);
+        assert(after.segment_id == before.segment_id);
+        assert(after.verifier == before.verifier);
+        assert(after.holder == before.holder);
+        assert(after.kind == before.kind);
+        assert(after.status == before.status);
+        assert(after.has_verifier_key == before.has_verifier_key);
+        assert(after.has_holder_tag == before.has_holder_tag);
+    };
+
+    auto assert_inspection_scope = [&]()
+    {
+        assert(pending_analyze_sharing_state.initialized
+                == pending_state_was_initialized);
+        assert(pending_analyze_sharing_state.next_request_id
+                == next_pending_request_id_before);
+        assert(pending_analyze_sharing_state.requests.size()
+                == pending_requests_before.size());
+        for (size_t i = 0;
+                i < pending_analyze_sharing_state.requests.size(); i++)
+            assert_pending_request_unchanged(
+                    pending_analyze_sharing_state.requests.at(i),
+                    pending_requests_before.at(i));
+
+        assert(pending_analyze_sharing_dispatch_state.initialized
+                == dispatch_state_was_initialized);
+        assert(pending_analyze_sharing_dispatch_state
+                .next_dispatch_record_id
+                == next_dispatch_record_id_before);
+        assert(pending_analyze_sharing_dispatch_state.records.size()
+                == dispatch_records_before.size());
+        for (size_t i = 0;
+                i < pending_analyze_sharing_dispatch_state
+                    .records.size();
+                i++)
+            assert_dispatch_record_unchanged(
+                    pending_analyze_sharing_dispatch_state
+                        .records.at(i),
+                    dispatch_records_before.at(i));
+
+        assert(pending_analyze_sharing_execution_attempt_state
+                .initialized == attempt_state_was_initialized);
+        assert(pending_analyze_sharing_execution_attempt_state
+                .next_execution_attempt_record_id
+                == next_attempt_record_id_before);
+        assert(pending_analyze_sharing_execution_attempt_state
+                .records.size() == attempt_records_before.size());
+        for (size_t i = 0; i < attempt_records_before.size(); i++)
+            assert_attempt_record_unchanged(
+                    pending_analyze_sharing_execution_attempt_state
+                        .records.at(i),
+                    attempt_records_before.at(i));
+
+        assert(dispute_control_state.initialized
+                == dispute_state_was_initialized);
+        assert(dispute_control_state.corr == corr_before_inspection);
+        assert(dispute_control_state.disp == disp_before_inspection);
+
+        assert(segment_lifecycle.initialized
+                == segment_lifecycle_was_initialized);
+        assert(segment_lifecycle.current_segment_id
+                == lifecycle_current_segment_before);
+        assert(segment_lifecycle.last_completed_segment_id
+                == lifecycle_last_completed_before);
+        assert(segment_lifecycle.segment_open
+                == lifecycle_segment_open_before);
+        assert(segment_lifecycle.checkpoint_open
+                == lifecycle_checkpoint_open_before);
+        assert(segment_lifecycle.current_input_checkpoint_id
+                == lifecycle_input_checkpoint_before);
+        assert(segment_lifecycle.current_output_checkpoint_id
+                == lifecycle_output_checkpoint_before);
+        assert(segment_lifecycle.current_segment_input_sharings
+                == lifecycle_input_sharings_before);
+        assert(segment_lifecycle.current_segment_output_sharings
+                == lifecycle_output_sharings_before);
+
+        assert(verifiable_registry.initialized
+                == verifiable_registry_was_initialized);
+        assert(verifiable_registry.next_sharing_id
+                == next_sharing_id_before);
+        assert(verifiable_registry.next_checkpoint_id
+                == next_checkpoint_id_before);
+        assert(verifiable_registry.current_segment_id
+                == registry_current_segment_before);
+        assert(verifiable_registry.sharings.size()
+                == sharings_before.size());
+        assert(verifiable_registry.checkpoints.size()
+                == checkpoints_before.size());
+        for (size_t i = 0; i < verifiable_registry.sharings.size(); i++)
+            assert_sharing_unchanged(
+                    verifiable_registry.sharings.at(i),
+                    sharings_before.at(i));
+        for (size_t i = 0;
+                i < verifiable_registry.checkpoints.size(); i++)
+            assert_checkpoint_unchanged(
+                    verifiable_registry.checkpoints.at(i),
+                    checkpoints_before.at(i));
+
+        assert(authentication_plan_state.initialized
+                == authentication_plan_was_initialized);
+        assert(authentication_plan_state.next_auth_record_id
+                == next_auth_record_id_before);
+        assert(authentication_plan_state.records.size()
+                == auth_records_before.size());
+        for (size_t i = 0;
+                i < authentication_plan_state.records.size(); i++)
+            assert_auth_record_unchanged(
+                    authentication_plan_state.records.at(i),
+                    auth_records_before.at(i));
+
+        assert(authentication_material_state.initialized
+                == authentication_material_was_initialized);
+        assert(authentication_material_state.next_material_id
+                == next_material_id_before);
+        assert(authentication_material_state.records.size()
+                == auth_material_before.size());
+        for (size_t i = 0;
+                i < authentication_material_state.records.size(); i++)
+            assert_auth_material_unchanged(
+                    authentication_material_state.records.at(i),
+                    auth_material_before.at(i));
+
+        assert(have_ultimate_failure_context
+                == have_ultimate_failure_context_before);
+        assert(ultimate_failure_context.valid
+                == ultimate_context_valid_before);
+        assert(ultimate_failure_context.king
+                == ultimate_context_king_before);
+        assert(ultimate_failure_context.failure_kind
+                == ultimate_failure_kind_before);
+        assert(ultimate_failure_context.decision.valid
+                == ultimate_decision_valid_before);
+        assert(ultimate_failure_context.decision.action
+                == ultimate_decision_action_before);
+        assert(ultimate_failure_context.decision.source
+                == ultimate_decision_source_before);
+        assert(ultimate_failure_context.decision.party
+                == ultimate_decision_party_before);
+        assert(ultimate_failure_context.decision.king
+                == ultimate_decision_king_before);
+        assert(ultimate_failure_context.decision.counterparty
+                == ultimate_decision_counterparty_before);
+        assert(ultimate_failure_context.decision.mismatch_kind
+                == ultimate_decision_mismatch_before);
+        assert(ultimate_failure_context.fault_localization.valid
+                == ultimate_fault_valid_before);
+        assert(ultimate_failure_context.fault_localization.action
+                == ultimate_fault_action_before);
+        assert(ultimate_failure_context.fault_localization.source
+                == ultimate_fault_source_before);
+        assert(ultimate_failure_context.fault_localization
+                .sharing_to_analyze == ultimate_fault_sharing_before);
+        assert(ultimate_failure_context.fault_localization
+                .corrupted_party
+                == ultimate_fault_corrupted_party_before);
+        assert(ultimate_failure_context.fault_localization
+                .disputed_party_a == ultimate_fault_disputed_a_before);
+        assert(ultimate_failure_context.fault_localization
+                .disputed_party_b == ultimate_fault_disputed_b_before);
+        assert(ultimate_failure_context.fault_localization.primary_party
+                == ultimate_fault_primary_before);
+        assert(ultimate_failure_context.fault_localization.counterparty
+                == ultimate_fault_counterparty_before);
+        assert(ultimate_failure_context.fault_application.valid
+                == ultimate_application_valid_before);
+        assert(ultimate_failure_context.fault_application.action
+                == ultimate_application_action_before);
+        assert(ultimate_failure_context.fault_application.state_updated
+                == ultimate_application_state_updated_before);
+        assert(ultimate_failure_context.has_analyze_sharing_request
+                == ultimate_has_analyze_request_before);
+        assert(ultimate_failure_context.analyze_sharing_request.valid
+                == ultimate_analyze_request_valid_before);
+        assert(ultimate_failure_context.analyze_sharing_request.target
+                == ultimate_analyze_request_target_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .sharing_to_analyze
+                == ultimate_analyze_request_sharing_before);
+        assert(ultimate_failure_context.analyze_sharing_request.source
+                == ultimate_analyze_request_source_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .has_registered_snapshot
+                == ultimate_analyze_request_has_snapshot_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .registered_snapshot_id
+                == ultimate_analyze_request_snapshot_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .has_authentication_plan
+                == ultimate_analyze_request_has_plan_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .has_authentication_material
+                == ultimate_analyze_request_has_material_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .authentication_plan_record_ids
+                == ultimate_analyze_request_plan_ids_before);
+        assert(ultimate_failure_context.analyze_sharing_request
+                .authentication_material_record_ids
+                == ultimate_analyze_request_material_ids_before);
+        assert(ultimate_failure_context.has_analyze_enqueue_result
+                == ultimate_has_enqueue_result_before);
+        assert(ultimate_failure_context.analyze_enqueue_result.action
+                == ultimate_enqueue_action_before);
+        assert(ultimate_failure_context.analyze_enqueue_result
+                .state_updated == ultimate_enqueue_state_updated_before);
+        assert(ultimate_failure_context.analyze_enqueue_result
+                .sharing_to_analyze == ultimate_enqueue_sharing_before);
+        assert(ultimate_failure_context.analyze_enqueue_result.source
+                == ultimate_enqueue_source_before);
+        assert(ultimate_failure_context.analyze_enqueue_result.target
+                == ultimate_enqueue_target_before);
+        assert(ultimate_failure_context.analyze_enqueue_result
+                .pending_request_id
+                == ultimate_enqueue_request_id_before);
+        assert(ultimate_failure_context.analyze_enqueue_result
+                .registered_snapshot_id
+                == ultimate_enqueue_snapshot_id_before);
+        assert(ultimate_failure_context.analyze_enqueue_result
+                .authentication_plan_record_ids
+                == ultimate_enqueue_plan_ids_before);
+        assert(ultimate_failure_context.analyze_enqueue_result
+                .authentication_material_record_ids
+                == ultimate_enqueue_material_ids_before);
+    };
+#endif
+
+    PendingAnalyzeSharingExecutionAttemptRunPlan plan{};
+    plan.valid = true;
+
+    auto copy_record_to_plan =
+            [&](const PendingAnalyzeSharingExecutionAttemptRecord& record)
+    {
+        plan.execution_attempt_record_id =
+                record.execution_attempt_record_id;
+        plan.dispatch_record_id = record.dispatch_record_id;
+        plan.pending_request_id = record.pending_request_id;
+        plan.pending_request_index = record.pending_request_index;
+        plan.source = record.source;
+        plan.target = record.target;
+        plan.is_authentication_rejection_request =
+                record.is_authentication_rejection_request;
+        plan.is_ultimate_failure_request =
+                record.is_ultimate_failure_request;
+        plan.checkpoint_id = record.checkpoint_id;
+        plan.segment_id = record.segment_id;
+        plan.sharing_id = record.sharing_id;
+        plan.registered_checkpoint_output_sharing_id =
+                record.registered_checkpoint_output_sharing_id;
+        plan.registered_snapshot_id = record.registered_snapshot_id;
+        plan.ultimate_failure_snapshot_id =
+                record.ultimate_failure_snapshot_id;
+        plan.rejected_holder_ids = record.rejected_holder_ids;
+        plan.authentication_plan_record_ids =
+                record.authentication_plan_record_ids;
+        plan.authentication_material_record_ids =
+                record.authentication_material_record_ids;
+        plan.authentication_verifier_ids =
+                record.authentication_verifier_ids;
+        plan.authentication_holder_ids =
+                record.authentication_holder_ids;
+        plan.future_requires_analyze_sharing =
+                record.future_requires_analyze_sharing;
+        plan.future_requires_localization =
+                record.future_requires_localization;
+        plan.future_requires_dispute_control_update =
+                record.future_requires_dispute_control_update;
+        plan.future_requires_segment_recovery_or_retry =
+                record.future_requires_segment_recovery_or_retry;
+        plan.planned_analyze_checkpoint_output_sharing =
+                record.planned_analyze_checkpoint_output_sharing;
+        plan.planned_analyze_published_snapshot =
+                record.planned_analyze_published_snapshot;
+        plan.planned_localize_corrupted_party_or_disputed_pair =
+                record.planned_localize_corrupted_party_or_disputed_pair;
+        plan.planned_feed_dispute_control_update =
+                record.planned_feed_dispute_control_update;
+        plan.planned_feed_segment_recovery =
+                record.planned_feed_segment_recovery;
+        plan.would_analyze_checkpoint_output_sharing =
+                record.would_analyze_checkpoint_output_sharing;
+        plan.would_analyze_published_snapshot =
+                record.would_analyze_published_snapshot;
+        plan.would_feed_localization =
+                record.would_feed_localization;
+        plan.would_feed_dispute_control_update =
+                record.would_feed_dispute_control_update;
+        plan.would_feed_segment_recovery_or_retry =
+                record.would_feed_segment_recovery_or_retry;
+        plan.metadata_complete = record.metadata_complete;
+        plan.execution_inputs_metadata_complete =
+                record.execution_inputs_metadata_complete;
+        plan.would_execute_analyze_sharing =
+                record.future_requires_analyze_sharing
+                && (record.would_analyze_checkpoint_output_sharing
+                    || record.would_analyze_published_snapshot);
+        plan.would_use_checkpoint_output_sharing =
+                record.would_analyze_checkpoint_output_sharing;
+        plan.would_use_published_snapshot =
+                record.would_analyze_published_snapshot;
+        plan.would_feed_run_localization =
+                record.would_feed_localization;
+        plan.would_feed_run_dispute_control_update =
+                record.would_feed_dispute_control_update;
+        plan.would_feed_run_segment_recovery_or_retry =
+                record.would_feed_segment_recovery_or_retry;
+    };
+
+    auto finish =
+            [&](PendingAnalyzeSharingExecutionAttemptRunAction action)
+                -> PendingAnalyzeSharingExecutionAttemptRunPlan
+    {
+        plan.action = action;
+        validate_pending_analyze_sharing_execution_attempt_run_plan(plan);
+#ifndef NDEBUG
+        assert_inspection_scope();
+#endif
+        return plan;
+    };
+
+    auto party_in_range = [&](int party)
+    {
+        return 0 <= party && party < P.num_players();
+    };
+
+    auto party_list_valid = [&](const vector<int>& parties)
+    {
+        for (size_t i = 0; i < parties.size(); i++)
+        {
+            int party = parties.at(i);
+            if (not party_in_range(party))
+                return false;
+            for (size_t j = i + 1; j < parties.size(); j++)
+                if (party == parties.at(j))
+                    return false;
+        }
+        return true;
+    };
+
+    auto record_matches_readiness =
+            [&](const PendingAnalyzeSharingExecutionAttemptRecord& record,
+                    const PendingAnalyzeSharingExecutionReadinessPlan&
+                        readiness)
+    {
+        bool readiness_ready =
+                readiness.action
+                    == PendingAnalyzeSharingExecutionReadinessAction::
+                        ready_authentication_rejection
+                || readiness.action
+                    == PendingAnalyzeSharingExecutionReadinessAction::
+                        ready_ultimate_failure;
+
+        return readiness_ready
+            && readiness.dispatch_record_id == record.dispatch_record_id
+            && readiness.pending_request_id == record.pending_request_id
+            && readiness.pending_request_index
+                == record.pending_request_index
+            && readiness.source == record.source
+            && readiness.target == record.target
+            && readiness.is_authentication_rejection_request
+                == record.is_authentication_rejection_request
+            && readiness.is_ultimate_failure_request
+                == record.is_ultimate_failure_request
+            && readiness.checkpoint_id == record.checkpoint_id
+            && readiness.segment_id == record.segment_id
+            && readiness.sharing_id == record.sharing_id
+            && readiness.registered_checkpoint_output_sharing_id
+                == record.registered_checkpoint_output_sharing_id
+            && readiness.registered_snapshot_id
+                == record.registered_snapshot_id
+            && readiness.ultimate_failure_snapshot_id
+                == record.ultimate_failure_snapshot_id
+            && readiness.rejected_holder_ids == record.rejected_holder_ids
+            && readiness.authentication_plan_record_ids
+                == record.authentication_plan_record_ids
+            && readiness.authentication_material_record_ids
+                == record.authentication_material_record_ids
+            && readiness.authentication_verifier_ids
+                == record.authentication_verifier_ids
+            && readiness.authentication_holder_ids
+                == record.authentication_holder_ids
+            && readiness.future_requires_analyze_sharing
+                == record.future_requires_analyze_sharing
+            && readiness.future_requires_localization
+                == record.future_requires_localization
+            && readiness.future_requires_dispute_control_update
+                == record.future_requires_dispute_control_update
+            && readiness.future_requires_segment_recovery_or_retry
+                == record.future_requires_segment_recovery_or_retry
+            && readiness.planned_analyze_checkpoint_output_sharing
+                == record.planned_analyze_checkpoint_output_sharing
+            && readiness.planned_analyze_published_snapshot
+                == record.planned_analyze_published_snapshot
+            && readiness.planned_localize_corrupted_party_or_disputed_pair
+                == record.planned_localize_corrupted_party_or_disputed_pair
+            && readiness.planned_feed_dispute_control_update
+                == record.planned_feed_dispute_control_update
+            && readiness.planned_feed_segment_recovery
+                == record.planned_feed_segment_recovery
+            && readiness.would_analyze_checkpoint_output_sharing
+                == record.would_analyze_checkpoint_output_sharing
+            && readiness.would_analyze_published_snapshot
+                == record.would_analyze_published_snapshot
+            && readiness.would_feed_localization
+                == record.would_feed_localization
+            && readiness.would_feed_dispute_control_update
+                == record.would_feed_dispute_control_update
+            && readiness.would_feed_segment_recovery_or_retry
+                == record.would_feed_segment_recovery_or_retry
+            && readiness.metadata_complete == record.metadata_complete
+            && readiness.execution_inputs_metadata_complete
+                == record.execution_inputs_metadata_complete;
+    };
+
+    const auto* record =
+            find_pending_analyze_sharing_execution_attempt_record(
+                    execution_attempt_record_id);
+    if (record == 0)
+        return finish(
+                PendingAnalyzeSharingExecutionAttemptRunAction::
+                    no_retained_execution_attempt);
+
+    plan.execution_attempt_record_found = true;
+    copy_record_to_plan(*record);
+
+    plan.execution_attempt_record_structurally_valid =
+            record->valid
+            && record->execution_attempt_record_id != 0
+            && record->dispatch_record_id != 0
+            && record->pending_request_id != 0
+            && record->status
+                == PendingAnalyzeSharingExecutionAttemptRecordStatus::
+                    retained
+            && record->source != PendingAnalyzeSharingSource::none
+            && record->target != PendingAnalyzeSharingTarget::none
+            && (record->is_authentication_rejection_request
+                != record->is_ultimate_failure_request)
+            && party_list_valid(record->authentication_verifier_ids)
+            && party_list_valid(record->authentication_holder_ids);
+
+    if (not plan.execution_attempt_record_structurally_valid)
+        return finish(
+                PendingAnalyzeSharingExecutionAttemptRunAction::
+                    inconsistent_state);
+
+    auto readiness =
+            inspect_pending_analyze_sharing_execution_plan_for_dispatch_record(
+                    record->dispatch_record_id);
+    validate_pending_analyze_sharing_execution_plan(readiness);
+
+    if (not record_matches_readiness(*record, readiness)
+            || not record->metadata_complete
+            || not record->execution_inputs_metadata_complete)
+        return finish(
+                PendingAnalyzeSharingExecutionAttemptRunAction::
+                    inconsistent_state);
+
+    validate_pending_analyze_sharing_execution_attempt_record(*record);
+
+    if (record->is_authentication_rejection_request
+            && record->source
+                == PendingAnalyzeSharingSource::authentication_rejection)
+    {
+        bool authentication_rejection_ready =
+                readiness.action
+                    == PendingAnalyzeSharingExecutionReadinessAction::
+                        ready_authentication_rejection
+                && record->target
+                    == PendingAnalyzeSharingTarget::
+                        registered_checkpoint_output_sharing
+                && record->checkpoint_id != 0
+                && record->segment_id != 0
+                && record->sharing_id != 0
+                && record->registered_checkpoint_output_sharing_id
+                    == record->sharing_id
+                && record->registered_snapshot_id == 0
+                && record->ultimate_failure_snapshot_id == 0
+                && not record->rejected_holder_ids.empty()
+                && record->future_requires_analyze_sharing
+                && record->future_requires_localization
+                && record->future_requires_dispute_control_update
+                && record->future_requires_segment_recovery_or_retry
+                && record->planned_analyze_checkpoint_output_sharing
+                && not record->planned_analyze_published_snapshot
+                && record->planned_localize_corrupted_party_or_disputed_pair
+                && record->planned_feed_dispute_control_update
+                && record->planned_feed_segment_recovery
+                && record->would_analyze_checkpoint_output_sharing
+                && not record->would_analyze_published_snapshot
+                && record->would_feed_localization
+                && record->would_feed_dispute_control_update
+                && record->would_feed_segment_recovery_or_retry
+                && plan.would_execute_analyze_sharing
+                && plan.would_use_checkpoint_output_sharing
+                && not plan.would_use_published_snapshot
+                && plan.would_feed_run_localization
+                && plan.would_feed_run_dispute_control_update
+                && plan.would_feed_run_segment_recovery_or_retry;
+
+        if (not authentication_rejection_ready)
+            return finish(
+                    PendingAnalyzeSharingExecutionAttemptRunAction::
+                        inconsistent_state);
+
+        return finish(
+                PendingAnalyzeSharingExecutionAttemptRunAction::
+                    ready_authentication_rejection);
+    }
+
+    if (record->is_ultimate_failure_request
+            && record->source == PendingAnalyzeSharingSource::ultimate_failure)
+    {
+        bool ultimate_failure_ready =
+                readiness.action
+                    == PendingAnalyzeSharingExecutionReadinessAction::
+                        ready_ultimate_failure
+                && (record->target
+                    == PendingAnalyzeSharingTarget::published_alpha
+                    || record->target
+                        == PendingAnalyzeSharingTarget::published_beta)
+                && record->checkpoint_id == 0
+                && record->segment_id == 0
+                && record->sharing_id == 0
+                && record->registered_checkpoint_output_sharing_id == 0
+                && record->registered_snapshot_id != 0
+                && record->ultimate_failure_snapshot_id
+                    == record->registered_snapshot_id
+                && record->rejected_holder_ids.empty()
+                && record->future_requires_analyze_sharing
+                && record->future_requires_localization
+                && record->future_requires_dispute_control_update
+                && record->planned_analyze_published_snapshot
+                && not record->planned_analyze_checkpoint_output_sharing
+                && record->planned_localize_corrupted_party_or_disputed_pair
+                && record->planned_feed_dispute_control_update
+                && record->would_analyze_published_snapshot
+                && not record->would_analyze_checkpoint_output_sharing
+                && record->would_feed_localization
+                && record->would_feed_dispute_control_update
+                && plan.would_execute_analyze_sharing
+                && not plan.would_use_checkpoint_output_sharing
+                && plan.would_use_published_snapshot
+                && plan.would_feed_run_localization
+                && plan.would_feed_run_dispute_control_update
+                && plan.would_feed_run_segment_recovery_or_retry
+                    == record->would_feed_segment_recovery_or_retry;
+
+        if (not ultimate_failure_ready)
+            return finish(
+                    PendingAnalyzeSharingExecutionAttemptRunAction::
+                        inconsistent_state);
+
+        return finish(
+                PendingAnalyzeSharingExecutionAttemptRunAction::
+                    ready_ultimate_failure);
+    }
+
+    return finish(
+            PendingAnalyzeSharingExecutionAttemptRunAction::
+                inconsistent_state);
+}
+
+template<class T>
+typename AtlasGsz<T>::PendingAnalyzeSharingExecutionAttemptRunPlan
+AtlasGsz<T>::
+inspect_pending_analyze_sharing_execution_attempt_run_plan_for_dispatch_record(
+        uint64_t dispatch_record_id) const
+{
+    if (pending_analyze_sharing_execution_attempt_state.initialized)
+        for (const auto& record :
+                pending_analyze_sharing_execution_attempt_state.records)
+            if (record.dispatch_record_id == dispatch_record_id)
+                return
+                    inspect_pending_analyze_sharing_execution_attempt_run_plan(
+                            record.execution_attempt_record_id);
+
+    auto plan =
+            inspect_pending_analyze_sharing_execution_attempt_run_plan(0);
+    plan.dispatch_record_id = dispatch_record_id;
+    validate_pending_analyze_sharing_execution_attempt_run_plan(plan);
+    return plan;
+}
+
+template<class T>
+typename AtlasGsz<T>::PendingAnalyzeSharingExecutionAttemptRunPlan
+AtlasGsz<T>::
+inspect_next_pending_analyze_sharing_execution_attempt_run_plan() const
+{
+    if (pending_analyze_sharing_execution_attempt_state.initialized
+            && not pending_analyze_sharing_execution_attempt_state
+                .records.empty())
+        return
+            inspect_pending_analyze_sharing_execution_attempt_run_plan(
+                    pending_analyze_sharing_execution_attempt_state
+                        .records.front().execution_attempt_record_id);
+
+    return inspect_pending_analyze_sharing_execution_attempt_run_plan(0);
+}
+
+template<class T>
+void AtlasGsz<T>::
+validate_pending_analyze_sharing_execution_attempt_run_plan(
+        const PendingAnalyzeSharingExecutionAttemptRunPlan& plan) const
+{
+#ifndef NDEBUG
+    bool pending_state_was_initialized =
+            pending_analyze_sharing_state.initialized;
+    uint64_t next_pending_request_id_before =
+            pending_analyze_sharing_state.next_request_id;
+    size_t pending_request_count_before =
+            pending_analyze_sharing_state.requests.size();
+    bool dispatch_state_was_initialized =
+            pending_analyze_sharing_dispatch_state.initialized;
+    uint64_t next_dispatch_record_id_before =
+            pending_analyze_sharing_dispatch_state
+                .next_dispatch_record_id;
+    size_t dispatch_record_count_before =
+            pending_analyze_sharing_dispatch_state.records.size();
+    bool attempt_state_was_initialized =
+            pending_analyze_sharing_execution_attempt_state.initialized;
+    uint64_t next_attempt_record_id_before =
+            pending_analyze_sharing_execution_attempt_state
+                .next_execution_attempt_record_id;
+    size_t attempt_record_count_before =
+            pending_analyze_sharing_execution_attempt_state.records.size();
+    bool dispute_state_was_initialized =
+            dispute_control_state.initialized;
+    auto corr_before_validation = dispute_control_state.corr;
+    auto disp_before_validation = dispute_control_state.disp;
+    bool segment_lifecycle_was_initialized =
+            segment_lifecycle.initialized;
+    uint64_t lifecycle_current_segment_before =
+            segment_lifecycle.current_segment_id;
+    uint64_t lifecycle_last_completed_before =
+            segment_lifecycle.last_completed_segment_id;
+    bool lifecycle_segment_open_before = segment_lifecycle.segment_open;
+    bool lifecycle_checkpoint_open_before =
+            segment_lifecycle.checkpoint_open;
+    uint64_t lifecycle_input_checkpoint_before =
+            segment_lifecycle.current_input_checkpoint_id;
+    uint64_t lifecycle_output_checkpoint_before =
+            segment_lifecycle.current_output_checkpoint_id;
+    auto lifecycle_input_sharings_before =
+            segment_lifecycle.current_segment_input_sharings;
+    auto lifecycle_output_sharings_before =
+            segment_lifecycle.current_segment_output_sharings;
+    bool verifiable_registry_was_initialized =
+            verifiable_registry.initialized;
+    uint64_t next_sharing_id_before =
+            verifiable_registry.next_sharing_id;
+    uint64_t next_checkpoint_id_before =
+            verifiable_registry.next_checkpoint_id;
+    uint64_t registry_current_segment_before =
+            verifiable_registry.current_segment_id;
+    size_t sharing_count_before = verifiable_registry.sharings.size();
+    size_t checkpoint_count_before =
+            verifiable_registry.checkpoints.size();
+    bool authentication_plan_was_initialized =
+            authentication_plan_state.initialized;
+    uint64_t next_auth_record_id_before =
+            authentication_plan_state.next_auth_record_id;
+    size_t auth_record_count_before =
+            authentication_plan_state.records.size();
+    bool authentication_material_was_initialized =
+            authentication_material_state.initialized;
+    uint64_t next_material_id_before =
+            authentication_material_state.next_material_id;
+    size_t auth_material_count_before =
+            authentication_material_state.records.size();
+    bool have_ultimate_failure_context_before =
+            have_ultimate_failure_context;
+    bool ultimate_context_valid_before = ultimate_failure_context.valid;
+    int ultimate_context_king_before = ultimate_failure_context.king;
+    UltimateFailureKind ultimate_failure_kind_before =
+            ultimate_failure_context.failure_kind;
+
+    auto assert_validation_scope = [&]()
+    {
+        assert(pending_analyze_sharing_state.initialized
+                == pending_state_was_initialized);
+        assert(pending_analyze_sharing_state.next_request_id
+                == next_pending_request_id_before);
+        assert(pending_analyze_sharing_state.requests.size()
+                == pending_request_count_before);
+        assert(pending_analyze_sharing_dispatch_state.initialized
+                == dispatch_state_was_initialized);
+        assert(pending_analyze_sharing_dispatch_state
+                .next_dispatch_record_id
+                == next_dispatch_record_id_before);
+        assert(pending_analyze_sharing_dispatch_state.records.size()
+                == dispatch_record_count_before);
+        assert(pending_analyze_sharing_execution_attempt_state
+                .initialized == attempt_state_was_initialized);
+        assert(pending_analyze_sharing_execution_attempt_state
+                .next_execution_attempt_record_id
+                == next_attempt_record_id_before);
+        assert(pending_analyze_sharing_execution_attempt_state
+                .records.size() == attempt_record_count_before);
+        assert(dispute_control_state.initialized
+                == dispute_state_was_initialized);
+        assert(dispute_control_state.corr == corr_before_validation);
+        assert(dispute_control_state.disp == disp_before_validation);
+        assert(segment_lifecycle.initialized
+                == segment_lifecycle_was_initialized);
+        assert(segment_lifecycle.current_segment_id
+                == lifecycle_current_segment_before);
+        assert(segment_lifecycle.last_completed_segment_id
+                == lifecycle_last_completed_before);
+        assert(segment_lifecycle.segment_open
+                == lifecycle_segment_open_before);
+        assert(segment_lifecycle.checkpoint_open
+                == lifecycle_checkpoint_open_before);
+        assert(segment_lifecycle.current_input_checkpoint_id
+                == lifecycle_input_checkpoint_before);
+        assert(segment_lifecycle.current_output_checkpoint_id
+                == lifecycle_output_checkpoint_before);
+        assert(segment_lifecycle.current_segment_input_sharings
+                == lifecycle_input_sharings_before);
+        assert(segment_lifecycle.current_segment_output_sharings
+                == lifecycle_output_sharings_before);
+        assert(verifiable_registry.initialized
+                == verifiable_registry_was_initialized);
+        assert(verifiable_registry.next_sharing_id
+                == next_sharing_id_before);
+        assert(verifiable_registry.next_checkpoint_id
+                == next_checkpoint_id_before);
+        assert(verifiable_registry.current_segment_id
+                == registry_current_segment_before);
+        assert(verifiable_registry.sharings.size() == sharing_count_before);
+        assert(verifiable_registry.checkpoints.size()
+                == checkpoint_count_before);
+        assert(authentication_plan_state.initialized
+                == authentication_plan_was_initialized);
+        assert(authentication_plan_state.next_auth_record_id
+                == next_auth_record_id_before);
+        assert(authentication_plan_state.records.size()
+                == auth_record_count_before);
+        assert(authentication_material_state.initialized
+                == authentication_material_was_initialized);
+        assert(authentication_material_state.next_material_id
+                == next_material_id_before);
+        assert(authentication_material_state.records.size()
+                == auth_material_count_before);
+        assert(have_ultimate_failure_context
+                == have_ultimate_failure_context_before);
+        assert(ultimate_failure_context.valid
+                == ultimate_context_valid_before);
+        assert(ultimate_failure_context.king
+                == ultimate_context_king_before);
+        assert(ultimate_failure_context.failure_kind
+                == ultimate_failure_kind_before);
+    };
+#endif
+
+    assert(plan.valid);
+    assert(plan.action
+            != PendingAnalyzeSharingExecutionAttemptRunAction::none);
+    assert(not plan.state_updated);
+    assert(not plan.performed_action);
+
+    auto party_in_range = [&](int party)
+    {
+        return 0 <= party && party < P.num_players();
+    };
+
+    for (size_t i = 0; i < plan.rejected_holder_ids.size(); i++)
+    {
+        int holder = plan.rejected_holder_ids.at(i);
+        assert(party_in_range(holder));
+        assert(is_active_party(holder));
+        for (size_t j = i + 1;
+                j < plan.rejected_holder_ids.size(); j++)
+            assert(holder != plan.rejected_holder_ids.at(j));
+    }
+
+    for (size_t i = 0;
+            i < plan.authentication_verifier_ids.size(); i++)
+    {
+        int verifier = plan.authentication_verifier_ids.at(i);
+        assert(party_in_range(verifier));
+        for (size_t j = i + 1;
+                j < plan.authentication_verifier_ids.size(); j++)
+            assert(verifier
+                    != plan.authentication_verifier_ids.at(j));
+    }
+
+    for (size_t i = 0; i < plan.authentication_holder_ids.size(); i++)
+    {
+        int holder = plan.authentication_holder_ids.at(i);
+        assert(party_in_range(holder));
+        for (size_t j = i + 1;
+                j < plan.authentication_holder_ids.size(); j++)
+            assert(holder != plan.authentication_holder_ids.at(j));
+    }
+
+    if (not plan.execution_attempt_record_found)
+    {
+        assert(plan.action
+                == PendingAnalyzeSharingExecutionAttemptRunAction::
+                    no_retained_execution_attempt);
+        assert(not plan.execution_attempt_record_structurally_valid);
+        assert(not plan.metadata_complete);
+        assert(not plan.execution_inputs_metadata_complete);
+        assert(plan.execution_attempt_record_id == 0);
+        assert(plan.pending_request_id == 0);
+        assert(plan.source == PendingAnalyzeSharingSource::none);
+        assert(plan.target == PendingAnalyzeSharingTarget::none);
+        assert(not plan.is_authentication_rejection_request);
+        assert(not plan.is_ultimate_failure_request);
+        assert(not plan.future_requires_analyze_sharing);
+        assert(not plan.would_execute_analyze_sharing);
+        assert(not plan.would_use_checkpoint_output_sharing);
+        assert(not plan.would_use_published_snapshot);
+#ifndef NDEBUG
+        assert_validation_scope();
+#endif
+        return;
+    }
+
+    assert(plan.execution_attempt_record_id != 0);
+    assert(plan.dispatch_record_id != 0);
+    assert(plan.pending_request_id != 0);
+    assert(plan.source != PendingAnalyzeSharingSource::none);
+    assert(plan.target != PendingAnalyzeSharingTarget::none);
+    assert(plan.is_authentication_rejection_request
+            != plan.is_ultimate_failure_request);
+
+    if (plan.action
+            == PendingAnalyzeSharingExecutionAttemptRunAction::
+                inconsistent_state)
+    {
+#ifndef NDEBUG
+        assert_validation_scope();
+#endif
+        return;
+    }
+
+    assert(plan.execution_attempt_record_structurally_valid);
+    assert(plan.metadata_complete);
+    assert(plan.execution_inputs_metadata_complete);
+    assert(plan.future_requires_analyze_sharing);
+    assert(plan.future_requires_localization);
+    assert(plan.future_requires_dispute_control_update);
+    assert(plan.planned_localize_corrupted_party_or_disputed_pair);
+    assert(plan.planned_feed_dispute_control_update);
+    assert(plan.would_execute_analyze_sharing);
+    assert(plan.would_feed_localization);
+    assert(plan.would_feed_dispute_control_update);
+    assert(plan.would_feed_run_localization
+            == plan.would_feed_localization);
+    assert(plan.would_feed_run_dispute_control_update
+            == plan.would_feed_dispute_control_update);
+    assert(plan.would_feed_run_segment_recovery_or_retry
+            == plan.would_feed_segment_recovery_or_retry);
+
+    const auto* record =
+            find_pending_analyze_sharing_execution_attempt_record(
+                    plan.execution_attempt_record_id);
+    assert(record != 0);
+    validate_pending_analyze_sharing_execution_attempt_record(*record);
+    assert(record->dispatch_record_id == plan.dispatch_record_id);
+    assert(record->pending_request_id == plan.pending_request_id);
+    assert(record->pending_request_index == plan.pending_request_index);
+    assert(record->source == plan.source);
+    assert(record->target == plan.target);
+    assert(record->metadata_complete == plan.metadata_complete);
+    assert(record->execution_inputs_metadata_complete
+            == plan.execution_inputs_metadata_complete);
+
+    switch (plan.action)
+    {
+    case PendingAnalyzeSharingExecutionAttemptRunAction::
+            ready_authentication_rejection:
+        assert(plan.is_authentication_rejection_request);
+        assert(not plan.is_ultimate_failure_request);
+        assert(plan.source
+                == PendingAnalyzeSharingSource::
+                    authentication_rejection);
+        assert(plan.target
+                == PendingAnalyzeSharingTarget::
+                    registered_checkpoint_output_sharing);
+        assert(plan.checkpoint_id != 0);
+        assert(plan.segment_id != 0);
+        assert(plan.sharing_id != 0);
+        assert(plan.registered_checkpoint_output_sharing_id
+                == plan.sharing_id);
+        assert(plan.registered_snapshot_id == 0);
+        assert(plan.ultimate_failure_snapshot_id == 0);
+        assert(not plan.rejected_holder_ids.empty());
+        assert(plan.future_requires_segment_recovery_or_retry);
+        assert(plan.planned_analyze_checkpoint_output_sharing);
+        assert(not plan.planned_analyze_published_snapshot);
+        assert(plan.planned_feed_segment_recovery);
+        assert(plan.would_analyze_checkpoint_output_sharing);
+        assert(not plan.would_analyze_published_snapshot);
+        assert(plan.would_use_checkpoint_output_sharing);
+        assert(not plan.would_use_published_snapshot);
+        assert(plan.would_feed_segment_recovery_or_retry);
+        assert(plan.would_feed_run_segment_recovery_or_retry);
+        break;
+
+    case PendingAnalyzeSharingExecutionAttemptRunAction::
+            ready_ultimate_failure:
+        assert(plan.is_ultimate_failure_request);
+        assert(not plan.is_authentication_rejection_request);
+        assert(plan.source == PendingAnalyzeSharingSource::ultimate_failure);
+        assert(plan.target
+                == PendingAnalyzeSharingTarget::published_alpha
+                || plan.target
+                    == PendingAnalyzeSharingTarget::published_beta);
+        assert(plan.checkpoint_id == 0);
+        assert(plan.segment_id == 0);
+        assert(plan.sharing_id == 0);
+        assert(plan.registered_checkpoint_output_sharing_id == 0);
+        assert(plan.registered_snapshot_id != 0);
+        assert(plan.ultimate_failure_snapshot_id
+                == plan.registered_snapshot_id);
+        assert(plan.rejected_holder_ids.empty());
+        assert(plan.planned_analyze_published_snapshot);
+        assert(not plan.planned_analyze_checkpoint_output_sharing);
+        assert(plan.would_analyze_published_snapshot);
+        assert(not plan.would_analyze_checkpoint_output_sharing);
+        assert(not plan.would_use_checkpoint_output_sharing);
+        assert(plan.would_use_published_snapshot);
+        assert(plan.would_feed_run_segment_recovery_or_retry
+                == plan.would_feed_segment_recovery_or_retry);
+        break;
+
+    case PendingAnalyzeSharingExecutionAttemptRunAction::
+            no_retained_execution_attempt:
+    case PendingAnalyzeSharingExecutionAttemptRunAction::
+            inconsistent_state:
+    case PendingAnalyzeSharingExecutionAttemptRunAction::none:
+        assert(false);
+        break;
+    }
+
+#ifndef NDEBUG
+    assert_validation_scope();
+#endif
+}
+
+template<class T>
 void AtlasGsz<T>::ensure_verifiable_registry_initialized()
 {
     if (not verifiable_registry.initialized)
