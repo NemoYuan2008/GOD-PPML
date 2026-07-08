@@ -1125,6 +1125,17 @@ void AtlasGsz<T>::mark_checkpoint_authentication_requested(
         if (checkpoint.checkpoint_id == checkpoint_id)
         {
             checkpoint.authentication_requested = true;
+            for (auto sharing_id : checkpoint.sharing_ids)
+            {
+                auto* sharing = find_registered_sharing(sharing_id);
+                assert(sharing != 0);
+                if (sharing->kind == RegisteredSharingKind::checkpoint_output
+                        && sharing->status
+                            == VerifiableSharingStatus::registered)
+                    sharing->status =
+                            VerifiableSharingStatus::
+                                authentication_pending;
+            }
             found = true;
             break;
         }
@@ -1147,6 +1158,13 @@ void AtlasGsz<T>::mark_checkpoint_authenticated(uint64_t checkpoint_id)
         if (checkpoint.checkpoint_id == checkpoint_id)
         {
             checkpoint.authenticated = true;
+            for (auto sharing_id : checkpoint.sharing_ids)
+            {
+                auto* sharing = find_registered_sharing(sharing_id);
+                assert(sharing != 0);
+                assert(sharing->status != VerifiableSharingStatus::none);
+                sharing->status = VerifiableSharingStatus::authenticated;
+            }
             found = true;
             break;
         }
@@ -1197,7 +1215,15 @@ void AtlasGsz<T>::validate_verifiable_registry() const
                     != verifiable_registry.checkpoints.at(j).checkpoint_id);
 
         for (auto sharing_id : checkpoint.sharing_ids)
-            assert(find_registered_sharing(sharing_id) != 0);
+        {
+            const auto* sharing = find_registered_sharing(sharing_id);
+            assert(sharing != 0);
+            assert(sharing->checkpoint_id == checkpoint.checkpoint_id);
+            assert(sharing->segment_id == checkpoint.segment_id);
+            if (checkpoint.authenticated)
+                assert(sharing->status
+                        == VerifiableSharingStatus::authenticated);
+        }
     }
 }
 
@@ -2843,6 +2869,174 @@ AtlasGsz<T>::inspect_current_output_checkpoint_authentication_hook() const
 }
 
 template<class T>
+typename AtlasGsz<T>::AuthenticationPromotionResult
+AtlasGsz<T>::promote_accepted_authentication_outcome(
+        const AuthenticationDecisionOutcome& outcome)
+{
+    AuthenticationPromotionResult result{};
+#ifndef NDEBUG
+    bool dispute_state_was_initialized =
+            dispute_control_state.initialized;
+    auto corr_before_promotion = dispute_control_state.corr;
+    auto disp_before_promotion = dispute_control_state.disp;
+    auto assert_dispute_state_unchanged = [&]()
+    {
+        assert(dispute_control_state.initialized
+                == dispute_state_was_initialized);
+        assert(dispute_control_state.corr == corr_before_promotion);
+        assert(dispute_control_state.disp == disp_before_promotion);
+    };
+#endif
+
+    assert(outcome.valid);
+    assert(outcome.action != AuthenticationDecisionOutcomeAction::none);
+    if (not outcome.valid
+            || outcome.action == AuthenticationDecisionOutcomeAction::none)
+    {
+#ifndef NDEBUG
+        assert_dispute_state_unchanged();
+#endif
+        return result;
+    }
+
+    validate_authentication_decision_outcome(outcome);
+
+    result.valid = true;
+    result.checkpoint_id = outcome.checkpoint_id;
+    result.segment_id = outcome.segment_id;
+
+    if (outcome.action
+            != AuthenticationDecisionOutcomeAction::accept_checkpoint)
+    {
+        result.action = AuthenticationPromotionAction::not_accepted;
+        validate_authentication_promotion_result(result);
+#ifndef NDEBUG
+        assert_dispute_state_unchanged();
+#endif
+        return result;
+    }
+
+    auto decision = authentication_checkpoint_decision(
+            outcome.checkpoint_id);
+    validate_authentication_checkpoint_decision(decision);
+    assert(decision.status
+            == AuthenticationCheckpointDecisionStatus::accepted);
+    if (decision.status
+            != AuthenticationCheckpointDecisionStatus::accepted)
+    {
+        result.action = AuthenticationPromotionAction::not_accepted;
+        validate_authentication_promotion_result(result);
+#ifndef NDEBUG
+        assert_dispute_state_unchanged();
+#endif
+        return result;
+    }
+
+    assert(decision.segment_id == outcome.segment_id);
+    assert(decision.sharing_ids == outcome.sharing_ids);
+
+    CheckpointRecord* checkpoint = 0;
+    for (auto& candidate : verifiable_registry.checkpoints)
+        if (candidate.checkpoint_id == outcome.checkpoint_id)
+        {
+            checkpoint = &candidate;
+            break;
+        }
+    assert(checkpoint != 0);
+    if (checkpoint == 0)
+    {
+#ifndef NDEBUG
+        assert_dispute_state_unchanged();
+#endif
+        return AuthenticationPromotionResult{};
+    }
+
+    auto record_ids = authentication_records_for_checkpoint(
+            outcome.checkpoint_id);
+    assert(not record_ids.empty());
+    if (record_ids.empty())
+    {
+#ifndef NDEBUG
+        assert_dispute_state_unchanged();
+#endif
+        return AuthenticationPromotionResult{};
+    }
+
+    result.authentication_record_ids = record_ids;
+
+    if (checkpoint->authenticated)
+    {
+        result.action =
+                AuthenticationPromotionAction::already_authenticated;
+        result.state_updated = false;
+        validate_authentication_promotion_result(result);
+#ifndef NDEBUG
+        assert_dispute_state_unchanged();
+#endif
+        return result;
+    }
+
+    result.action = AuthenticationPromotionAction::promoted_checkpoint;
+    result.promoted_sharing_ids = decision.sharing_ids;
+
+    bool state_updated = false;
+    for (auto record_id : record_ids)
+    {
+        auto* record = find_authentication_plan_record(record_id);
+        assert(record != 0);
+        assert(record->checkpoint_id == outcome.checkpoint_id);
+        assert(record->kind
+                == AuthenticationRecordKind::checkpoint_output_share);
+        if (record->status != AuthenticationPlanStatus::authenticated)
+            state_updated = true;
+        mark_authentication_record_authenticated(record_id);
+    }
+    assert(checkpoint_authentication_plan_complete(
+            outcome.checkpoint_id));
+
+    if (not checkpoint->authenticated)
+        state_updated = true;
+    for (auto sharing_id : checkpoint->sharing_ids)
+    {
+        auto* sharing = find_registered_sharing(sharing_id);
+        assert(sharing != 0);
+        assert(sharing->checkpoint_id == outcome.checkpoint_id);
+        if (sharing->status != VerifiableSharingStatus::authenticated)
+            state_updated = true;
+    }
+
+    mark_checkpoint_authenticated(outcome.checkpoint_id);
+    result.state_updated = state_updated;
+
+    validate_verifiable_registry();
+    validate_authentication_plan();
+    validate_authentication_material();
+    validate_authentication_promotion_result(result);
+#ifndef NDEBUG
+    assert_dispute_state_unchanged();
+#endif
+    return result;
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationPromotionResult
+AtlasGsz<T>::promote_accepted_authentication_outcome_for_checkpoint(
+        uint64_t checkpoint_id)
+{
+    auto outcome = authentication_decision_outcome_for_checkpoint(
+            checkpoint_id);
+    return promote_accepted_authentication_outcome(outcome);
+}
+
+template<class T>
+typename AtlasGsz<T>::AuthenticationPromotionResult
+AtlasGsz<T>::promote_current_output_checkpoint_authentication_outcome()
+{
+    auto outcome = current_output_checkpoint_authentication_outcome();
+    return promote_accepted_authentication_outcome(outcome);
+}
+
+template<class T>
 typename AtlasGsz<T>::AuthenticationAnalyzeSharingPlanEntry
 AtlasGsz<T>::authentication_analyze_plan_entry_for_rejected_sharing(
         uint64_t sharing_id) const
@@ -3544,6 +3738,105 @@ void AtlasGsz<T>::validate_authentication_outcome_hook_result(
         break;
     case AuthenticationOutcomeHookAction::no_action:
     case AuthenticationOutcomeHookAction::none:
+        assert(false);
+        break;
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::validate_authentication_promotion_result(
+        const AuthenticationPromotionResult& result) const
+{
+    assert(result.valid);
+    assert(result.action != AuthenticationPromotionAction::none);
+    assert(result.checkpoint_id != 0);
+
+    const CheckpointRecord* checkpoint = 0;
+    if (verifiable_registry.initialized)
+        for (const auto& candidate : verifiable_registry.checkpoints)
+            if (candidate.checkpoint_id == result.checkpoint_id)
+            {
+                checkpoint = &candidate;
+                break;
+            }
+    assert(checkpoint != 0);
+    assert(result.segment_id == checkpoint->segment_id);
+
+    for (size_t i = 0; i < result.promoted_sharing_ids.size(); i++)
+    {
+        auto sharing_id = result.promoted_sharing_ids.at(i);
+        const auto* sharing = find_registered_sharing(sharing_id);
+        assert(sharing != 0);
+        assert(sharing->checkpoint_id == result.checkpoint_id);
+        assert(sharing->segment_id == result.segment_id);
+        assert(std::find(checkpoint->sharing_ids.begin(),
+                checkpoint->sharing_ids.end(), sharing_id)
+                != checkpoint->sharing_ids.end());
+
+        for (size_t j = i + 1;
+                j < result.promoted_sharing_ids.size(); j++)
+            assert(sharing_id != result.promoted_sharing_ids.at(j));
+    }
+
+    for (size_t i = 0; i < result.authentication_record_ids.size(); i++)
+    {
+        auto record_id = result.authentication_record_ids.at(i);
+        const auto* record = find_authentication_plan_record(record_id);
+        assert(record != 0);
+        assert(record->checkpoint_id == result.checkpoint_id);
+        assert(record->segment_id == result.segment_id);
+        assert(record->kind
+                == AuthenticationRecordKind::checkpoint_output_share);
+        assert(std::find(checkpoint->sharing_ids.begin(),
+                checkpoint->sharing_ids.end(), record->sharing_id)
+                != checkpoint->sharing_ids.end());
+
+        for (size_t j = i + 1;
+                j < result.authentication_record_ids.size(); j++)
+            assert(record_id != result.authentication_record_ids.at(j));
+    }
+
+    switch (result.action)
+    {
+    case AuthenticationPromotionAction::already_authenticated:
+        assert(checkpoint->authenticated);
+        assert(not result.state_updated);
+        assert(result.promoted_sharing_ids.empty());
+        assert(not result.authentication_record_ids.empty());
+        assert(checkpoint_authentication_plan_complete(
+                result.checkpoint_id));
+        for (auto sharing_id : checkpoint->sharing_ids)
+        {
+            const auto* sharing = find_registered_sharing(sharing_id);
+            assert(sharing != 0);
+            assert(sharing->status
+                    == VerifiableSharingStatus::authenticated);
+        }
+        break;
+
+    case AuthenticationPromotionAction::promoted_checkpoint:
+        assert(checkpoint->authenticated);
+        assert(result.state_updated);
+        assert(result.promoted_sharing_ids == checkpoint->sharing_ids);
+        assert(not result.authentication_record_ids.empty());
+        assert(checkpoint_authentication_plan_complete(
+                result.checkpoint_id));
+        for (auto sharing_id : checkpoint->sharing_ids)
+        {
+            const auto* sharing = find_registered_sharing(sharing_id);
+            assert(sharing != 0);
+            assert(sharing->status
+                    == VerifiableSharingStatus::authenticated);
+        }
+        break;
+
+    case AuthenticationPromotionAction::not_accepted:
+        assert(not result.state_updated);
+        assert(result.promoted_sharing_ids.empty());
+        assert(result.authentication_record_ids.empty());
+        break;
+
+    case AuthenticationPromotionAction::none:
         assert(false);
         break;
     }

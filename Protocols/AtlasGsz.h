@@ -621,6 +621,30 @@ private:
         bool would_report_insufficient = false;
     };
 
+    enum class AuthenticationPromotionAction
+    {
+        none,
+        already_authenticated,
+        promoted_checkpoint,
+        not_accepted,
+    };
+
+    struct AuthenticationPromotionResult
+    {
+        bool valid = false;
+
+        AuthenticationPromotionAction action =
+                AuthenticationPromotionAction::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        bool state_updated = false;
+
+        vector<uint64_t> promoted_sharing_ids;
+        vector<uint64_t> authentication_record_ids;
+    };
+
     enum class AuthenticationAnalyzePlanAction
     {
         none,
@@ -932,6 +956,14 @@ private:
                 uint64_t checkpoint_id) const;
     AuthenticationOutcomeHookResult
         inspect_current_output_checkpoint_authentication_hook() const;
+    AuthenticationPromotionResult
+        promote_accepted_authentication_outcome(
+                const AuthenticationDecisionOutcome& outcome);
+    AuthenticationPromotionResult
+        promote_accepted_authentication_outcome_for_checkpoint(
+                uint64_t checkpoint_id);
+    AuthenticationPromotionResult
+        promote_current_output_checkpoint_authentication_outcome();
     AuthenticationAnalyzeSharingPlanEntry
         authentication_analyze_plan_entry_for_rejected_sharing(
                 uint64_t sharing_id) const;
@@ -955,6 +987,8 @@ private:
             const AuthenticationDecisionOutcome& outcome) const;
     void validate_authentication_outcome_hook_result(
             const AuthenticationOutcomeHookResult& result) const;
+    void validate_authentication_promotion_result(
+            const AuthenticationPromotionResult& result) const;
     void validate_authentication_analyze_plan_entry(
             const AuthenticationAnalyzeSharingPlanEntry& entry) const;
     void validate_authentication_analyze_sharing_plan(
