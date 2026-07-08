@@ -200,6 +200,45 @@ private:
         vector<uint64_t> authentication_material_record_ids;
     };
 
+    enum class PendingAnalyzeSharingSource
+    {
+        none,
+        ultimate_failure,
+        authentication_rejection,
+    };
+
+    enum class PendingAnalyzeSharingTarget
+    {
+        none,
+        published_alpha,
+        published_beta,
+        registered_checkpoint_output_sharing,
+    };
+
+    struct PendingAnalyzeSharingRequest
+    {
+        bool valid = false;
+        uint64_t id = 0;
+
+        PendingAnalyzeSharingSource source =
+                PendingAnalyzeSharingSource::none;
+        PendingAnalyzeSharingTarget target =
+                PendingAnalyzeSharingTarget::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+        uint64_t sharing_id = 0;
+
+        vector<int> rejected_holder_ids;
+    };
+
+    struct PendingAnalyzeSharingState
+    {
+        bool initialized = false;
+        uint64_t next_request_id = 1;
+        vector<PendingAnalyzeSharingRequest> requests;
+    };
+
     enum class RegisteredSharingDegree
     {
         none,
@@ -736,6 +775,32 @@ private:
         bool performed_action = false;
     };
 
+    enum class AuthenticationAnalyzeEnqueueAction
+    {
+        none,
+        no_action,
+        not_rejected,
+        no_analyze_candidates,
+        enqueued_requests,
+        already_enqueued,
+    };
+
+    struct AuthenticationAnalyzeEnqueueResult
+    {
+        bool valid = false;
+
+        AuthenticationAnalyzeEnqueueAction action =
+                AuthenticationAnalyzeEnqueueAction::none;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+
+        bool state_updated = false;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> pending_request_ids;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -822,6 +887,7 @@ private:
     SegmentLifecycleState segment_lifecycle;
     AuthenticationPlanState authentication_plan_state;
     AuthenticationMaterialState authentication_material_state;
+    PendingAnalyzeSharingState pending_analyze_sharing_state;
 
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
@@ -852,6 +918,19 @@ private:
             const UltimateFailureContext& context);
     void validate_analyze_sharing_request(
             const AnalyzeSharingRequest& request) const;
+    void ensure_pending_analyze_sharing_state_initialized();
+    void validate_pending_analyze_sharing_state() const;
+    PendingAnalyzeSharingRequest*
+        find_pending_analyze_sharing_request(uint64_t id);
+    const PendingAnalyzeSharingRequest*
+        find_pending_analyze_sharing_request(uint64_t id) const;
+    bool
+        pending_analyze_sharing_request_exists_for_authentication_rejection(
+                uint64_t checkpoint_id,
+                uint64_t sharing_id) const;
+    uint64_t
+        create_pending_analyze_sharing_request_for_authentication_rejection(
+                const AuthenticationAnalyzeSharingPlanEntry& entry);
     void ensure_verifiable_registry_initialized();
     uint64_t register_verifiable_sharing(
             const T& local_share,
@@ -1015,6 +1094,16 @@ private:
                 uint64_t checkpoint_id) const;
     AuthenticationAnalyzeSharingPlan
         current_output_checkpoint_authentication_analyze_plan() const;
+    AuthenticationAnalyzeEnqueueResult enqueue_authentication_analyze_plan(
+            const AuthenticationAnalyzeSharingPlan& plan);
+    AuthenticationAnalyzeEnqueueResult
+        enqueue_authentication_analyze_requests_from_hook_result(
+                const AuthenticationOutcomeHookResult& hook);
+    AuthenticationAnalyzeEnqueueResult
+        enqueue_authentication_analyze_requests_for_checkpoint(
+                uint64_t checkpoint_id);
+    AuthenticationAnalyzeEnqueueResult
+        enqueue_current_output_checkpoint_authentication_analyze_requests();
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
@@ -1035,6 +1124,8 @@ private:
             const AuthenticationAnalyzeSharingPlanEntry& entry) const;
     void validate_authentication_analyze_sharing_plan(
             const AuthenticationAnalyzeSharingPlan& plan) const;
+    void validate_authentication_analyze_enqueue_result(
+            const AuthenticationAnalyzeEnqueueResult& result) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
