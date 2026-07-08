@@ -836,6 +836,104 @@ private:
         vector<uint64_t> pending_request_ids;
     };
 
+    enum class PendingAnalyzeSharingInspectionAction
+    {
+        none,
+        no_pending_request,
+        planned_authentication_rejection,
+        planned_ultimate_failure,
+        inconsistent_state,
+    };
+
+    struct PendingAnalyzeSharingDispatchPlan
+    {
+        bool valid = false;
+
+        PendingAnalyzeSharingInspectionAction action =
+                PendingAnalyzeSharingInspectionAction::none;
+
+        bool request_found = false;
+        bool request_structurally_valid = false;
+
+        size_t pending_request_index = 0;
+        uint64_t pending_request_id = 0;
+
+        PendingAnalyzeSharingSource source =
+                PendingAnalyzeSharingSource::none;
+        PendingAnalyzeSharingTarget target =
+                PendingAnalyzeSharingTarget::none;
+
+        bool is_authentication_rejection_request = false;
+        bool is_ultimate_failure_request = false;
+
+        bool state_updated = false;
+        bool performed_action = false;
+
+        bool future_requires_analyze_sharing = false;
+        bool future_requires_localization = false;
+        bool future_requires_dispute_control_update = false;
+        bool future_requires_segment_recovery_or_retry = false;
+
+        bool planned_analyze_checkpoint_output_sharing = false;
+        bool planned_analyze_published_snapshot = false;
+        bool planned_localize_corrupted_party_or_disputed_pair = false;
+        bool planned_feed_dispute_control_update = false;
+        bool planned_feed_segment_recovery = false;
+
+        bool target_is_published_alpha = false;
+        bool target_is_published_beta = false;
+
+        uint64_t checkpoint_id = 0;
+        uint64_t segment_id = 0;
+        uint64_t sharing_id = 0;
+        uint64_t registered_checkpoint_output_sharing_id = 0;
+
+        uint64_t registered_snapshot_id = 0;
+        uint64_t ultimate_failure_snapshot_id = 0;
+
+        bool has_current_ultimate_failure_context = false;
+        bool ultimate_failure_context_matches_request = false;
+        UltimateFailureKind ultimate_failure_kind =
+                UltimateFailureKind::none;
+        UltimateFailureAction ultimate_failure_action =
+                UltimateFailureAction::none;
+        FaultLocalizationSource fault_source =
+                FaultLocalizationSource::none;
+        SharingToAnalyze sharing_to_analyze = SharingToAnalyze::none;
+
+        AuthenticationSharingDecisionStatus authentication_sharing_status =
+                AuthenticationSharingDecisionStatus::none;
+        AuthenticationCheckpointDecisionStatus
+            authentication_checkpoint_status =
+                AuthenticationCheckpointDecisionStatus::none;
+        AuthenticationDecisionOutcomeAction authentication_outcome_action =
+                AuthenticationDecisionOutcomeAction::none;
+        AuthenticationAnalyzePlanAction authentication_analyze_plan_action =
+                AuthenticationAnalyzePlanAction::none;
+
+        int expected_holders = 0;
+        int total_holder_decisions = 0;
+        int rejected_holders = 0;
+
+        int expected_sharings = 0;
+        int rejected_sharings = 0;
+        int not_ready_sharings = 0;
+        int unavailable_sharings = 0;
+        int insufficient_sharings = 0;
+
+        vector<uint64_t> checkpoint_sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<int> rejected_holder_ids;
+
+        vector<uint64_t> authentication_plan_record_ids;
+        vector<uint64_t> authentication_material_record_ids;
+        vector<int> authentication_verifier_ids;
+        vector<int> authentication_holder_ids;
+        vector<AuthenticationPlanStatus> authentication_plan_statuses;
+        vector<AuthenticationMaterialStatus>
+            authentication_material_statuses;
+    };
+
     enum class SegmentRecoveryDecisionAction
     {
         none,
@@ -1134,6 +1232,15 @@ private:
         enqueue_current_ultimate_failure_analyze_request_once();
     void validate_ultimate_failure_analyze_enqueue_result(
             const UltimateFailureAnalyzeEnqueueResult& result) const;
+    PendingAnalyzeSharingDispatchPlan
+        inspect_pending_analyze_sharing_request_by_index(
+                size_t index) const;
+    PendingAnalyzeSharingDispatchPlan
+        inspect_pending_analyze_sharing_request(uint64_t id) const;
+    PendingAnalyzeSharingDispatchPlan
+        inspect_next_pending_analyze_sharing_request() const;
+    void validate_pending_analyze_sharing_dispatch_plan(
+            const PendingAnalyzeSharingDispatchPlan& plan) const;
     void ensure_verifiable_registry_initialized();
     uint64_t register_verifiable_sharing(
             const T& local_share,
