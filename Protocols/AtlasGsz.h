@@ -230,6 +230,10 @@ private:
         uint64_t segment_id = 0;
         uint64_t sharing_id = 0;
 
+        uint64_t registered_snapshot_id = 0;
+        vector<uint64_t> authentication_plan_record_ids;
+        vector<uint64_t> authentication_material_record_ids;
+
         vector<int> rejected_holder_ids;
     };
 
@@ -238,6 +242,36 @@ private:
         bool initialized = false;
         uint64_t next_request_id = 1;
         vector<PendingAnalyzeSharingRequest> requests;
+    };
+
+    enum class UltimateFailureAnalyzeEnqueueAction
+    {
+        none,
+        no_current_failure,
+        no_analyze_required,
+        missing_analyze_request,
+        already_enqueued,
+        enqueued_request,
+        inconsistent_state,
+    };
+
+    struct UltimateFailureAnalyzeEnqueueResult
+    {
+        bool valid = false;
+        UltimateFailureAnalyzeEnqueueAction action =
+                UltimateFailureAnalyzeEnqueueAction::none;
+
+        bool state_updated = false;
+
+        SharingToAnalyze sharing_to_analyze = SharingToAnalyze::none;
+        FaultLocalizationSource source = FaultLocalizationSource::none;
+        PendingAnalyzeSharingTarget target =
+                PendingAnalyzeSharingTarget::none;
+
+        uint64_t pending_request_id = 0;
+        uint64_t registered_snapshot_id = 0;
+        vector<uint64_t> authentication_plan_record_ids;
+        vector<uint64_t> authentication_material_record_ids;
     };
 
     enum class RegisteredSharingDegree
@@ -1085,9 +1119,19 @@ private:
         pending_analyze_sharing_request_exists_for_authentication_rejection(
                 uint64_t checkpoint_id,
                 uint64_t sharing_id) const;
+    bool
+        pending_analyze_sharing_request_exists_for_ultimate_failure(
+                PendingAnalyzeSharingTarget target) const;
     uint64_t
         create_pending_analyze_sharing_request_for_authentication_rejection(
                 const AuthenticationAnalyzeSharingPlanEntry& entry);
+    uint64_t
+        create_pending_analyze_sharing_request_for_ultimate_failure(
+                const AnalyzeSharingRequest& request);
+    UltimateFailureAnalyzeEnqueueResult
+        enqueue_current_ultimate_failure_analyze_request_once();
+    void validate_ultimate_failure_analyze_enqueue_result(
+            const UltimateFailureAnalyzeEnqueueResult& result) const;
     void ensure_verifiable_registry_initialized();
     uint64_t register_verifiable_sharing(
             const T& local_share,

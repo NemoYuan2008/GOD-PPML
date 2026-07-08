@@ -1034,6 +1034,11 @@ void AtlasGsz<T>::validate_pending_analyze_sharing_state() const
                             authentication_rejection)
                 assert(not (request.checkpoint_id == other.checkpoint_id
                         && request.sharing_id == other.sharing_id));
+            if (request.source
+                        == PendingAnalyzeSharingSource::ultimate_failure
+                    && other.source
+                        == PendingAnalyzeSharingSource::ultimate_failure)
+                assert(request.target != other.target);
         }
 
         switch (request.source)
@@ -1046,6 +1051,9 @@ void AtlasGsz<T>::validate_pending_analyze_sharing_state() const
             assert(request.checkpoint_id != 0);
             assert(request.segment_id != 0);
             assert(request.sharing_id != 0);
+            assert(request.registered_snapshot_id == 0);
+            assert(request.authentication_plan_record_ids.empty());
+            assert(request.authentication_material_record_ids.empty());
             assert(not request.rejected_holder_ids.empty());
 
             const auto* checkpoint = find_checkpoint(
@@ -1079,6 +1087,7 @@ void AtlasGsz<T>::validate_pending_analyze_sharing_state() const
         }
 
         case PendingAnalyzeSharingSource::ultimate_failure:
+        {
             assert(request.target
                     == PendingAnalyzeSharingTarget::published_alpha
                     || request.target
@@ -1087,7 +1096,53 @@ void AtlasGsz<T>::validate_pending_analyze_sharing_state() const
             assert(request.segment_id == 0);
             assert(request.sharing_id == 0);
             assert(request.rejected_holder_ids.empty());
+
+            const auto* snapshot = find_registered_sharing(
+                    request.registered_snapshot_id);
+            assert(request.registered_snapshot_id != 0);
+            assert(snapshot != 0);
+            assert(snapshot->kind
+                    == RegisteredSharingKind::analyze_request_snapshot);
+            assert(snapshot->degree == RegisteredSharingDegree::degree_t);
+            assert(snapshot->has_published_snapshot);
+            assert(not request.authentication_plan_record_ids.empty());
+            assert(request.authentication_material_record_ids.size()
+                    == request.authentication_plan_record_ids.size());
+
+            for (auto record_id :
+                    request.authentication_plan_record_ids)
+            {
+                const auto* record =
+                        find_authentication_plan_record(record_id);
+                assert(record != 0);
+                assert(record->sharing_id
+                        == request.registered_snapshot_id);
+                assert(record->checkpoint_id == 0);
+                assert(record->kind
+                        == AuthenticationRecordKind::
+                            analyze_request_snapshot);
+            }
+
+            for (auto material_id :
+                    request.authentication_material_record_ids)
+            {
+                const auto* material =
+                        find_authentication_material_record(material_id);
+                assert(material != 0);
+                assert(material->sharing_id
+                        == request.registered_snapshot_id);
+                assert(material->checkpoint_id == 0);
+                assert(material->kind
+                        == AuthenticationRecordKind::
+                            analyze_request_snapshot);
+                assert(std::find(
+                        request.authentication_plan_record_ids.begin(),
+                        request.authentication_plan_record_ids.end(),
+                        material->auth_record_id)
+                        != request.authentication_plan_record_ids.end());
+            }
             break;
+        }
 
         case PendingAnalyzeSharingSource::none:
             assert(false);
@@ -1139,6 +1194,29 @@ bool AtlasGsz<T>::pending_analyze_sharing_request_exists_for_authentication_reje
 }
 
 template<class T>
+bool AtlasGsz<T>::pending_analyze_sharing_request_exists_for_ultimate_failure(
+        PendingAnalyzeSharingTarget target) const
+{
+    assert(target == PendingAnalyzeSharingTarget::published_alpha
+            || target == PendingAnalyzeSharingTarget::published_beta);
+
+    if (target != PendingAnalyzeSharingTarget::published_alpha
+            && target != PendingAnalyzeSharingTarget::published_beta)
+        return false;
+
+    if (not pending_analyze_sharing_state.initialized)
+        return false;
+
+    for (const auto& request :
+            pending_analyze_sharing_state.requests)
+        if (request.source
+                    == PendingAnalyzeSharingSource::ultimate_failure
+                && request.target == target)
+            return true;
+    return false;
+}
+
+template<class T>
 uint64_t AtlasGsz<T>::create_pending_analyze_sharing_request_for_authentication_rejection(
         const AuthenticationAnalyzeSharingPlanEntry& entry)
 {
@@ -1185,6 +1263,348 @@ uint64_t AtlasGsz<T>::create_pending_analyze_sharing_request_for_authentication_
     pending_analyze_sharing_state.requests.push_back(request);
     validate_pending_analyze_sharing_state();
     return request.id;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_pending_analyze_sharing_request_for_ultimate_failure(
+        const AnalyzeSharingRequest& analyze_request)
+{
+    PendingAnalyzeSharingTarget target =
+            PendingAnalyzeSharingTarget::none;
+    if (analyze_request.target == AnalyzeSharingRequestTarget::alpha)
+        target = PendingAnalyzeSharingTarget::published_alpha;
+    else if (analyze_request.target == AnalyzeSharingRequestTarget::beta)
+        target = PendingAnalyzeSharingTarget::published_beta;
+    else
+        return 0;
+
+    if (not analyze_request.valid
+            || not analyze_request.has_registered_snapshot
+            || analyze_request.registered_snapshot_id == 0
+            || not analyze_request.has_authentication_plan
+            || not analyze_request.has_authentication_material
+            || analyze_request.authentication_plan_record_ids.empty()
+            || analyze_request.authentication_material_record_ids.size()
+                != analyze_request.authentication_plan_record_ids.size())
+        return 0;
+
+    const auto* snapshot = find_registered_sharing(
+            analyze_request.registered_snapshot_id);
+    if (snapshot == 0
+            || snapshot->kind
+                != RegisteredSharingKind::analyze_request_snapshot
+            || snapshot->degree != RegisteredSharingDegree::degree_t
+            || not snapshot->has_published_snapshot)
+        return 0;
+
+    for (auto record_id : analyze_request.authentication_plan_record_ids)
+    {
+        const auto* record = find_authentication_plan_record(record_id);
+        if (record == 0
+                || record->sharing_id
+                    != analyze_request.registered_snapshot_id
+                || record->checkpoint_id != 0
+                || record->kind
+                    != AuthenticationRecordKind::
+                        analyze_request_snapshot)
+            return 0;
+    }
+
+    for (auto material_id :
+            analyze_request.authentication_material_record_ids)
+    {
+        const auto* material =
+                find_authentication_material_record(material_id);
+        if (material == 0
+                || material->sharing_id
+                    != analyze_request.registered_snapshot_id
+                || material->checkpoint_id != 0
+                || material->kind
+                    != AuthenticationRecordKind::
+                        analyze_request_snapshot
+                || std::find(
+                    analyze_request.authentication_plan_record_ids.begin(),
+                    analyze_request.authentication_plan_record_ids.end(),
+                    material->auth_record_id)
+                    == analyze_request.authentication_plan_record_ids.end())
+            return 0;
+    }
+
+#ifndef NDEBUG
+    validate_analyze_sharing_request(analyze_request);
+#endif
+
+    if (pending_analyze_sharing_state.initialized)
+        for (const auto& request :
+                pending_analyze_sharing_state.requests)
+            if (request.source
+                        == PendingAnalyzeSharingSource::ultimate_failure
+                    && request.target == target)
+            {
+                if (request.registered_snapshot_id
+                            != analyze_request.registered_snapshot_id
+                        || request.authentication_plan_record_ids
+                            != analyze_request.authentication_plan_record_ids
+                        || request.authentication_material_record_ids
+                            != analyze_request
+                                .authentication_material_record_ids)
+                    return 0;
+                return request.id;
+            }
+
+    ensure_pending_analyze_sharing_state_initialized();
+
+    PendingAnalyzeSharingRequest request{};
+    request.valid = true;
+    request.id = pending_analyze_sharing_state.next_request_id++;
+    assert(pending_analyze_sharing_state.next_request_id > 0);
+    request.source = PendingAnalyzeSharingSource::ultimate_failure;
+    request.target = target;
+    request.registered_snapshot_id =
+            analyze_request.registered_snapshot_id;
+    request.authentication_plan_record_ids =
+            analyze_request.authentication_plan_record_ids;
+    request.authentication_material_record_ids =
+            analyze_request.authentication_material_record_ids;
+
+    pending_analyze_sharing_state.requests.push_back(request);
+    validate_pending_analyze_sharing_state();
+    return request.id;
+}
+
+template<class T>
+typename AtlasGsz<T>::UltimateFailureAnalyzeEnqueueResult
+AtlasGsz<T>::enqueue_current_ultimate_failure_analyze_request_once()
+{
+    UltimateFailureAnalyzeEnqueueResult result{};
+    result.valid = true;
+
+    auto finish = [&](UltimateFailureAnalyzeEnqueueAction action)
+            -> UltimateFailureAnalyzeEnqueueResult
+    {
+        result.action = action;
+        validate_ultimate_failure_analyze_enqueue_result(result);
+        return result;
+    };
+
+    auto finish_inconsistent = [&]()
+            -> UltimateFailureAnalyzeEnqueueResult
+    {
+        result.state_updated = false;
+        result.pending_request_id = 0;
+        result.registered_snapshot_id = 0;
+        result.authentication_plan_record_ids.clear();
+        result.authentication_material_record_ids.clear();
+        return finish(
+                UltimateFailureAnalyzeEnqueueAction::
+                    inconsistent_state);
+    };
+
+    if (not have_ultimate_failure_context)
+        return finish(
+                UltimateFailureAnalyzeEnqueueAction::
+                    no_current_failure);
+
+    const auto& context = ultimate_failure_context;
+    if (not context.valid
+            || not context.fault_localization.valid
+            || not context.fault_application.valid)
+        return finish_inconsistent();
+
+    result.sharing_to_analyze =
+            context.fault_localization.sharing_to_analyze;
+    result.source = context.fault_localization.source;
+
+    bool fault_needs_analyze =
+            context.fault_localization.action
+            == FaultLocalizationAction::needs_analyze_sharing;
+    bool application_pending =
+            context.fault_application.action
+            == FaultLocalizationApplicationAction::
+                pending_analyze_sharing;
+
+    if (not fault_needs_analyze && not application_pending)
+        return finish(
+                UltimateFailureAnalyzeEnqueueAction::
+                    no_analyze_required);
+
+    if (fault_needs_analyze != application_pending)
+        return finish_inconsistent();
+
+    if (not context.has_analyze_sharing_request
+            || not context.analyze_sharing_request.valid)
+        return finish(
+                UltimateFailureAnalyzeEnqueueAction::
+                    missing_analyze_request);
+
+    const auto& analyze_request = context.analyze_sharing_request;
+    if (analyze_request.target == AnalyzeSharingRequestTarget::alpha)
+        result.target = PendingAnalyzeSharingTarget::published_alpha;
+    else if (analyze_request.target == AnalyzeSharingRequestTarget::beta)
+        result.target = PendingAnalyzeSharingTarget::published_beta;
+    else
+        return finish_inconsistent();
+
+    if (analyze_request.sharing_to_analyze
+                != result.sharing_to_analyze
+            || analyze_request.source != result.source
+            || not analyze_request.has_registered_snapshot
+            || analyze_request.registered_snapshot_id == 0
+            || not analyze_request.has_authentication_plan
+            || not analyze_request.has_authentication_material)
+        return finish_inconsistent();
+
+    result.registered_snapshot_id =
+            analyze_request.registered_snapshot_id;
+    result.authentication_plan_record_ids =
+            analyze_request.authentication_plan_record_ids;
+    result.authentication_material_record_ids =
+            analyze_request.authentication_material_record_ids;
+
+#ifndef NDEBUG
+    validate_analyze_sharing_request(analyze_request);
+#endif
+
+    if (pending_analyze_sharing_state.initialized)
+    {
+        for (const auto& request :
+                pending_analyze_sharing_state.requests)
+        {
+            if (request.source
+                        != PendingAnalyzeSharingSource::
+                            ultimate_failure
+                    || request.target != result.target)
+                continue;
+
+            if (request.registered_snapshot_id
+                        != result.registered_snapshot_id
+                    || request.authentication_plan_record_ids
+                        != result.authentication_plan_record_ids
+                    || request.authentication_material_record_ids
+                        != result.authentication_material_record_ids)
+                return finish_inconsistent();
+
+            result.pending_request_id = request.id;
+            result.state_updated = false;
+            return finish(
+                    UltimateFailureAnalyzeEnqueueAction::
+                        already_enqueued);
+        }
+    }
+
+    uint64_t request_id =
+            create_pending_analyze_sharing_request_for_ultimate_failure(
+                    analyze_request);
+    if (request_id == 0)
+        return finish_inconsistent();
+
+    result.pending_request_id = request_id;
+    result.state_updated = true;
+    return finish(
+            UltimateFailureAnalyzeEnqueueAction::enqueued_request);
+}
+
+template<class T>
+void AtlasGsz<T>::validate_ultimate_failure_analyze_enqueue_result(
+        const UltimateFailureAnalyzeEnqueueResult& result) const
+{
+    assert(result.valid);
+    assert(result.action
+            != UltimateFailureAnalyzeEnqueueAction::none);
+
+    auto has_pending_target = [&]()
+    {
+        return result.target == PendingAnalyzeSharingTarget::published_alpha
+                || result.target
+                    == PendingAnalyzeSharingTarget::published_beta;
+    };
+
+    auto validate_request_link = [&]()
+    {
+        assert(result.pending_request_id != 0);
+        assert(has_pending_target());
+        assert(result.registered_snapshot_id != 0);
+        assert(not result.authentication_plan_record_ids.empty());
+        assert(result.authentication_material_record_ids.size()
+                == result.authentication_plan_record_ids.size());
+
+        const auto* request = find_pending_analyze_sharing_request(
+                result.pending_request_id);
+        assert(request != 0);
+        assert(request->source
+                == PendingAnalyzeSharingSource::ultimate_failure);
+        assert(request->target == result.target);
+        assert(request->registered_snapshot_id
+                == result.registered_snapshot_id);
+        assert(request->authentication_plan_record_ids
+                == result.authentication_plan_record_ids);
+        assert(request->authentication_material_record_ids
+                == result.authentication_material_record_ids);
+
+        const auto* snapshot = find_registered_sharing(
+                result.registered_snapshot_id);
+        assert(snapshot != 0);
+        assert(snapshot->kind
+                == RegisteredSharingKind::analyze_request_snapshot);
+        assert(snapshot->degree == RegisteredSharingDegree::degree_t);
+        assert(snapshot->has_published_snapshot);
+    };
+
+    switch (result.action)
+    {
+    case UltimateFailureAnalyzeEnqueueAction::no_current_failure:
+        assert(not result.state_updated);
+        assert(result.sharing_to_analyze == SharingToAnalyze::none);
+        assert(result.source == FaultLocalizationSource::none);
+        assert(result.target == PendingAnalyzeSharingTarget::none);
+        assert(result.pending_request_id == 0);
+        assert(result.registered_snapshot_id == 0);
+        assert(result.authentication_plan_record_ids.empty());
+        assert(result.authentication_material_record_ids.empty());
+        break;
+
+    case UltimateFailureAnalyzeEnqueueAction::no_analyze_required:
+    case UltimateFailureAnalyzeEnqueueAction::missing_analyze_request:
+        assert(not result.state_updated);
+        assert(result.target == PendingAnalyzeSharingTarget::none);
+        assert(result.pending_request_id == 0);
+        assert(result.registered_snapshot_id == 0);
+        assert(result.authentication_plan_record_ids.empty());
+        assert(result.authentication_material_record_ids.empty());
+        break;
+
+    case UltimateFailureAnalyzeEnqueueAction::already_enqueued:
+        assert(not result.state_updated);
+        assert(result.sharing_to_analyze == SharingToAnalyze::alpha
+                || result.sharing_to_analyze == SharingToAnalyze::beta);
+        assert(result.source == FaultLocalizationSource::inconsistent_alpha
+                || result.source
+                    == FaultLocalizationSource::inconsistent_beta);
+        validate_request_link();
+        break;
+
+    case UltimateFailureAnalyzeEnqueueAction::enqueued_request:
+        assert(result.state_updated);
+        assert(result.sharing_to_analyze == SharingToAnalyze::alpha
+                || result.sharing_to_analyze == SharingToAnalyze::beta);
+        assert(result.source == FaultLocalizationSource::inconsistent_alpha
+                || result.source
+                    == FaultLocalizationSource::inconsistent_beta);
+        validate_request_link();
+        break;
+
+    case UltimateFailureAnalyzeEnqueueAction::inconsistent_state:
+        assert(not result.state_updated);
+        assert(result.pending_request_id == 0);
+        assert(result.registered_snapshot_id == 0);
+        assert(result.authentication_plan_record_ids.empty());
+        assert(result.authentication_material_record_ids.empty());
+        break;
+
+    case UltimateFailureAnalyzeEnqueueAction::none:
+        assert(false);
+        break;
+    }
 }
 
 template<class T>
