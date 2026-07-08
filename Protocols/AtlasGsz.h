@@ -10,6 +10,7 @@
 #include "MaliciousShamirMC.h"
 
 #include <cstdint>
+#include <utility>
 
 /**
  * Maliciously secure ATLAS protocol
@@ -908,6 +909,41 @@ private:
         vector<vector<bool>> disp;
     };
 
+    enum class DisputeControlUpdatePlanAction
+    {
+        none,
+        no_action,
+        needs_analyze_sharing,
+        would_record_corrupted_party,
+        would_record_disputed_pair,
+        already_recorded,
+        inconsistent_state,
+    };
+
+    struct DisputeControlUpdatePlan
+    {
+        bool valid = false;
+        DisputeControlUpdatePlanAction action =
+                DisputeControlUpdatePlanAction::none;
+
+        FaultLocalizationAction fault_action =
+                FaultLocalizationAction::none;
+        FaultLocalizationSource source = FaultLocalizationSource::none;
+        SharingToAnalyze sharing_to_analyze = SharingToAnalyze::none;
+
+        bool state_updated = false;
+
+        int corrupted_party = -1;
+
+        int disputed_party_a = -1;
+        int disputed_party_b = -1;
+        int primary_party = -1;
+        int counterparty = -1;
+
+        vector<int> newly_corrupted_parties;
+        vector<pair<int, int>> newly_disputed_pairs;
+    };
+
     enum class FaultLocalizationApplicationAction
     {
         none,
@@ -1225,6 +1261,12 @@ private:
             const SegmentRecoveryApplicationResult& result) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
+    DisputeControlUpdatePlan inspect_dispute_control_update_plan(
+            const FaultLocalizationOutcome& outcome) const;
+    DisputeControlUpdatePlan inspect_current_dispute_control_update_plan()
+            const;
+    void validate_dispute_control_update_plan(
+            const DisputeControlUpdatePlan& plan) const;
     int corruption_threshold() const;
     bool has_dispute_control_state() const;
     vector<int> active_parties() const;
