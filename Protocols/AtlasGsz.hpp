@@ -7659,43 +7659,95 @@ AtlasGsz<T>::apply_fault_localization_outcome(
 {
     FaultLocalizationApplication application{};
 
-    if (not outcome.valid)
-    {
+    auto update = apply_dispute_control_update_once(outcome);
 #ifndef NDEBUG
-        assert(false);
+    assert(update.valid);
 #endif
+    if (not update.valid)
         return application;
-    }
 
-    switch (outcome.action)
+    switch (update.action)
     {
-    case FaultLocalizationAction::needs_analyze_sharing:
+    case DisputeControlUpdateApplicationAction::
+            pending_analyze_sharing:
+#ifndef NDEBUG
+        assert(update.fault_action
+                == FaultLocalizationAction::needs_analyze_sharing);
+#endif
         application.valid = true;
         application.action =
                 FaultLocalizationApplicationAction::
                     pending_analyze_sharing;
         return application;
 
-    case FaultLocalizationAction::identify_corrupted_party:
+    case DisputeControlUpdateApplicationAction::
+            recorded_corrupted_party:
+#ifndef NDEBUG
+        assert(update.fault_action
+                == FaultLocalizationAction::identify_corrupted_party);
+#endif
         application.valid = true;
         application.action =
                 FaultLocalizationApplicationAction::
                     recorded_corrupted_party;
-        record_corrupted_party(outcome.corrupted_party, application);
-        validate_dispute_control_state();
+        application.state_updated = update.state_updated;
+        application.corrupted_party = update.corrupted_party;
+        application.newly_corrupted_parties =
+                update.newly_corrupted_parties;
         return application;
 
-    case FaultLocalizationAction::identify_disputed_pair:
+    case DisputeControlUpdateApplicationAction::
+            recorded_disputed_pair:
+#ifndef NDEBUG
+        assert(update.fault_action
+                == FaultLocalizationAction::identify_disputed_pair);
+#endif
         application.valid = true;
         application.action =
                 FaultLocalizationApplicationAction::
                     recorded_disputed_pair;
-        record_disputed_pair(
-                outcome.primary_party, outcome.counterparty, application);
-        validate_dispute_control_state();
+        application.state_updated = update.state_updated;
+        application.corrupted_party = update.corrupted_party;
+        application.disputed_party_a = update.disputed_party_a;
+        application.disputed_party_b = update.disputed_party_b;
+        application.primary_party = update.primary_party;
+        application.counterparty = update.counterparty;
+        application.newly_corrupted_parties =
+                update.newly_corrupted_parties;
         return application;
 
-    case FaultLocalizationAction::none:
+    case DisputeControlUpdateApplicationAction::already_recorded:
+        if (update.fault_action
+                == FaultLocalizationAction::identify_corrupted_party)
+        {
+            application.valid = true;
+            application.action =
+                    FaultLocalizationApplicationAction::
+                        recorded_corrupted_party;
+            application.state_updated = false;
+            application.corrupted_party = update.corrupted_party;
+            return application;
+        }
+
+        if (update.fault_action
+                == FaultLocalizationAction::identify_disputed_pair)
+        {
+            application.valid = true;
+            application.action =
+                    FaultLocalizationApplicationAction::
+                        recorded_disputed_pair;
+            application.state_updated = false;
+            application.disputed_party_a = update.disputed_party_a;
+            application.disputed_party_b = update.disputed_party_b;
+            application.primary_party = update.primary_party;
+            application.counterparty = update.counterparty;
+            return application;
+        }
+        break;
+
+    case DisputeControlUpdateApplicationAction::no_action:
+    case DisputeControlUpdateApplicationAction::inconsistent_state:
+    case DisputeControlUpdateApplicationAction::none:
         break;
     }
 
