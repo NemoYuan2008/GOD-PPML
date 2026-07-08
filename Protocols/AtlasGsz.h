@@ -801,6 +801,52 @@ private:
         vector<uint64_t> pending_request_ids;
     };
 
+    enum class SegmentRecoveryDecisionAction
+    {
+        none,
+        no_open_segment,
+        wait_for_checkpoint,
+        wait_for_authentication_request,
+        wait_for_authentication_material,
+        holder_share_unavailable,
+        insufficient_votes,
+        would_promote_checkpoint,
+        would_complete_authenticated_segment,
+        would_enqueue_analyze_requests,
+        already_completed,
+        inconsistent_state,
+    };
+
+    struct SegmentRecoveryDecisionResult
+    {
+        bool valid = false;
+
+        SegmentRecoveryDecisionAction action =
+                SegmentRecoveryDecisionAction::none;
+
+        uint64_t segment_id = 0;
+        uint64_t checkpoint_id = 0;
+
+        bool state_updated = false;
+        bool checkpoint_authenticated = false;
+        bool checkpoint_promotion_ready = false;
+        bool segment_completion_ready = false;
+        bool analyze_enqueue_ready = false;
+
+        AuthenticationDecisionOutcomeAction authentication_outcome_action =
+                AuthenticationDecisionOutcomeAction::none;
+        AuthenticationOutcomeHookAction authentication_hook_action =
+                AuthenticationOutcomeHookAction::none;
+        SegmentCompletionReadinessAction segment_readiness_action =
+                SegmentCompletionReadinessAction::none;
+        AuthenticationAnalyzePlanAction analyze_plan_action =
+                AuthenticationAnalyzePlanAction::none;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<uint64_t> pending_request_ids;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -1104,6 +1150,11 @@ private:
                 uint64_t checkpoint_id);
     AuthenticationAnalyzeEnqueueResult
         enqueue_current_output_checkpoint_authentication_analyze_requests();
+    SegmentRecoveryDecisionResult
+        inspect_current_segment_recovery_decision() const;
+    SegmentRecoveryDecisionResult inspect_segment_recovery_decision(
+            uint64_t segment_id,
+            uint64_t checkpoint_id) const;
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
@@ -1126,6 +1177,8 @@ private:
             const AuthenticationAnalyzeSharingPlan& plan) const;
     void validate_authentication_analyze_enqueue_result(
             const AuthenticationAnalyzeEnqueueResult& result) const;
+    void validate_segment_recovery_decision_result(
+            const SegmentRecoveryDecisionResult& result) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
