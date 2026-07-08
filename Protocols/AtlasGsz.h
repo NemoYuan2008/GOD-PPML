@@ -645,6 +645,38 @@ private:
         vector<uint64_t> authentication_record_ids;
     };
 
+    enum class SegmentCompletionReadinessAction
+    {
+        none,
+        no_open_segment,
+        missing_output_checkpoint,
+        checkpoint_still_open,
+        checkpoint_not_sealed,
+        authentication_not_requested,
+        authentication_records_missing,
+        authentication_incomplete,
+        checkpoint_not_authenticated,
+        ready,
+        already_completed,
+    };
+
+    struct SegmentCompletionReadinessResult
+    {
+        bool valid = false;
+
+        SegmentCompletionReadinessAction action =
+                SegmentCompletionReadinessAction::none;
+
+        uint64_t segment_id = 0;
+        uint64_t checkpoint_id = 0;
+
+        bool ready = false;
+        bool state_updated = false;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> authentication_record_ids;
+    };
+
     enum class AuthenticationAnalyzePlanAction
     {
         none,
@@ -849,6 +881,14 @@ private:
     void mark_current_output_checkpoint_authentication_requested();
     void mark_current_output_checkpoint_authenticated();
     void complete_current_segment_successfully();
+    SegmentCompletionReadinessResult
+        inspect_current_segment_completion_readiness() const;
+    SegmentCompletionReadinessResult
+        inspect_segment_completion_readiness(
+                uint64_t segment_id,
+                uint64_t checkpoint_id) const;
+    SegmentCompletionReadinessResult
+        complete_current_segment_if_checkpoint_authenticated();
     void abandon_current_segment_after_failure();
     void ensure_authentication_plan_initialized();
     void validate_authentication_plan() const;
@@ -989,6 +1029,8 @@ private:
             const AuthenticationOutcomeHookResult& result) const;
     void validate_authentication_promotion_result(
             const AuthenticationPromotionResult& result) const;
+    void validate_segment_completion_readiness_result(
+            const SegmentCompletionReadinessResult& result) const;
     void validate_authentication_analyze_plan_entry(
             const AuthenticationAnalyzeSharingPlanEntry& entry) const;
     void validate_authentication_analyze_sharing_plan(

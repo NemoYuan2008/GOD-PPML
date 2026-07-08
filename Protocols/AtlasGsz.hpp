@@ -1264,6 +1264,11 @@ void AtlasGsz<T>::validate_segment_lifecycle() const
     if (not segment_lifecycle.segment_open)
         assert(not segment_lifecycle.checkpoint_open);
 
+    if (segment_lifecycle.current_segment_id != 0
+            && segment_lifecycle.last_completed_segment_id
+                == segment_lifecycle.current_segment_id)
+        assert(not segment_lifecycle.segment_open);
+
     auto find_checkpoint = [&](uint64_t checkpoint_id)
         -> const CheckpointRecord*
     {
@@ -1281,6 +1286,17 @@ void AtlasGsz<T>::validate_segment_lifecycle() const
         if (segment_lifecycle.segment_open)
             assert(checkpoint->segment_id
                     == segment_lifecycle.current_segment_id);
+        if (checkpoint->authenticated)
+            for (auto sharing_id : checkpoint->sharing_ids)
+            {
+                const auto* sharing = find_registered_sharing(
+                        sharing_id);
+                assert(sharing != 0);
+                if (sharing->kind
+                        == RegisteredSharingKind::checkpoint_output)
+                    assert(sharing->status
+                            == VerifiableSharingStatus::authenticated);
+            }
     }
 
     if (segment_lifecycle.current_output_checkpoint_id != 0)
@@ -1502,6 +1518,245 @@ void AtlasGsz<T>::complete_current_segment_successfully()
 
     validate_verifiable_registry();
     validate_segment_lifecycle();
+}
+
+template<class T>
+typename AtlasGsz<T>::SegmentCompletionReadinessResult
+AtlasGsz<T>::inspect_current_segment_completion_readiness() const
+{
+    if (not segment_lifecycle.initialized)
+    {
+        SegmentCompletionReadinessResult result{};
+        result.valid = true;
+        result.action =
+                SegmentCompletionReadinessAction::no_open_segment;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    return inspect_segment_completion_readiness(
+            segment_lifecycle.current_segment_id,
+            segment_lifecycle.current_output_checkpoint_id);
+}
+
+template<class T>
+typename AtlasGsz<T>::SegmentCompletionReadinessResult
+AtlasGsz<T>::inspect_segment_completion_readiness(
+        uint64_t segment_id,
+        uint64_t checkpoint_id) const
+{
+    SegmentCompletionReadinessResult result{};
+    result.valid = true;
+    result.segment_id = segment_id;
+    result.checkpoint_id = checkpoint_id;
+
+    auto find_checkpoint = [&](uint64_t id)
+        -> const CheckpointRecord*
+    {
+        if (id == 0 || not verifiable_registry.initialized)
+            return 0;
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id == id)
+                return &checkpoint;
+        return 0;
+    };
+
+    auto checkpoint_sharings_authenticated =
+            [&](const CheckpointRecord& checkpoint)
+    {
+        for (auto sharing_id : checkpoint.sharing_ids)
+        {
+            const auto* sharing = find_registered_sharing(sharing_id);
+            assert(sharing != 0);
+            if (sharing == 0)
+                return false;
+            assert(sharing->checkpoint_id == checkpoint.checkpoint_id);
+            assert(sharing->segment_id == checkpoint.segment_id);
+            if (sharing->kind != RegisteredSharingKind::checkpoint_output)
+                return false;
+            if (sharing->status
+                    != VerifiableSharingStatus::authenticated)
+                return false;
+        }
+        return true;
+    };
+
+    const auto* checkpoint = find_checkpoint(checkpoint_id);
+    if (checkpoint != 0)
+    {
+        result.sharing_ids = checkpoint->sharing_ids;
+        result.authentication_record_ids =
+                authentication_records_for_checkpoint(checkpoint_id);
+    }
+
+    if (not segment_lifecycle.initialized
+            || segment_id == 0
+            || segment_id != segment_lifecycle.current_segment_id)
+    {
+        result.sharing_ids.clear();
+        result.authentication_record_ids.clear();
+        result.action =
+                SegmentCompletionReadinessAction::no_open_segment;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (not segment_lifecycle.segment_open)
+    {
+        if (segment_lifecycle.last_completed_segment_id == segment_id
+                && checkpoint != 0
+                && checkpoint->authenticated
+                && checkpoint_authentication_plan_complete(checkpoint_id)
+                && checkpoint_sharings_authenticated(*checkpoint))
+        {
+            result.action =
+                    SegmentCompletionReadinessAction::already_completed;
+            validate_segment_completion_readiness_result(result);
+            return result;
+        }
+
+        result.action =
+                SegmentCompletionReadinessAction::no_open_segment;
+        result.sharing_ids.clear();
+        result.authentication_record_ids.clear();
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (checkpoint_id == 0
+            || checkpoint == 0
+            || checkpoint->segment_id != segment_id
+            || segment_lifecycle.current_output_checkpoint_id
+                != checkpoint_id)
+    {
+        result.sharing_ids.clear();
+        result.authentication_record_ids.clear();
+        result.action =
+                SegmentCompletionReadinessAction::
+                    missing_output_checkpoint;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (segment_lifecycle.checkpoint_open)
+    {
+        result.action =
+                SegmentCompletionReadinessAction::checkpoint_still_open;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (not checkpoint->sealed)
+    {
+        result.action =
+                SegmentCompletionReadinessAction::checkpoint_not_sealed;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (not checkpoint->authentication_requested)
+    {
+        result.action =
+                SegmentCompletionReadinessAction::
+                    authentication_not_requested;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (result.authentication_record_ids.empty())
+    {
+        result.action =
+                SegmentCompletionReadinessAction::
+                    authentication_records_missing;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (not checkpoint_authentication_plan_complete(checkpoint_id))
+    {
+        result.action =
+                SegmentCompletionReadinessAction::
+                    authentication_incomplete;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    if (not checkpoint->authenticated
+            || not checkpoint_sharings_authenticated(*checkpoint))
+    {
+        result.action =
+                SegmentCompletionReadinessAction::
+                    checkpoint_not_authenticated;
+        validate_segment_completion_readiness_result(result);
+        return result;
+    }
+
+    result.action = SegmentCompletionReadinessAction::ready;
+    result.ready = true;
+    validate_segment_completion_readiness_result(result);
+    return result;
+}
+
+template<class T>
+typename AtlasGsz<T>::SegmentCompletionReadinessResult
+AtlasGsz<T>::complete_current_segment_if_checkpoint_authenticated()
+{
+    auto result = inspect_current_segment_completion_readiness();
+    validate_segment_completion_readiness_result(result);
+    if (result.action
+            == SegmentCompletionReadinessAction::already_completed)
+        return result;
+    if (not result.ready)
+        return result;
+
+#ifndef NDEBUG
+    bool dispute_state_was_initialized =
+            dispute_control_state.initialized;
+    auto corr_before_completion = dispute_control_state.corr;
+    auto disp_before_completion = dispute_control_state.disp;
+    size_t sharing_count_before_completion =
+            verifiable_registry.sharings.size();
+    size_t checkpoint_count_before_completion =
+            verifiable_registry.checkpoints.size();
+    size_t auth_record_count_before_completion =
+            authentication_plan_state.records.size();
+    size_t auth_material_count_before_completion =
+            authentication_material_state.records.size();
+#endif
+
+    assert(segment_lifecycle.initialized);
+    assert(segment_lifecycle.segment_open);
+    assert(not segment_lifecycle.checkpoint_open);
+    assert(segment_lifecycle.current_segment_id == result.segment_id);
+    assert(segment_lifecycle.current_output_checkpoint_id
+            == result.checkpoint_id);
+
+    segment_lifecycle.last_completed_segment_id = result.segment_id;
+    segment_lifecycle.segment_open = false;
+    segment_lifecycle.checkpoint_open = false;
+    result.state_updated = true;
+
+    validate_verifiable_registry();
+    validate_segment_lifecycle();
+    validate_authentication_plan();
+    validate_authentication_material();
+    validate_segment_completion_readiness_result(result);
+
+#ifndef NDEBUG
+    assert(dispute_control_state.initialized
+            == dispute_state_was_initialized);
+    assert(dispute_control_state.corr == corr_before_completion);
+    assert(dispute_control_state.disp == disp_before_completion);
+    assert(verifiable_registry.sharings.size()
+            == sharing_count_before_completion);
+    assert(verifiable_registry.checkpoints.size()
+            == checkpoint_count_before_completion);
+    assert(authentication_plan_state.records.size()
+            == auth_record_count_before_completion);
+    assert(authentication_material_state.records.size()
+            == auth_material_count_before_completion);
+#endif
+    return result;
 }
 
 template<class T>
@@ -3837,6 +4092,221 @@ void AtlasGsz<T>::validate_authentication_promotion_result(
         break;
 
     case AuthenticationPromotionAction::none:
+        assert(false);
+        break;
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::validate_segment_completion_readiness_result(
+        const SegmentCompletionReadinessResult& result) const
+{
+    assert(result.valid);
+    assert(result.action != SegmentCompletionReadinessAction::none);
+    assert(result.ready
+            == (result.action == SegmentCompletionReadinessAction::ready));
+    if (result.state_updated)
+        assert(result.action == SegmentCompletionReadinessAction::ready);
+
+    auto find_checkpoint = [&](uint64_t id)
+        -> const CheckpointRecord*
+    {
+        if (id == 0 || not verifiable_registry.initialized)
+            return 0;
+        for (const auto& checkpoint : verifiable_registry.checkpoints)
+            if (checkpoint.checkpoint_id == id)
+                return &checkpoint;
+        return 0;
+    };
+
+    const auto* checkpoint = find_checkpoint(result.checkpoint_id);
+
+    if (result.action
+            == SegmentCompletionReadinessAction::no_open_segment)
+    {
+        assert(not result.ready);
+        assert(not result.state_updated);
+        assert(result.sharing_ids.empty());
+        assert(result.authentication_record_ids.empty());
+        return;
+    }
+
+    if (result.action
+            == SegmentCompletionReadinessAction::
+                missing_output_checkpoint)
+    {
+        assert(result.segment_id != 0);
+        assert(not result.ready);
+        assert(not result.state_updated);
+        assert(result.sharing_ids.empty());
+        assert(result.authentication_record_ids.empty());
+        return;
+    }
+
+    assert(result.segment_id != 0);
+    assert(result.checkpoint_id != 0);
+    assert(checkpoint != 0);
+    assert(checkpoint->segment_id == result.segment_id);
+    assert(result.sharing_ids == checkpoint->sharing_ids);
+
+    bool all_checkpoint_output_sharings = true;
+    bool all_checkpoint_sharings_authenticated = true;
+    for (size_t i = 0; i < result.sharing_ids.size(); i++)
+    {
+        auto sharing_id = result.sharing_ids.at(i);
+        const auto* sharing = find_registered_sharing(sharing_id);
+        assert(sharing != 0);
+        assert(sharing->checkpoint_id == result.checkpoint_id);
+        assert(sharing->segment_id == result.segment_id);
+        if (sharing->kind != RegisteredSharingKind::checkpoint_output)
+            all_checkpoint_output_sharings = false;
+        if (sharing->status
+                != VerifiableSharingStatus::authenticated)
+            all_checkpoint_sharings_authenticated = false;
+
+        for (size_t j = i + 1; j < result.sharing_ids.size(); j++)
+            assert(sharing_id != result.sharing_ids.at(j));
+    }
+    assert(all_checkpoint_output_sharings);
+
+    for (size_t i = 0; i < result.authentication_record_ids.size(); i++)
+    {
+        auto record_id = result.authentication_record_ids.at(i);
+        const auto* record = find_authentication_plan_record(record_id);
+        assert(record != 0);
+        assert(record->checkpoint_id == result.checkpoint_id);
+        assert(record->segment_id == result.segment_id);
+        assert(record->kind
+                == AuthenticationRecordKind::checkpoint_output_share);
+        assert(std::find(result.sharing_ids.begin(),
+                result.sharing_ids.end(), record->sharing_id)
+                != result.sharing_ids.end());
+
+        for (size_t j = i + 1;
+                j < result.authentication_record_ids.size(); j++)
+            assert(record_id != result.authentication_record_ids.at(j));
+    }
+
+    switch (result.action)
+    {
+    case SegmentCompletionReadinessAction::checkpoint_still_open:
+        assert(segment_lifecycle.initialized);
+        assert(segment_lifecycle.segment_open);
+        assert(segment_lifecycle.checkpoint_open);
+        assert(segment_lifecycle.current_segment_id
+                == result.segment_id);
+        assert(segment_lifecycle.current_output_checkpoint_id
+                == result.checkpoint_id);
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::checkpoint_not_sealed:
+        assert(segment_lifecycle.initialized);
+        assert(segment_lifecycle.segment_open);
+        assert(not segment_lifecycle.checkpoint_open);
+        assert(not checkpoint->sealed);
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::
+            authentication_not_requested:
+        assert(segment_lifecycle.initialized);
+        assert(segment_lifecycle.segment_open);
+        assert(not segment_lifecycle.checkpoint_open);
+        assert(checkpoint->sealed);
+        assert(not checkpoint->authentication_requested);
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::
+            authentication_records_missing:
+        assert(checkpoint->sealed);
+        assert(checkpoint->authentication_requested);
+        assert(result.authentication_record_ids.empty());
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::
+            authentication_incomplete:
+        assert(checkpoint->sealed);
+        assert(checkpoint->authentication_requested);
+        assert(not result.authentication_record_ids.empty());
+        assert(not checkpoint_authentication_plan_complete(
+                result.checkpoint_id));
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::
+            checkpoint_not_authenticated:
+        assert(checkpoint->sealed);
+        assert(checkpoint->authentication_requested);
+        assert(not result.authentication_record_ids.empty());
+        assert(checkpoint_authentication_plan_complete(
+                result.checkpoint_id));
+        assert(not checkpoint->authenticated
+                || not all_checkpoint_sharings_authenticated);
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::ready:
+        assert(checkpoint->sealed);
+        assert(checkpoint->authentication_requested);
+        assert(not result.authentication_record_ids.empty());
+        assert(checkpoint_authentication_plan_complete(
+                result.checkpoint_id));
+        assert(checkpoint->authenticated);
+        assert(all_checkpoint_sharings_authenticated);
+        if (result.state_updated)
+        {
+            assert(segment_lifecycle.initialized);
+            assert(not segment_lifecycle.segment_open);
+            assert(not segment_lifecycle.checkpoint_open);
+            assert(segment_lifecycle.current_segment_id
+                    == result.segment_id);
+            assert(segment_lifecycle.last_completed_segment_id
+                    == result.segment_id);
+            assert(segment_lifecycle.current_output_checkpoint_id
+                    == result.checkpoint_id);
+        }
+        else if (segment_lifecycle.initialized
+                && segment_lifecycle.current_segment_id
+                    == result.segment_id)
+        {
+            assert(segment_lifecycle.segment_open);
+            assert(not segment_lifecycle.checkpoint_open);
+            assert(segment_lifecycle.current_output_checkpoint_id
+                    == result.checkpoint_id);
+        }
+        break;
+
+    case SegmentCompletionReadinessAction::already_completed:
+        assert(segment_lifecycle.initialized);
+        assert(not segment_lifecycle.segment_open);
+        assert(not segment_lifecycle.checkpoint_open);
+        assert(segment_lifecycle.current_segment_id
+                == result.segment_id);
+        assert(segment_lifecycle.last_completed_segment_id
+                == result.segment_id);
+        assert(segment_lifecycle.current_output_checkpoint_id
+                == result.checkpoint_id);
+        assert(checkpoint->authenticated);
+        assert(not result.authentication_record_ids.empty());
+        assert(checkpoint_authentication_plan_complete(
+                result.checkpoint_id));
+        assert(all_checkpoint_sharings_authenticated);
+        assert(not result.ready);
+        assert(not result.state_updated);
+        break;
+
+    case SegmentCompletionReadinessAction::no_open_segment:
+    case SegmentCompletionReadinessAction::missing_output_checkpoint:
+    case SegmentCompletionReadinessAction::none:
         assert(false);
         break;
     }
