@@ -944,6 +944,43 @@ private:
         vector<pair<int, int>> newly_disputed_pairs;
     };
 
+    enum class DisputeControlUpdateApplicationAction
+    {
+        none,
+        no_action,
+        pending_analyze_sharing,
+        recorded_corrupted_party,
+        recorded_disputed_pair,
+        already_recorded,
+        inconsistent_state,
+    };
+
+    struct DisputeControlUpdateApplicationResult
+    {
+        bool valid = false;
+        DisputeControlUpdateApplicationAction action =
+                DisputeControlUpdateApplicationAction::none;
+
+        DisputeControlUpdatePlanAction plan_action =
+                DisputeControlUpdatePlanAction::none;
+        FaultLocalizationAction fault_action =
+                FaultLocalizationAction::none;
+        FaultLocalizationSource source = FaultLocalizationSource::none;
+        SharingToAnalyze sharing_to_analyze = SharingToAnalyze::none;
+
+        bool state_updated = false;
+
+        int corrupted_party = -1;
+
+        int disputed_party_a = -1;
+        int disputed_party_b = -1;
+        int primary_party = -1;
+        int counterparty = -1;
+
+        vector<int> newly_corrupted_parties;
+        vector<pair<int, int>> newly_disputed_pairs;
+    };
+
     enum class FaultLocalizationApplicationAction
     {
         none,
@@ -1267,6 +1304,13 @@ private:
             const;
     void validate_dispute_control_update_plan(
             const DisputeControlUpdatePlan& plan) const;
+    DisputeControlUpdateApplicationResult
+        apply_dispute_control_update_once(
+                const FaultLocalizationOutcome& outcome);
+    DisputeControlUpdateApplicationResult
+        apply_current_dispute_control_update_once();
+    void validate_dispute_control_update_application_result(
+            const DisputeControlUpdateApplicationResult& result) const;
     int corruption_threshold() const;
     bool has_dispute_control_state() const;
     vector<int> active_parties() const;

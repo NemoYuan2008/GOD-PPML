@@ -6804,6 +6804,416 @@ void AtlasGsz<T>::validate_dispute_control_update_plan(
 }
 
 template<class T>
+typename AtlasGsz<T>::DisputeControlUpdateApplicationResult
+AtlasGsz<T>::apply_dispute_control_update_once(
+        const FaultLocalizationOutcome& outcome)
+{
+    int n = P.num_players();
+
+    DisputeControlUpdatePlan plan =
+            inspect_dispute_control_update_plan(outcome);
+
+    bool initialized_before = dispute_control_state.initialized;
+    auto raw_corr_before = dispute_control_state.corr;
+    auto raw_disp_before = dispute_control_state.disp;
+
+    auto raw_state_unchanged = [&]()
+    {
+        return dispute_control_state.initialized == initialized_before
+                && dispute_control_state.corr == raw_corr_before
+                && dispute_control_state.disp == raw_disp_before;
+    };
+
+    auto read_logical_state = [&](bool initialized,
+            const vector<bool>& raw_corr,
+            const vector<vector<bool>>& raw_disp,
+            vector<bool>& corr,
+            vector<vector<bool>>& disp)
+    {
+        corr.assign(n, false);
+        disp.assign(n, vector<bool>(n, false));
+
+        if (not initialized)
+            return true;
+
+        if (raw_corr.size() != size_t(n)
+                || raw_disp.size() != size_t(n))
+            return false;
+
+        for (int i = 0; i < n; i++)
+            if (raw_disp.at(i).size() != size_t(n))
+                return false;
+
+        corr = raw_corr;
+        disp = raw_disp;
+        return true;
+    };
+
+    auto read_current_logical_state = [&](
+            vector<bool>& corr,
+            vector<vector<bool>>& disp)
+    {
+        return read_logical_state(
+                dispute_control_state.initialized,
+                dispute_control_state.corr,
+                dispute_control_state.disp,
+                corr,
+                disp);
+    };
+
+    vector<bool> corr_before;
+    vector<vector<bool>> disp_before;
+    bool before_state_valid = read_logical_state(
+            initialized_before,
+            raw_corr_before,
+            raw_disp_before,
+            corr_before,
+            disp_before);
+
+    DisputeControlUpdateApplicationResult result{};
+    result.valid = true;
+    result.plan_action = plan.action;
+    result.fault_action = plan.fault_action;
+    result.source = plan.source;
+    result.sharing_to_analyze = plan.sharing_to_analyze;
+    result.corrupted_party = plan.corrupted_party;
+    result.disputed_party_a = plan.disputed_party_a;
+    result.disputed_party_b = plan.disputed_party_b;
+    result.primary_party = plan.primary_party;
+    result.counterparty = plan.counterparty;
+
+    auto sorted_parties = [](vector<int> parties)
+    {
+        sort(parties.begin(), parties.end());
+        return parties;
+    };
+
+    auto sorted_disputed_pairs = [](vector<pair<int, int>> pairs)
+    {
+        for (auto& disputed_pair : pairs)
+            if (disputed_pair.second < disputed_pair.first)
+                swap(disputed_pair.first, disputed_pair.second);
+        sort(pairs.begin(), pairs.end());
+        return pairs;
+    };
+
+    auto finish = [&](DisputeControlUpdateApplicationAction action)
+            -> DisputeControlUpdateApplicationResult
+    {
+        result.action = action;
+        validate_dispute_control_update_application_result(result);
+        return result;
+    };
+
+    auto finish_inconsistent = [&]()
+            -> DisputeControlUpdateApplicationResult
+    {
+        return finish(
+                DisputeControlUpdateApplicationAction::inconsistent_state);
+    };
+
+    auto mismatch = [&]() -> DisputeControlUpdateApplicationResult
+    {
+#ifndef NDEBUG
+        assert(false);
+#endif
+        return finish_inconsistent();
+    };
+
+    auto finish_without_mutation =
+            [&](DisputeControlUpdateApplicationAction action)
+                -> DisputeControlUpdateApplicationResult
+    {
+        if (not raw_state_unchanged())
+            return mismatch();
+
+        result.state_updated = false;
+        result.newly_corrupted_parties.clear();
+        result.newly_disputed_pairs.clear();
+        return finish(action);
+    };
+
+    auto derive_actual_delta = [&]()
+    {
+        vector<bool> corr_after;
+        vector<vector<bool>> disp_after;
+        if (not before_state_valid
+                || not read_current_logical_state(corr_after, disp_after))
+            return false;
+
+        result.newly_corrupted_parties.clear();
+        result.newly_disputed_pairs.clear();
+
+        for (int i = 0; i < n; i++)
+        {
+            if (corr_before.at(i) && not corr_after.at(i))
+                return false;
+            if (not corr_before.at(i) && corr_after.at(i))
+                result.newly_corrupted_parties.push_back(i);
+
+            if (disp_after.at(i).at(i))
+                return false;
+        }
+
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = i + 1; j < n; j++)
+            {
+                if (disp_after.at(i).at(j)
+                        != disp_after.at(j).at(i))
+                    return false;
+                if (disp_before.at(i).at(j)
+                        && not disp_after.at(i).at(j))
+                    return false;
+                if (not disp_before.at(i).at(j)
+                        && disp_after.at(i).at(j))
+                    result.newly_disputed_pairs.push_back(
+                            make_pair(i, j));
+            }
+        }
+
+        result.state_updated =
+                not result.newly_corrupted_parties.empty()
+                || not result.newly_disputed_pairs.empty();
+        return true;
+    };
+
+    auto actual_delta_matches_plan = [&]()
+    {
+        return result.state_updated == plan.state_updated
+                && sorted_parties(result.newly_corrupted_parties)
+                    == sorted_parties(plan.newly_corrupted_parties)
+                && sorted_disputed_pairs(result.newly_disputed_pairs)
+                    == sorted_disputed_pairs(plan.newly_disputed_pairs);
+    };
+
+    switch (plan.action)
+    {
+    case DisputeControlUpdatePlanAction::no_action:
+        return finish_without_mutation(
+                DisputeControlUpdateApplicationAction::no_action);
+
+    case DisputeControlUpdatePlanAction::needs_analyze_sharing:
+        return finish_without_mutation(
+                DisputeControlUpdateApplicationAction::
+                    pending_analyze_sharing);
+
+    case DisputeControlUpdatePlanAction::already_recorded:
+        return finish_without_mutation(
+                DisputeControlUpdateApplicationAction::already_recorded);
+
+    case DisputeControlUpdatePlanAction::inconsistent_state:
+        return finish_without_mutation(
+                DisputeControlUpdateApplicationAction::
+                    inconsistent_state);
+
+    case DisputeControlUpdatePlanAction::
+            would_record_corrupted_party:
+    {
+        if (not before_state_valid)
+            return mismatch();
+
+        FaultLocalizationApplication application{};
+        record_corrupted_party(plan.corrupted_party, application);
+        if (not derive_actual_delta()
+                || not actual_delta_matches_plan())
+            return mismatch();
+
+        return finish(
+                DisputeControlUpdateApplicationAction::
+                    recorded_corrupted_party);
+    }
+
+    case DisputeControlUpdatePlanAction::
+            would_record_disputed_pair:
+    {
+        if (not before_state_valid)
+            return mismatch();
+
+        FaultLocalizationApplication application{};
+        record_disputed_pair(
+                plan.primary_party, plan.counterparty, application);
+        if (not derive_actual_delta()
+                || not actual_delta_matches_plan())
+            return mismatch();
+
+        return finish(
+                DisputeControlUpdateApplicationAction::
+                    recorded_disputed_pair);
+    }
+
+    case DisputeControlUpdatePlanAction::none:
+        break;
+    }
+
+    return mismatch();
+}
+
+template<class T>
+typename AtlasGsz<T>::DisputeControlUpdateApplicationResult
+AtlasGsz<T>::apply_current_dispute_control_update_once()
+{
+    if (have_ultimate_failure_context)
+        return apply_dispute_control_update_once(
+                ultimate_failure_context.fault_localization);
+
+    FaultLocalizationOutcome no_current_outcome{};
+    no_current_outcome.valid = true;
+    no_current_outcome.action = FaultLocalizationAction::none;
+    no_current_outcome.source = FaultLocalizationSource::none;
+    return apply_dispute_control_update_once(no_current_outcome);
+}
+
+template<class T>
+void AtlasGsz<T>::validate_dispute_control_update_application_result(
+        const DisputeControlUpdateApplicationResult& result) const
+{
+    assert(result.valid);
+    assert(result.action
+            != DisputeControlUpdateApplicationAction::none);
+    assert(result.plan_action != DisputeControlUpdatePlanAction::none);
+
+    int n = P.num_players();
+    auto party_in_range = [&](int party)
+    {
+        return 0 <= party && party < n;
+    };
+
+    auto has_corrupted_party = [&]()
+    {
+        return party_in_range(result.corrupted_party);
+    };
+
+    auto has_disputed_pair = [&]()
+    {
+        return party_in_range(result.disputed_party_a)
+                && party_in_range(result.disputed_party_b)
+                && result.disputed_party_a < result.disputed_party_b;
+    };
+
+    for (size_t i = 0; i < result.newly_corrupted_parties.size(); i++)
+    {
+        int party = result.newly_corrupted_parties.at(i);
+        assert(party_in_range(party));
+        if (i > 0)
+            assert(result.newly_corrupted_parties.at(i - 1) < party);
+    }
+
+    for (size_t i = 0; i < result.newly_disputed_pairs.size(); i++)
+    {
+        auto disputed_pair = result.newly_disputed_pairs.at(i);
+        assert(party_in_range(disputed_pair.first));
+        assert(party_in_range(disputed_pair.second));
+        assert(disputed_pair.first < disputed_pair.second);
+        if (i > 0)
+            assert(result.newly_disputed_pairs.at(i - 1)
+                    < disputed_pair);
+    }
+
+    assert(result.state_updated
+            == (not result.newly_corrupted_parties.empty()
+                || not result.newly_disputed_pairs.empty()));
+
+    switch (result.action)
+    {
+    case DisputeControlUpdateApplicationAction::no_action:
+        assert(result.plan_action
+                == DisputeControlUpdatePlanAction::no_action);
+        assert(result.fault_action == FaultLocalizationAction::none);
+        assert(not result.state_updated);
+        break;
+
+    case DisputeControlUpdateApplicationAction::
+            pending_analyze_sharing:
+        assert(result.plan_action
+                == DisputeControlUpdatePlanAction::
+                    needs_analyze_sharing);
+        assert(result.fault_action
+                == FaultLocalizationAction::needs_analyze_sharing);
+        assert(result.sharing_to_analyze == SharingToAnalyze::alpha
+                || result.sharing_to_analyze == SharingToAnalyze::beta);
+        assert(not result.state_updated);
+        break;
+
+    case DisputeControlUpdateApplicationAction::
+            recorded_corrupted_party:
+        assert(result.plan_action
+                == DisputeControlUpdatePlanAction::
+                    would_record_corrupted_party);
+        assert(result.fault_action
+                == FaultLocalizationAction::identify_corrupted_party);
+        assert(has_corrupted_party());
+        assert(result.state_updated);
+        assert(find(result.newly_corrupted_parties.begin(),
+                result.newly_corrupted_parties.end(),
+                result.corrupted_party)
+                != result.newly_corrupted_parties.end());
+        break;
+
+    case DisputeControlUpdateApplicationAction::
+            recorded_disputed_pair:
+    {
+        assert(result.plan_action
+                == DisputeControlUpdatePlanAction::
+                    would_record_disputed_pair);
+        assert(result.fault_action
+                == FaultLocalizationAction::identify_disputed_pair);
+        assert(party_in_range(result.primary_party));
+        assert(party_in_range(result.counterparty));
+        assert(result.primary_party != result.counterparty);
+        assert(has_disputed_pair());
+        assert(result.disputed_party_a
+                == min(result.primary_party, result.counterparty));
+        assert(result.disputed_party_b
+                == max(result.primary_party, result.counterparty));
+        assert(result.state_updated);
+        pair<int, int> disputed_pair = make_pair(
+                result.disputed_party_a, result.disputed_party_b);
+        assert(find(result.newly_disputed_pairs.begin(),
+                result.newly_disputed_pairs.end(),
+                disputed_pair)
+                != result.newly_disputed_pairs.end());
+        break;
+    }
+
+    case DisputeControlUpdateApplicationAction::already_recorded:
+        assert(result.plan_action
+                == DisputeControlUpdatePlanAction::already_recorded);
+        assert(result.fault_action
+                == FaultLocalizationAction::identify_corrupted_party
+                || result.fault_action
+                    == FaultLocalizationAction::identify_disputed_pair);
+        if (result.fault_action
+                == FaultLocalizationAction::identify_corrupted_party)
+            assert(has_corrupted_party());
+        else
+        {
+            assert(party_in_range(result.primary_party));
+            assert(party_in_range(result.counterparty));
+            assert(result.primary_party != result.counterparty);
+            assert(has_disputed_pair());
+        }
+        assert(not result.state_updated);
+        break;
+
+    case DisputeControlUpdateApplicationAction::inconsistent_state:
+        break;
+
+    case DisputeControlUpdateApplicationAction::none:
+        assert(false);
+        break;
+    }
+
+    if (result.action
+            != DisputeControlUpdateApplicationAction::
+                inconsistent_state)
+    {
+        assert(result.plan_action
+                != DisputeControlUpdatePlanAction::inconsistent_state);
+    }
+}
+
+template<class T>
 void AtlasGsz<T>::ensure_dispute_control_state_initialized()
 {
     int n = P.num_players();
