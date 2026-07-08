@@ -847,6 +847,44 @@ private:
         vector<uint64_t> pending_request_ids;
     };
 
+    enum class SegmentRecoveryApplicationAction
+    {
+        none,
+        no_action,
+        promoted_checkpoint,
+        completed_authenticated_segment,
+        enqueued_analyze_requests,
+        already_completed,
+        waiting,
+        inconsistent_state,
+    };
+
+    struct SegmentRecoveryApplicationResult
+    {
+        bool valid = false;
+
+        SegmentRecoveryApplicationAction action =
+                SegmentRecoveryApplicationAction::none;
+
+        uint64_t segment_id = 0;
+        uint64_t checkpoint_id = 0;
+
+        bool state_updated = false;
+
+        SegmentRecoveryDecisionAction decision_action =
+                SegmentRecoveryDecisionAction::none;
+        AuthenticationPromotionAction promotion_action =
+                AuthenticationPromotionAction::none;
+        SegmentCompletionReadinessAction completion_action =
+                SegmentCompletionReadinessAction::none;
+        AuthenticationAnalyzeEnqueueAction enqueue_action =
+                AuthenticationAnalyzeEnqueueAction::none;
+
+        vector<uint64_t> sharing_ids;
+        vector<uint64_t> rejected_sharing_ids;
+        vector<uint64_t> pending_request_ids;
+    };
+
     struct FaultLocalizationOutcome
     {
         bool valid = false;
@@ -1155,6 +1193,10 @@ private:
     SegmentRecoveryDecisionResult inspect_segment_recovery_decision(
             uint64_t segment_id,
             uint64_t checkpoint_id) const;
+    SegmentRecoveryApplicationResult
+        apply_current_segment_recovery_decision_once();
+    SegmentRecoveryApplicationResult apply_segment_recovery_decision_once(
+            const SegmentRecoveryDecisionResult& decision);
     void validate_authentication_vote(
             const AuthenticationVerifierVote& vote) const;
     void validate_authentication_holder_decision(
@@ -1179,6 +1221,8 @@ private:
             const AuthenticationAnalyzeEnqueueResult& result) const;
     void validate_segment_recovery_decision_result(
             const SegmentRecoveryDecisionResult& result) const;
+    void validate_segment_recovery_application_result(
+            const SegmentRecoveryApplicationResult& result) const;
     void ensure_dispute_control_state_initialized();
     void validate_dispute_control_state() const;
     int corruption_threshold() const;
