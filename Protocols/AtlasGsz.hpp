@@ -6824,6 +6824,16 @@ AtlasGsz<T>::apply_dispute_control_update_once(
                 && dispute_control_state.disp == raw_disp_before;
     };
 
+    auto restore_raw_state = [&]()
+    {
+        dispute_control_state.initialized = initialized_before;
+        dispute_control_state.corr = raw_corr_before;
+        dispute_control_state.disp = raw_disp_before;
+#ifndef NDEBUG
+        assert(raw_state_unchanged());
+#endif
+    };
+
     auto read_logical_state = [&](bool initialized,
             const vector<bool>& raw_corr,
             const vector<vector<bool>>& raw_disp,
@@ -6908,13 +6918,21 @@ AtlasGsz<T>::apply_dispute_control_update_once(
     auto finish_inconsistent = [&]()
             -> DisputeControlUpdateApplicationResult
     {
+        result.state_updated = false;
+        result.newly_corrupted_parties.clear();
+        result.newly_disputed_pairs.clear();
         return finish(
                 DisputeControlUpdateApplicationAction::inconsistent_state);
     };
 
-    auto mismatch = [&]() -> DisputeControlUpdateApplicationResult
+    auto mismatch = [&](bool restore_state)
+            -> DisputeControlUpdateApplicationResult
     {
+        if (restore_state)
+            restore_raw_state();
 #ifndef NDEBUG
+        if (restore_state)
+            assert(raw_state_unchanged());
         assert(false);
 #endif
         return finish_inconsistent();
@@ -6925,8 +6943,11 @@ AtlasGsz<T>::apply_dispute_control_update_once(
                 -> DisputeControlUpdateApplicationResult
     {
         if (not raw_state_unchanged())
-            return mismatch();
+            return mismatch(true);
 
+#ifndef NDEBUG
+        assert(raw_state_unchanged());
+#endif
         result.state_updated = false;
         result.newly_corrupted_parties.clear();
         result.newly_disputed_pairs.clear();
@@ -7011,14 +7032,15 @@ AtlasGsz<T>::apply_dispute_control_update_once(
             would_record_corrupted_party:
     {
         if (not before_state_valid)
-            return mismatch();
+            return mismatch(false);
 
         FaultLocalizationApplication application{};
         record_corrupted_party(plan.corrupted_party, application);
         if (not derive_actual_delta()
                 || not actual_delta_matches_plan())
-            return mismatch();
+            return mismatch(true);
 
+        validate_dispute_control_state();
         return finish(
                 DisputeControlUpdateApplicationAction::
                     recorded_corrupted_party);
@@ -7028,15 +7050,16 @@ AtlasGsz<T>::apply_dispute_control_update_once(
             would_record_disputed_pair:
     {
         if (not before_state_valid)
-            return mismatch();
+            return mismatch(false);
 
         FaultLocalizationApplication application{};
         record_disputed_pair(
                 plan.primary_party, plan.counterparty, application);
         if (not derive_actual_delta()
                 || not actual_delta_matches_plan())
-            return mismatch();
+            return mismatch(true);
 
+        validate_dispute_control_state();
         return finish(
                 DisputeControlUpdateApplicationAction::
                     recorded_disputed_pair);
@@ -7046,7 +7069,7 @@ AtlasGsz<T>::apply_dispute_control_update_once(
         break;
     }
 
-    return mismatch();
+    return mismatch(false);
 }
 
 template<class T>
