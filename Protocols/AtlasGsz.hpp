@@ -9498,6 +9498,14 @@ void AtlasGsz<T>::randomization()
     ultimate_failure_context = context;
     have_ultimate_failure_context = true;
 
+    auto analyze_enqueue_result =
+            enqueue_current_ultimate_failure_analyze_request_once();
+    ultimate_failure_context.analyze_enqueue_result =
+            analyze_enqueue_result;
+    ultimate_failure_context.has_analyze_enqueue_result = true;
+    validate_ultimate_failure_analyze_enqueue_result(
+            ultimate_failure_context.analyze_enqueue_result);
+
     assert(have_ultimate_failure_context);
     assert(ultimate_failure_context.valid);
     assert(ultimate_failure_context.decision.valid);

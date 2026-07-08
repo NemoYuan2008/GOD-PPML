@@ -1071,6 +1071,8 @@ private:
         FaultLocalizationApplication fault_application;
         bool has_analyze_sharing_request = false;
         AnalyzeSharingRequest analyze_sharing_request;
+        bool has_analyze_enqueue_result = false;
+        UltimateFailureAnalyzeEnqueueResult analyze_enqueue_result;
     };
 
     DisputeControlState dispute_control_state;
