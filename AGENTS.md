@@ -137,6 +137,8 @@ vertical slice**, exercised through a focused runtime hook. The slice includes:
 - authoritative ordered dealer-source batches;
 - restricted `e = 1` dealer Verify-Sharing over each exact unpadded source
   batch, executed before key and tag work;
+- restricted `e = 1` consistency checking for each transient `B = 4`
+  BaseSharing before any `check_mask=true` tag material is generated;
 - a fixed test authentication width of `B = 4`;
 - one reusable verifier-holder `mu` key epoch;
 - restricted `e = 1` Check-Key with a fresh uniform twisted mask `rho`;
@@ -154,12 +156,11 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. consistency verification for `BaseSharing`;
-2. configurable production authentication batch width;
-3. global Check-Tag aggregation across all dealers and batches;
-4. propagation of real source provenance through the normal PPML execution;
-5. normal segment/checkpoint scheduler integration;
-6. final production output gating through that scheduler.
+1. configurable production authentication batch width;
+2. global Check-Tag aggregation across all dealers and batches;
+3. propagation of real source provenance through the normal PPML execution;
+4. normal segment/checkpoint scheduler integration;
+5. final production output gating through that scheduler.
 
 Legacy authentication, recovery, and Analyze-related metadata skeletons remain
 in the code. They are not authoritative production provenance. Do not build
@@ -345,27 +346,31 @@ Focused optimistic-authentication hook:
 ```sh
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
+
+ATLAS_GSZ_AUTH_TEST=verify-failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=verify-failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
+
+ATLAS_GSZ_AUTH_TEST=base-failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=base-failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
+
 ATLAS_GSZ_AUTH_TEST=failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 ```
 
-The failure-mode invocations are expected to terminate nonzero after reporting
-fail-stop state. They must show no authenticated handles and no sealed or
-promoted checkpoint.
-
-For cryptographic milestones, add focused tests that demonstrate real
-communication and state transitions rather than only inspecting metadata.
+The three failure-mode families are expected to terminate nonzero after
+reporting their focused PASS state and the fail-stop
+`RecoveryNotImplemented` boundary. They must create no authenticated handles
+and must not seal or promote the affected checkpoint.
 
 ## Near-term honest-path milestones
 
 Unless the user changes priorities, the expected sequence is:
 
-1. checked `BaseSharing`;
-2. configurable production batch width;
-3. global all-dealer/all-batch Check-Tag aggregation;
-4. provenance capture from real segment-produced dealer sharings;
-5. normal segment verification → authentication → promotion integration;
-6. final output gating.
+1. configurable production authentication batch width;
+2. global all-dealer/all-batch Check-Tag aggregation;
+3. provenance capture from real segment-produced dealer sharings;
+4. normal segment verification → authentication → promotion integration;
+5. final output gating.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.

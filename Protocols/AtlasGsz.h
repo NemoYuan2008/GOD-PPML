@@ -381,6 +381,7 @@ private:
     {
         none,
         verify_sharing,
+        base_sharing,
         key_distribution,
         key_check,
         tag_generation,
@@ -417,12 +418,18 @@ private:
                 OptimisticAuthenticationFailureClass::none;
         bool verify_sharing_completed = false;
         bool verify_sharing_passed = false;
+        bool base_sharing_check_completed = false;
+        bool base_sharing_check_passed = false;
 
         // Retained only when the public compressed sharing is inconsistent.
         bool has_verify_sharing_failure_evidence = false;
         typename T::open_type verify_sharing_failure_challenge{};
         vector<typename T::open_type>
                 verify_sharing_failure_published_shares;
+        bool has_base_sharing_failure_evidence = false;
+        typename T::open_type base_sharing_failure_challenge{};
+        vector<typename T::open_type>
+                base_sharing_failure_published_shares;
         size_t authentication_instances = 0;
         vector<AuthenticatedSourceHandle> authenticated_handles;
     };
@@ -505,6 +512,7 @@ private:
         size_t key_establishment_communication = 0;
         size_t check_key_masking_equation_checks = 0;
         size_t verify_sharing_communication = 0;
+        size_t base_sharing_communication = 0;
         size_t tag_generation_communication = 0;
         size_t tag_checking_communication = 0;
         size_t total_authentication_instances = 0;
@@ -1570,8 +1578,17 @@ private:
     uint64_t register_dealer_source_batch(
             int dealer,
             const vector<T>& local_source_shares);
+    bool masked_degree_t_consistency_check(
+            const vector<T>& local_shares,
+            bool inject_bad_published_share,
+            typename T::open_type& challenge,
+            vector<typename T::open_type>& published_shares);
     bool verify_dealer_source_batch(
             DealerSourceBatchRecord& batch,
+            bool inject_bad_published_share);
+    bool prepare_and_verify_base_sharing(
+            DealerSourceBatchRecord& batch,
+            vector<T>& base_sharing,
             bool inject_bad_published_share);
     vector<vector<T>> source_chunks_for_batch(
             const DealerSourceBatchRecord& batch) const;
@@ -1587,7 +1604,8 @@ private:
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
             bool inject_bad_presentation = false,
-            bool inject_bad_verify_sharing = false);
+            bool inject_bad_verify_sharing = false,
+            bool inject_bad_base_sharing = false);
     void fail_optimistic_authentication(
             DealerSourceBatchRecord* batch,
             OptimisticAuthenticationFailureClass failure_class,

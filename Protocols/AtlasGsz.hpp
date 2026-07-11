@@ -648,26 +648,23 @@ uint64_t AtlasGsz<T>::register_dealer_source_batch(
 }
 
 template<class T>
-bool AtlasGsz<T>::verify_dealer_source_batch(
-        DealerSourceBatchRecord& batch,
-        bool inject_bad_published_share)
+bool AtlasGsz<T>::masked_degree_t_consistency_check(
+        const vector<T>& local_shares,
+        bool inject_bad_published_share,
+        typename T::open_type& challenge,
+        vector<typename T::open_type>& published_shares)
 {
-    assert(batch.authentication_state
-            == DealerBatchAuthenticationState::pending);
-    assert(not batch.local_source_shares.empty());
-    assert(not batch.verify_sharing_completed);
+    assert(not local_shares.empty());
 
-    const size_t communication_before = P.total_comm().sent;
-
-    // GSZ20 Protocol 18, e=1: the random mask and complete unpadded batch
-    // are fixed before sampling the public compression challenge. Zero is a
-    // valid challenge in this base-field instantiation.
+    // The random mask and complete input vector are fixed before sampling the
+    // public compression challenge. Zero is valid in this base-field e=1
+    // realization.
     T compressed_sharing = get_random();
-    typename T::open_type challenge = sample_agreed_challenge();
+    challenge = sample_agreed_challenge();
     typename T::open_type power = challenge;
-    for (const auto& source_share : batch.local_source_shares)
+    for (const auto& local_share : local_shares)
     {
-        compressed_sharing += source_share * power;
+        compressed_sharing += local_share * power;
         power *= challenge;
     }
 
@@ -679,20 +676,84 @@ bool AtlasGsz<T>::verify_dealer_source_batch(
     auto published = broadcast_local_shares(
             vector<T>(1, compressed_sharing));
     assert(published.size() == 1);
-    auto classification = classify_degree_t_sharing(published.at(0));
+    published_shares = published.at(0);
+    return classify_degree_t_sharing(published_shares).consistent;
+}
+
+template<class T>
+bool AtlasGsz<T>::verify_dealer_source_batch(
+        DealerSourceBatchRecord& batch,
+        bool inject_bad_published_share)
+{
+    assert(batch.authentication_state
+            == DealerBatchAuthenticationState::pending);
+    assert(not batch.local_source_shares.empty());
+    assert(not batch.verify_sharing_completed);
+
+    const size_t communication_before = P.total_comm().sent;
+    typename T::open_type challenge{};
+    vector<typename T::open_type> published_shares;
+    bool consistent = masked_degree_t_consistency_check(
+            batch.local_source_shares, inject_bad_published_share,
+            challenge, published_shares);
     optimistic_authentication_state.verify_sharing_communication +=
             P.total_comm().sent - communication_before;
 
     batch.verify_sharing_completed = true;
-    batch.verify_sharing_passed = classification.consistent;
-    if (classification.consistent)
+    batch.verify_sharing_passed = consistent;
+    if (consistent)
         return true;
 
     batch.has_verify_sharing_failure_evidence = true;
     batch.verify_sharing_failure_challenge = challenge;
-    batch.verify_sharing_failure_published_shares = published.at(0);
+    batch.verify_sharing_failure_published_shares = published_shares;
     fail_optimistic_authentication(&batch,
             OptimisticAuthenticationFailureClass::verify_sharing);
+    return false;
+}
+
+template<class T>
+bool AtlasGsz<T>::prepare_and_verify_base_sharing(
+        DealerSourceBatchRecord& batch,
+        vector<T>& base_sharing,
+        bool inject_bad_published_share)
+{
+    assert(batch.authentication_state
+            == DealerBatchAuthenticationState::pending);
+    assert(not batch.base_sharing_check_completed);
+    assert(base_sharing.empty());
+
+    const size_t communication_before = P.total_comm().sent;
+    vector<typename T::open_type> dealer_values;
+    if (P.my_num() == batch.dealer)
+    {
+        dealer_values.resize(OptimisticAuthenticationState::batch_width);
+        for (auto& value : dealer_values)
+            value.randomize(optimistic_authentication_prng);
+    }
+    base_sharing = deal_optimistic_source_values(
+            batch.dealer, dealer_values,
+            OptimisticAuthenticationState::batch_width);
+
+    typename T::open_type challenge{};
+    vector<typename T::open_type> published_shares;
+    bool consistent = masked_degree_t_consistency_check(
+            base_sharing, inject_bad_published_share,
+            challenge, published_shares);
+    optimistic_authentication_state.base_sharing_communication +=
+            P.total_comm().sent - communication_before;
+
+    batch.base_sharing_check_completed = true;
+    batch.base_sharing_check_passed = consistent;
+    if (consistent)
+        return true;
+
+    batch.has_base_sharing_failure_evidence = true;
+    batch.base_sharing_failure_challenge = challenge;
+    batch.base_sharing_failure_published_shares = published_shares;
+    base_sharing.clear();
+    fail_optimistic_authentication(&batch,
+            OptimisticAuthenticationFailureClass::base_sharing);
     return false;
 }
 
@@ -1068,7 +1129,8 @@ bool AtlasGsz<T>::check_batch_tags(
 template<class T>
 bool AtlasGsz<T>::authenticate_dealer_source_batch(
         uint64_t batch_id, bool inject_bad_presentation,
-        bool inject_bad_verify_sharing)
+        bool inject_bad_verify_sharing,
+        bool inject_bad_base_sharing)
 {
     auto* batch = find_dealer_source_batch(batch_id);
     assert(batch != 0);
@@ -1106,18 +1168,12 @@ bool AtlasGsz<T>::authenticate_dealer_source_batch(
     optimistic_authentication_state.tag_generation_communication +=
             P.total_comm().sent - communication_before;
 
+    vector<T> check_mask_shares;
+    if (not prepare_and_verify_base_sharing(
+            *batch, check_mask_shares, inject_bad_base_sharing))
+        return false;
+
     communication_before = P.total_comm().sent;
-    vector<typename T::open_type> dealer_mask_values;
-    if (P.my_num() == batch->dealer)
-    {
-        dealer_mask_values.resize(
-                OptimisticAuthenticationState::batch_width);
-        for (auto& value : dealer_mask_values)
-            value.randomize(optimistic_authentication_prng);
-    }
-    vector<T> check_mask_shares = deal_optimistic_source_values(
-            batch->dealer, dealer_mask_values,
-            OptimisticAuthenticationState::batch_width);
     vector<vector<T>> check_mask_chunks(1, check_mask_shares);
     if (not compute_and_deliver_batch_tags(
             *batch, check_mask_chunks, true))
@@ -1244,8 +1300,10 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
 
     bool failure_mode = mode == "failure";
     bool verify_failure_mode = mode == "verify-failure";
+    bool base_failure_mode = mode == "base-failure";
     bool first_authenticated = authenticate_dealer_source_batch(
-            first_batch_id, failure_mode, verify_failure_mode);
+            first_batch_id, failure_mode, verify_failure_mode,
+            base_failure_mode);
     auto* first_batch = find_dealer_source_batch(first_batch_id);
     assert(first_batch != 0);
 
@@ -1281,6 +1339,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         assert(state.key_establishment_runs == 0);
         assert(state.key_establishment_communication == 0);
         assert(state.check_key_masking_equation_checks == 0);
+        assert(not first_batch->base_sharing_check_completed);
+        assert(not first_batch->base_sharing_check_passed);
+        assert(not first_batch->has_base_sharing_failure_evidence);
+        assert(first_batch->base_sharing_failure_published_shares.empty());
+        assert(state.base_sharing_communication == 0);
         assert(state.nu_material.empty());
         assert(state.holder_tags.empty());
         assert(state.total_authentication_instances == 0);
@@ -1308,6 +1371,70 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             == size_t(P.num_players() - 1));
     const size_t key_communication = state.key_establishment_communication;
     assert(key_communication > 0);
+
+    if (base_failure_mode)
+    {
+        assert(not first_authenticated);
+        assert(first_batch->authentication_instances == 3);
+        assert(state.total_authentication_instances == 3);
+        assert(state.tag_generation_communication > 0);
+
+        size_t ordinary_nu_records = 0;
+        size_t ordinary_tag_records = 0;
+        for (const auto& material : state.nu_material)
+        {
+            assert(material.batch_id == first_batch_id);
+            assert(not material.check_mask);
+            ordinary_nu_records++;
+        }
+        for (const auto& tag : state.holder_tags)
+        {
+            assert(tag.batch_id == first_batch_id);
+            assert(not tag.check_mask);
+            ordinary_tag_records++;
+        }
+        assert(ordinary_nu_records == state.keys.size() * 3);
+        assert(ordinary_tag_records == state.keys.size() * 3);
+
+        assert(first_batch->base_sharing_check_completed);
+        assert(not first_batch->base_sharing_check_passed);
+        assert(first_batch->has_base_sharing_failure_evidence);
+        assert(first_batch->base_sharing_failure_published_shares.size()
+                == size_t(P.num_players()));
+        assert(state.base_sharing_communication > 0);
+        assert(state.tag_checking_communication == 0);
+        assert(first_batch->authentication_state
+                == DealerBatchAuthenticationState::rejected);
+        assert(first_batch->failure_class
+                == OptimisticAuthenticationFailureClass::base_sharing);
+        assert(first_batch->authenticated_handles.empty());
+        assert(not promote_optimistic_checkpoint(first_checkpoint_id));
+        assert(not state.checkpoints.at(0).sealed);
+        assert(not state.checkpoints.at(0).promoted);
+        assert(state.status
+                == OptimisticAuthenticationStatus::
+                    RecoveryNotImplemented);
+        assert(state.failure_class
+                == OptimisticAuthenticationFailureClass::base_sharing);
+        assert(state.failed_batch_id == first_batch_id);
+        assert(state.failed_verifier == -1);
+        assert(state.failed_holder == -1);
+        assert(dispute_control_state.corr.empty());
+        assert(dispute_control_state.disp.empty());
+        assert(pending_analyze_sharing_state.requests.empty());
+        if (P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST base-failure PASS "
+                 << "status=RecoveryNotImplemented handles=0 sealed=0 "
+                 << "promoted=0 checker=per-dealer-restricted "
+                 << "base_sharing=checked-rejected" << endl;
+        return false;
+    }
+
+    assert(first_batch->base_sharing_check_completed);
+    assert(first_batch->base_sharing_check_passed);
+    assert(not first_batch->has_base_sharing_failure_evidence);
+    assert(first_batch->base_sharing_failure_published_shares.empty());
+    assert(state.base_sharing_communication > 0);
 
     if (failure_mode)
     {
@@ -1390,6 +1517,10 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
     assert(second_batch->verify_sharing_passed);
     assert(not second_batch->has_verify_sharing_failure_evidence);
     assert(second_batch->verify_sharing_failure_published_shares.empty());
+    assert(second_batch->base_sharing_check_completed);
+    assert(second_batch->base_sharing_check_passed);
+    assert(not second_batch->has_base_sharing_failure_evidence);
+    assert(second_batch->base_sharing_failure_published_shares.empty());
     assert(second_batch->authentication_instances == 2);
     assert(second_batch->authenticated_handles.size()
             == second_local_shares.size());
@@ -1413,7 +1544,45 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         assert(first_nu->nu != second_nu->nu);
     }
 
+    size_t base_nu_records = 0;
+    size_t base_tag_records = 0;
+    for (const auto& material : state.nu_material)
+        if (material.check_mask)
+        {
+            const auto* batch = find_dealer_source_batch(
+                    material.batch_id);
+            assert(batch != 0);
+            assert(batch->base_sharing_check_completed);
+            assert(batch->base_sharing_check_passed);
+            base_nu_records++;
+        }
+    for (const auto& tag : state.holder_tags)
+        if (tag.check_mask)
+        {
+            const auto* batch = find_dealer_source_batch(tag.batch_id);
+            assert(batch != 0);
+            assert(batch->base_sharing_check_completed);
+            assert(batch->base_sharing_check_passed);
+            base_tag_records++;
+        }
+    assert(base_nu_records == state.keys.size() * 2);
+    assert(base_tag_records == state.keys.size() * 2);
+
     assert(state.total_authentication_instances == 5);
+    assert(state.dealer_batches.size() == 2);
+    for (const auto& batch : state.dealer_batches)
+    {
+        assert(batch.authenticated_handles.size()
+                == batch.local_source_shares.size());
+        for (const auto& handle : batch.authenticated_handles)
+        {
+            assert(handle.batch_id == batch.batch_id);
+            assert(handle.dealer == batch.dealer);
+            assert(handle.source_ordinal
+                    < batch.local_source_shares.size());
+        }
+    }
+    assert(state.base_sharing_communication > 0);
     assert(state.tag_generation_communication > 0);
     assert(state.tag_checking_communication > 0);
     assert(state.status == OptimisticAuthenticationStatus::ready);
@@ -1429,6 +1598,8 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
              << state.check_key_masking_equation_checks
              << " verify_sharing_comm="
              << state.verify_sharing_communication
+             << " base_sharing_comm="
+             << state.base_sharing_communication
              << " tag_comm=" << state.tag_generation_communication
              << " restricted_check_comm="
              << state.tag_checking_communication
@@ -10854,7 +11025,8 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                     throw mac_fail(
                             "AtlasGsz: optimistic authentication test failed");
             }
-            else if (mode == "failure" || mode == "verify-failure")
+            else if (mode == "failure" || mode == "verify-failure"
+                    || mode == "base-failure")
             {
                 bool accepted = run_optimistic_authentication_test_hook(mode);
                 assert(not accepted);
@@ -10863,7 +11035,8 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
             }
             else
                 throw invalid_argument(
-                        "ATLAS_GSZ_AUTH_TEST must be honest, failure, or verify-failure");
+                        "ATLAS_GSZ_AUTH_TEST must be honest, failure, "
+                        "verify-failure, or base-failure");
         }
     }
 }
