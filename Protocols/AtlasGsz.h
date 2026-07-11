@@ -385,6 +385,7 @@ private:
     enum class OptimisticAuthenticationFailureClass
     {
         none,
+        invocation_validation,
         verify_sharing,
         base_sharing,
         key_distribution,
@@ -483,6 +484,7 @@ private:
         uint64_t batch_id = 0;
         size_t chunk_ordinal = 0;
         bool check_mask = false;
+        uint64_t key_epoch = 0;
         int verifier = -1;
         int holder = -1;
 
@@ -510,12 +512,69 @@ private:
         bool promoted = false;
     };
 
+    struct GlobalAuthenticationInvocationMember
+    {
+        uint64_t batch_id = 0;
+        int dealer = -1;
+        size_t ftag_chunk_count = 0;
+    };
+
+    struct GlobalAuthenticationInvocationRecord
+    {
+        uint64_t invocation_id = 0;
+        uint64_t key_epoch = 0;
+        uint64_t checkpoint_id = 0;
+        vector<GlobalAuthenticationInvocationMember> members;
+        size_t max_ftag_chunk_count = 0;
+
+        bool challenge_sampled = false;
+        typename T::open_type challenge{};
+        bool completed = false;
+        bool passed = false;
+        OptimisticAuthenticationFailureClass failure_class =
+                OptimisticAuthenticationFailureClass::none;
+        int failed_verifier = -1;
+        int failed_holder = -1;
+
+        // This presentation is retained only by the failing verifier
+        // process. It is never broadcast as public failure evidence.
+        bool owns_failure_presentation = false;
+        vector<typename T::open_type> failure_sigma;
+        typename T::open_type failure_tag{};
+    };
+
+    // Stack-local preparation state. It is not an authoritative planning or
+    // scheduler layer, and it is discarded after this invocation returns.
+    struct GlobalAuthenticationWorkingMember
+    {
+        uint64_t batch_id = 0;
+        vector<BaseFieldFTagSourceChunk> source_chunks;
+        vector<T> base_sharing;
+    };
+
+    struct GlobalAuthenticationWorkingSet
+    {
+        vector<GlobalAuthenticationWorkingMember> members;
+    };
+
+    enum class GlobalAuthenticationTestFault
+    {
+        none,
+        ordinary_source_presentation,
+        base_sharing_presentation,
+        aggregate_holder_tag,
+        missing_chunk,
+        duplicate_chunk,
+        key_epoch_mismatch,
+    };
+
     struct OptimisticAuthenticationState
     {
         uint64_t key_epoch = 1;
         uint64_t next_key_id = 1;
         uint64_t next_batch_id = 1;
         uint64_t next_checkpoint_id = 1;
+        uint64_t next_global_invocation_id = 1;
 
         bool keys_established = false;
         bool keys_checked = false;
@@ -529,6 +588,7 @@ private:
         size_t tag_generation_communication = 0;
         size_t tag_checking_communication = 0;
         size_t total_ftag_chunks = 0;
+        size_t global_check_tag_challenges = 0;
         bool test_hook_ran = false;
 
         OptimisticAuthenticationStatus status =
@@ -544,6 +604,7 @@ private:
         vector<BatchNuMaterialRecord> nu_material;
         vector<HolderTagRecord> holder_tags;
         vector<OptimisticCheckpointRecord> checkpoints;
+        vector<GlobalAuthenticationInvocationRecord> global_invocations;
     };
 
     enum class AuthenticationPlanStatus
@@ -1571,29 +1632,37 @@ private:
             uint64_t batch_id,
             size_t chunk_ordinal,
             bool check_mask,
+            uint64_t key_epoch,
             int verifier,
             int holder);
     const BatchNuMaterialRecord* find_batch_nu_material(
             uint64_t batch_id,
             size_t chunk_ordinal,
             bool check_mask,
+            uint64_t key_epoch,
             int verifier,
             int holder) const;
     HolderTagRecord* find_holder_tag(
             uint64_t batch_id,
             size_t chunk_ordinal,
             bool check_mask,
+            uint64_t key_epoch,
             int verifier,
             int holder);
     const HolderTagRecord* find_holder_tag(
             uint64_t batch_id,
             size_t chunk_ordinal,
             bool check_mask,
+            uint64_t key_epoch,
             int verifier,
             int holder) const;
     DealerSourceBatchRecord* find_dealer_source_batch(uint64_t batch_id);
     const DealerSourceBatchRecord* find_dealer_source_batch(
             uint64_t batch_id) const;
+    OptimisticCheckpointRecord* find_optimistic_checkpoint(
+            uint64_t checkpoint_id);
+    const OptimisticCheckpointRecord* find_optimistic_checkpoint(
+            uint64_t checkpoint_id) const;
     bool establish_optimistic_authentication_keys();
     bool check_optimistic_authentication_keys();
     vector<T> deal_optimistic_source_values(
@@ -1621,17 +1690,37 @@ private:
             DealerSourceBatchRecord& batch,
             const vector<BaseFieldFTagSourceChunk>& source_chunks,
             bool check_mask);
-    bool check_batch_tags(
-            DealerSourceBatchRecord& batch,
-            const vector<BaseFieldFTagSourceChunk>& source_chunks,
-            const vector<T>& check_mask_shares,
-            bool inject_bad_presentation);
+    bool prepare_global_authentication(
+            GlobalAuthenticationInvocationRecord& invocation,
+            const vector<uint64_t>& requested_batch_ids,
+            GlobalAuthenticationWorkingSet& working,
+            int inject_bad_verify_sharing_dealer,
+            int inject_bad_base_sharing_dealer,
+            GlobalAuthenticationTestFault test_fault);
+    bool validate_global_authentication_material(
+            const GlobalAuthenticationInvocationRecord& invocation,
+            const GlobalAuthenticationWorkingSet& working) const;
+    bool check_global_authentication(
+            GlobalAuthenticationInvocationRecord& invocation,
+            const GlobalAuthenticationWorkingSet& working,
+            GlobalAuthenticationTestFault test_fault);
+    bool commit_global_authentication(
+            GlobalAuthenticationInvocationRecord& invocation,
+            const GlobalAuthenticationWorkingSet& working);
+    bool authenticate_checkpoint_source_batches(
+            uint64_t checkpoint_id,
+            const vector<uint64_t>& requested_batch_ids,
+            GlobalAuthenticationTestFault test_fault =
+                    GlobalAuthenticationTestFault::none,
+            int inject_bad_verify_sharing_dealer = -1,
+            int inject_bad_base_sharing_dealer = -1);
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
             bool inject_bad_presentation = false,
             bool inject_bad_verify_sharing = false,
             bool inject_bad_base_sharing = false);
-    void fail_optimistic_authentication(
+    void fail_global_authentication(
+            GlobalAuthenticationInvocationRecord* invocation,
             DealerSourceBatchRecord* batch,
             OptimisticAuthenticationFailureClass failure_class,
             int verifier = -1,

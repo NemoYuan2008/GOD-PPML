@@ -434,12 +434,14 @@ AtlasGsz<T>::find_long_term_mu_key(int verifier, int holder) const
 template<class T>
 typename AtlasGsz<T>::BatchNuMaterialRecord*
 AtlasGsz<T>::find_batch_nu_material(uint64_t batch_id,
-        size_t chunk_ordinal, bool check_mask, int verifier, int holder)
+        size_t chunk_ordinal, bool check_mask, uint64_t key_epoch,
+        int verifier, int holder)
 {
     for (auto& material : optimistic_authentication_state.nu_material)
         if (material.batch_id == batch_id
                 && material.chunk_ordinal == chunk_ordinal
                 && material.check_mask == check_mask
+                && material.key_epoch == key_epoch
                 && material.verifier == verifier
                 && material.holder == holder)
             return &material;
@@ -449,13 +451,14 @@ AtlasGsz<T>::find_batch_nu_material(uint64_t batch_id,
 template<class T>
 const typename AtlasGsz<T>::BatchNuMaterialRecord*
 AtlasGsz<T>::find_batch_nu_material(uint64_t batch_id,
-        size_t chunk_ordinal, bool check_mask, int verifier,
-        int holder) const
+        size_t chunk_ordinal, bool check_mask, uint64_t key_epoch,
+        int verifier, int holder) const
 {
     for (const auto& material : optimistic_authentication_state.nu_material)
         if (material.batch_id == batch_id
                 && material.chunk_ordinal == chunk_ordinal
                 && material.check_mask == check_mask
+                && material.key_epoch == key_epoch
                 && material.verifier == verifier
                 && material.holder == holder)
             return &material;
@@ -465,12 +468,13 @@ AtlasGsz<T>::find_batch_nu_material(uint64_t batch_id,
 template<class T>
 typename AtlasGsz<T>::HolderTagRecord*
 AtlasGsz<T>::find_holder_tag(uint64_t batch_id, size_t chunk_ordinal,
-        bool check_mask, int verifier, int holder)
+        bool check_mask, uint64_t key_epoch, int verifier, int holder)
 {
     for (auto& tag : optimistic_authentication_state.holder_tags)
         if (tag.batch_id == batch_id
                 && tag.chunk_ordinal == chunk_ordinal
                 && tag.check_mask == check_mask
+                && tag.key_epoch == key_epoch
                 && tag.verifier == verifier
                 && tag.holder == holder)
             return &tag;
@@ -480,12 +484,14 @@ AtlasGsz<T>::find_holder_tag(uint64_t batch_id, size_t chunk_ordinal,
 template<class T>
 const typename AtlasGsz<T>::HolderTagRecord*
 AtlasGsz<T>::find_holder_tag(uint64_t batch_id, size_t chunk_ordinal,
-        bool check_mask, int verifier, int holder) const
+        bool check_mask, uint64_t key_epoch, int verifier,
+        int holder) const
 {
     for (const auto& tag : optimistic_authentication_state.holder_tags)
         if (tag.batch_id == batch_id
                 && tag.chunk_ordinal == chunk_ordinal
                 && tag.check_mask == check_mask
+                && tag.key_epoch == key_epoch
                 && tag.verifier == verifier
                 && tag.holder == holder)
             return &tag;
@@ -509,6 +515,26 @@ AtlasGsz<T>::find_dealer_source_batch(uint64_t batch_id) const
     for (const auto& batch : optimistic_authentication_state.dealer_batches)
         if (batch.batch_id == batch_id)
             return &batch;
+    return 0;
+}
+
+template<class T>
+typename AtlasGsz<T>::OptimisticCheckpointRecord*
+AtlasGsz<T>::find_optimistic_checkpoint(uint64_t checkpoint_id)
+{
+    for (auto& checkpoint : optimistic_authentication_state.checkpoints)
+        if (checkpoint.checkpoint_id == checkpoint_id)
+            return &checkpoint;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::OptimisticCheckpointRecord*
+AtlasGsz<T>::find_optimistic_checkpoint(uint64_t checkpoint_id) const
+{
+    for (const auto& checkpoint : optimistic_authentication_state.checkpoints)
+        if (checkpoint.checkpoint_id == checkpoint_id)
+            return &checkpoint;
     return 0;
 }
 
@@ -859,8 +885,6 @@ bool AtlasGsz<T>::verify_dealer_source_batch(
     batch.has_verify_sharing_failure_evidence = true;
     batch.verify_sharing_failure_challenge = challenge;
     batch.verify_sharing_failure_published_shares = published_shares;
-    fail_optimistic_authentication(&batch,
-            OptimisticAuthenticationFailureClass::verify_sharing);
     return false;
 }
 
@@ -910,8 +934,6 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
     batch.base_sharing_failure_challenge = challenge;
     batch.base_sharing_failure_published_shares = published_shares;
     base_sharing.clear();
-    fail_optimistic_authentication(&batch,
-            OptimisticAuthenticationFailureClass::base_sharing);
     return false;
 }
 
@@ -966,29 +988,6 @@ AtlasGsz<T>::source_chunks_for_batch(
     }
     assert(chunks.size() == chunk_count);
     return chunks;
-}
-
-template<class T>
-void AtlasGsz<T>::fail_optimistic_authentication(
-        DealerSourceBatchRecord* batch,
-        OptimisticAuthenticationFailureClass failure_class,
-        int verifier,
-        int holder)
-{
-    auto& state = optimistic_authentication_state;
-    state.status = OptimisticAuthenticationStatus::
-            RecoveryNotImplemented;
-    state.failure_class = failure_class;
-    state.failed_batch_id = batch == 0 ? 0 : batch->batch_id;
-    state.failed_verifier = verifier;
-    state.failed_holder = holder;
-    if (batch != 0)
-    {
-        batch->authentication_state =
-                DealerBatchAuthenticationState::rejected;
-        batch->failure_class = failure_class;
-        batch->authenticated_handles.clear();
-    }
 }
 
 template<class T>
@@ -1059,9 +1058,11 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
                             "AtlasGsz: FTag record index overflow"),
                     chunk, "AtlasGsz: FTag record index overflow");
             assert(find_batch_nu_material(batch.batch_id, chunk,
-                    check_mask, key.verifier, key.holder) == 0);
+                    check_mask, state.key_epoch,
+                    key.verifier, key.holder) == 0);
             assert(find_holder_tag(batch.batch_id, chunk,
-                    check_mask, key.verifier, key.holder) == 0);
+                    check_mask, state.key_epoch,
+                    key.verifier, key.holder) == 0);
 
             BatchNuMaterialRecord nu_record{};
             nu_record.batch_id = batch.batch_id;
@@ -1095,6 +1096,7 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
             tag_record.batch_id = batch.batch_id;
             tag_record.chunk_ordinal = chunk;
             tag_record.check_mask = check_mask;
+            tag_record.key_epoch = state.key_epoch;
             tag_record.verifier = key.verifier;
             tag_record.holder = key.holder;
             tag_record.owns_tag = P.my_num() == key.holder;
@@ -1200,7 +1202,8 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
                     tag_shares.at(sender).unpack(
                             tag_incoming.at(sender));
             auto* tag = find_holder_tag(batch.batch_id, chunk,
-                    check_mask, key.verifier, key.holder);
+                    check_mask, state.key_epoch,
+                    key.verifier, key.holder);
             assert(tag != 0 && tag->owns_tag);
             tag->tag = reconstruct_twisted_at_holder(
                     tag_shares, key.holder);
@@ -1213,67 +1216,654 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
 }
 
 template<class T>
-bool AtlasGsz<T>::check_batch_tags(
-        DealerSourceBatchRecord& batch,
-        const vector<BaseFieldFTagSourceChunk>& source_chunks,
-        const vector<T>& check_mask_shares,
-        bool inject_bad_presentation)
+void AtlasGsz<T>::fail_global_authentication(
+        GlobalAuthenticationInvocationRecord* invocation,
+        DealerSourceBatchRecord* batch,
+        OptimisticAuthenticationFailureClass failure_class,
+        int verifier,
+        int holder)
+{
+    auto& state = optimistic_authentication_state;
+    state.status = OptimisticAuthenticationStatus::
+            RecoveryNotImplemented;
+    state.failure_class = failure_class;
+    state.failed_batch_id = batch == 0 ? 0 : batch->batch_id;
+    state.failed_verifier = verifier;
+    state.failed_holder = holder;
+
+    if (invocation != 0)
+    {
+        invocation->completed = true;
+        invocation->passed = false;
+        invocation->failure_class = failure_class;
+        invocation->failed_verifier = verifier;
+        invocation->failed_holder = holder;
+        for (const auto& member : invocation->members)
+        {
+            auto* participating_batch =
+                    find_dealer_source_batch(member.batch_id);
+            if (participating_batch != 0
+                    && participating_batch->authentication_state
+                            == DealerBatchAuthenticationState::pending)
+            {
+                participating_batch->authentication_state =
+                        DealerBatchAuthenticationState::rejected;
+                participating_batch->failure_class = failure_class;
+                participating_batch->authenticated_handles.clear();
+            }
+        }
+    }
+    if (batch != 0
+            && batch->authentication_state
+                    == DealerBatchAuthenticationState::pending)
+    {
+        batch->authentication_state =
+                DealerBatchAuthenticationState::rejected;
+        batch->failure_class = failure_class;
+        batch->authenticated_handles.clear();
+    }
+}
+
+template<class T>
+bool AtlasGsz<T>::prepare_global_authentication(
+        GlobalAuthenticationInvocationRecord& invocation,
+        const vector<uint64_t>& requested_batch_ids,
+        GlobalAuthenticationWorkingSet& working,
+        int inject_bad_verify_sharing_dealer,
+        int inject_bad_base_sharing_dealer,
+        GlobalAuthenticationTestFault test_fault)
 {
     auto& state = optimistic_authentication_state;
     const size_t width = base_field_ftag_chunk_width();
-    assert(check_mask_shares.size() == width);
-    assert(not source_chunks.empty());
-    for (size_t chunk_index = 0;
-            chunk_index < source_chunks.size(); chunk_index++)
+    working.members.clear();
+    invocation.members.clear();
+    invocation.max_ftag_chunk_count = 0;
+
+    const auto* checkpoint =
+            find_optimistic_checkpoint(invocation.checkpoint_id);
+    if (requested_batch_ids.empty() || checkpoint == 0
+            || checkpoint->sealed || checkpoint->promoted
+            || checkpoint->output_derivations.empty())
     {
-        const auto& chunk = source_chunks.at(chunk_index);
-        assert(chunk.chunk_ordinal == chunk_index);
-        assert(chunk.components.size() == width);
-        assert(chunk.original_source_count > 0);
-        assert(chunk.original_source_count <= width);
+        fail_global_authentication(&invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation);
+        return false;
     }
 
-    // Per-dealer restricted Check-Tag vertical slice: the challenge is sampled
-    // only after this dealer's base-sharing tags exist. The base sharing
-    // one-time-pads the presented aggregate. This is not the full Protocol-27
-    // aggregation across every dealer and every batch.
-    typename T::open_type challenge =
-            sample_nonzero_agreed_challenge();
+    for (auto batch_id : requested_batch_ids)
+    {
+        const auto* batch = find_dealer_source_batch(batch_id);
+        GlobalAuthenticationInvocationMember member{};
+        member.batch_id = batch_id;
+        member.dealer = batch == 0 ? -1 : batch->dealer;
+        invocation.members.push_back(member);
+    }
+    sort(invocation.members.begin(), invocation.members.end(),
+            [](const GlobalAuthenticationInvocationMember& left,
+                    const GlobalAuthenticationInvocationMember& right)
+            {
+                if (left.dealer != right.dealer)
+                    return left.dealer < right.dealer;
+                return left.batch_id < right.batch_id;
+            });
+
+    for (size_t i = 0; i < invocation.members.size(); i++)
+    {
+        const auto& member = invocation.members.at(i);
+        if (member.dealer < 0 || member.dealer >= P.num_players())
+        {
+            fail_global_authentication(&invocation, 0,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
+        for (size_t j = i + 1; j < invocation.members.size(); j++)
+            if (member.batch_id == invocation.members.at(j).batch_id
+                    || member.dealer == invocation.members.at(j).dealer)
+            {
+                fail_global_authentication(&invocation, 0,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+    }
+
+    vector<uint64_t> required_pending_batch_ids;
+    for (const auto& derivation : checkpoint->output_derivations)
+    {
+        if (derivation.terms.empty())
+        {
+            fail_global_authentication(&invocation, 0,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
+        for (const auto& term : derivation.terms)
+        {
+            const auto* batch =
+                    find_dealer_source_batch(term.handle.batch_id);
+            if (batch == 0 || batch->dealer != term.handle.dealer
+                    || batch->source_ordinals.size()
+                            != batch->local_source_shares.size()
+                    || term.handle.source_ordinal
+                            >= batch->source_ordinals.size()
+                    || batch->source_ordinals.at(
+                            term.handle.source_ordinal)
+                            != term.handle.source_ordinal)
+            {
+                fail_global_authentication(&invocation, 0,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+            if (batch->authentication_state
+                    == DealerBatchAuthenticationState::pending)
+            {
+                if (find(required_pending_batch_ids.begin(),
+                        required_pending_batch_ids.end(), batch->batch_id)
+                        == required_pending_batch_ids.end())
+                    required_pending_batch_ids.push_back(batch->batch_id);
+            }
+            else if (batch->authentication_state
+                            != DealerBatchAuthenticationState::authenticated
+                    || not authenticated_handle_exists(term.handle))
+            {
+                fail_global_authentication(&invocation, 0,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+        }
+    }
+    vector<uint64_t> requested_unique = requested_batch_ids;
+    sort(requested_unique.begin(), requested_unique.end());
+    sort(required_pending_batch_ids.begin(),
+            required_pending_batch_ids.end());
+    if (requested_unique != required_pending_batch_ids)
+    {
+        fail_global_authentication(&invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation);
+        return false;
+    }
+
+    for (size_t member_index = 0;
+            member_index < invocation.members.size(); member_index++)
+    {
+        auto& member = invocation.members.at(member_index);
+        auto* batch = find_dealer_source_batch(member.batch_id);
+        if (batch == 0
+                || batch->authentication_state
+                        != DealerBatchAuthenticationState::pending
+                || batch->local_source_shares.empty()
+                || batch->source_ordinals.size()
+                        != batch->local_source_shares.size()
+                || batch->verify_sharing_completed
+                || batch->base_sharing_check_completed
+                || not batch->authenticated_handles.empty())
+        {
+            fail_global_authentication(&invocation, 0,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
+        for (size_t ordinal = 0;
+                ordinal < batch->source_ordinals.size(); ordinal++)
+            if (batch->source_ordinals.at(ordinal) != ordinal)
+            {
+                fail_global_authentication(&invocation, batch,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+
+        if (not verify_dealer_source_batch(*batch,
+                batch->dealer == inject_bad_verify_sharing_dealer))
+        {
+            fail_global_authentication(&invocation, batch,
+                    OptimisticAuthenticationFailureClass::verify_sharing);
+            return false;
+        }
+    }
+
+    if (not establish_optimistic_authentication_keys())
+    {
+        fail_global_authentication(&invocation, 0,
+                OptimisticAuthenticationFailureClass::key_check);
+        return false;
+    }
+    invocation.key_epoch = state.key_epoch;
+
+    for (const auto& invocation_member : invocation.members)
+    {
+        const auto* batch =
+                find_dealer_source_batch(invocation_member.batch_id);
+        assert(batch != 0);
+        GlobalAuthenticationWorkingMember working_member{};
+        working_member.batch_id = batch->batch_id;
+        working_member.source_chunks = source_chunks_for_batch(*batch);
+        working.members.push_back(working_member);
+    }
+    if (test_fault == GlobalAuthenticationTestFault::missing_chunk
+            && not working.members.empty()
+            && not working.members.front().source_chunks.empty())
+        working.members.front().source_chunks.pop_back();
+    else if (test_fault
+                    == GlobalAuthenticationTestFault::duplicate_chunk
+            && not working.members.empty()
+            && not working.members.front().source_chunks.empty())
+        working.members.front().source_chunks.push_back(
+                working.members.front().source_chunks.front());
+
+    size_t invocation_chunk_count = 0;
+    for (size_t member_index = 0;
+            member_index < working.members.size(); member_index++)
+    {
+        auto& working_member = working.members.at(member_index);
+        auto& invocation_member = invocation.members.at(member_index);
+        auto* batch = find_dealer_source_batch(working_member.batch_id);
+        assert(batch != 0);
+        const size_t expected_chunk_count =
+                base_field_ftag_chunk_count(
+                        batch->local_source_shares.size());
+        if (working_member.source_chunks.size()
+                != expected_chunk_count)
+        {
+            fail_global_authentication(&invocation, batch,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
+        for (size_t chunk_ordinal = 0;
+                chunk_ordinal < expected_chunk_count; chunk_ordinal++)
+        {
+            const auto& chunk =
+                    working_member.source_chunks.at(chunk_ordinal);
+            const size_t expected_offset = checked_size_product(
+                    chunk_ordinal, width,
+                    "AtlasGsz: global FTag source-chunk offset overflow");
+            const size_t expected_count = min(width,
+                    batch->local_source_shares.size() - expected_offset);
+            if (chunk.chunk_ordinal != chunk_ordinal
+                    || chunk.original_source_offset != expected_offset
+                    || chunk.original_source_count != expected_count
+                    || chunk.components.size() != width)
+            {
+                fail_global_authentication(&invocation, batch,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+        }
+        batch->ftag_chunk_count = expected_chunk_count;
+        invocation_member.ftag_chunk_count = expected_chunk_count;
+        invocation.max_ftag_chunk_count = max(
+                invocation.max_ftag_chunk_count, expected_chunk_count);
+        invocation_chunk_count = checked_size_sum(
+                invocation_chunk_count, expected_chunk_count,
+                "AtlasGsz: invocation FTag chunk count overflow");
+    }
+    if (invocation.max_ftag_chunk_count == 0)
+    {
+        fail_global_authentication(&invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation);
+        return false;
+    }
+    state.total_ftag_chunks = checked_size_sum(state.total_ftag_chunks,
+            invocation_chunk_count,
+            "AtlasGsz: total FTag chunk count overflow");
+
+    size_t communication_before = P.total_comm().sent;
+    for (auto& working_member : working.members)
+    {
+        auto* batch = find_dealer_source_batch(working_member.batch_id);
+        assert(batch != 0);
+        if (not compute_and_deliver_batch_tags(*batch,
+                working_member.source_chunks, false))
+        {
+            state.tag_generation_communication +=
+                    P.total_comm().sent - communication_before;
+            fail_global_authentication(&invocation, batch,
+                    OptimisticAuthenticationFailureClass::tag_generation);
+            return false;
+        }
+    }
+    state.tag_generation_communication +=
+            P.total_comm().sent - communication_before;
+
+    for (auto& working_member : working.members)
+    {
+        auto* batch = find_dealer_source_batch(working_member.batch_id);
+        assert(batch != 0);
+        if (not prepare_and_verify_base_sharing(*batch,
+                working_member.base_sharing,
+                batch->dealer == inject_bad_base_sharing_dealer))
+        {
+            fail_global_authentication(&invocation, batch,
+                    OptimisticAuthenticationFailureClass::base_sharing);
+            return false;
+        }
+    }
+
+    communication_before = P.total_comm().sent;
+    for (auto& working_member : working.members)
+    {
+        auto* batch = find_dealer_source_batch(working_member.batch_id);
+        assert(batch != 0);
+        if (working_member.base_sharing.size() != width)
+        {
+            fail_global_authentication(&invocation, batch,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
+        BaseFieldFTagSourceChunk base_chunk{};
+        base_chunk.chunk_ordinal = 0;
+        base_chunk.original_source_offset = 0;
+        base_chunk.original_source_count = width;
+        base_chunk.components = working_member.base_sharing;
+        if (not compute_and_deliver_batch_tags(*batch,
+                vector<BaseFieldFTagSourceChunk>(1, base_chunk), true))
+        {
+            state.tag_generation_communication +=
+                    P.total_comm().sent - communication_before;
+            fail_global_authentication(&invocation, batch,
+                    OptimisticAuthenticationFailureClass::tag_generation);
+            return false;
+        }
+    }
+    state.tag_generation_communication +=
+            P.total_comm().sent - communication_before;
+
+    if (test_fault == GlobalAuthenticationTestFault::key_epoch_mismatch
+            && not state.holder_tags.empty())
+        state.holder_tags.back().key_epoch =
+                checked_size_sum(state.holder_tags.back().key_epoch, 1,
+                        "AtlasGsz: test key epoch overflow");
+
+    if (not validate_global_authentication_material(invocation, working))
+    {
+        fail_global_authentication(&invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation);
+        return false;
+    }
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::validate_global_authentication_material(
+        const GlobalAuthenticationInvocationRecord& invocation,
+        const GlobalAuthenticationWorkingSet& working) const
+{
+    const auto& state = optimistic_authentication_state;
+    const size_t width = base_field_ftag_chunk_width();
+    const size_t player_count = size_t(P.num_players());
+    const size_t expected_key_count = checked_size_product(player_count,
+            player_count - 1,
+            "AtlasGsz: global key count overflow");
+    if (not state.keys_checked || invocation.key_epoch != state.key_epoch
+            || invocation.members.size() != working.members.size()
+            || state.keys.size() != expected_key_count)
+        return false;
+
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
+        if (key.epoch != invocation.key_epoch || not key.checked
+                || key.verifier < 0 || key.verifier >= P.num_players()
+                || key.holder < 0 || key.holder >= P.num_players()
+                || key.verifier == key.holder
+                || key.owns_clear_mu != (P.my_num() == key.verifier)
+                || key.has_local_twisted_share
+                        != (P.my_num() != key.holder)
+                || (key.owns_clear_mu && key.clear_mu.size() != width)
+                || (key.has_local_twisted_share
+                        && key.local_twisted_share.size() != width))
+            return false;
+        for (size_t other = key_index + 1;
+                other < state.keys.size(); other++)
+            if (key.verifier == state.keys.at(other).verifier
+                    && key.holder == state.keys.at(other).holder)
+                return false;
+    }
+
+    for (size_t member_index = 0;
+            member_index < invocation.members.size(); member_index++)
+    {
+        const auto& member = invocation.members.at(member_index);
+        const auto& working_member = working.members.at(member_index);
+        if (member.batch_id != working_member.batch_id
+                || member.ftag_chunk_count
+                        != working_member.source_chunks.size()
+                || working_member.base_sharing.size() != width)
+            return false;
+
+        size_t batch_nu_count = 0;
+        size_t batch_tag_count = 0;
+        for (const auto& material : state.nu_material)
+            if (material.batch_id == member.batch_id)
+            {
+                batch_nu_count++;
+                if (material.key_epoch != invocation.key_epoch
+                        || (material.check_mask
+                                ? material.chunk_ordinal != 0
+                                : material.chunk_ordinal
+                                        >= member.ftag_chunk_count)
+                        || material.verifier < 0
+                        || material.verifier >= P.num_players()
+                        || material.holder < 0
+                        || material.holder >= P.num_players()
+                        || material.verifier == material.holder
+                        || material.owns_nu
+                                != (P.my_num() == material.verifier))
+                    return false;
+            }
+        for (const auto& tag : state.holder_tags)
+            if (tag.batch_id == member.batch_id)
+            {
+                batch_tag_count++;
+                if (tag.key_epoch != invocation.key_epoch
+                        || (tag.check_mask
+                                ? tag.chunk_ordinal != 0
+                                : tag.chunk_ordinal
+                                        >= member.ftag_chunk_count)
+                        || tag.verifier < 0
+                        || tag.verifier >= P.num_players()
+                        || tag.holder < 0
+                        || tag.holder >= P.num_players()
+                        || tag.verifier == tag.holder
+                        || tag.owns_tag
+                                != (P.my_num() == tag.holder))
+                    return false;
+            }
+        const size_t expected_records = checked_size_product(
+                state.keys.size(),
+                checked_size_sum(member.ftag_chunk_count, 1,
+                        "AtlasGsz: global member record count overflow"),
+                "AtlasGsz: global member record count overflow");
+        if (batch_nu_count != expected_records
+                || batch_tag_count != expected_records)
+            return false;
+
+        for (const auto& key : state.keys)
+            for (size_t position = 0;
+                    position <= member.ftag_chunk_count; position++)
+            {
+                const bool check_mask = position == 0;
+                const size_t chunk_ordinal =
+                        check_mask ? 0 : position - 1;
+                size_t matching_nu = 0;
+                size_t matching_tags = 0;
+                for (const auto& material : state.nu_material)
+                    if (material.batch_id == member.batch_id
+                            && material.chunk_ordinal == chunk_ordinal
+                            && material.check_mask == check_mask
+                            && material.key_epoch == invocation.key_epoch
+                            && material.verifier == key.verifier
+                            && material.holder == key.holder)
+                        matching_nu++;
+                for (const auto& tag : state.holder_tags)
+                    if (tag.batch_id == member.batch_id
+                            && tag.chunk_ordinal == chunk_ordinal
+                            && tag.check_mask == check_mask
+                            && tag.key_epoch == invocation.key_epoch
+                            && tag.verifier == key.verifier
+                            && tag.holder == key.holder)
+                        matching_tags++;
+                if (matching_nu != 1 || matching_tags != 1)
+                    return false;
+            }
+    }
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::check_global_authentication(
+        GlobalAuthenticationInvocationRecord& invocation,
+        const GlobalAuthenticationWorkingSet& working,
+        GlobalAuthenticationTestFault test_fault)
+{
+    auto& state = optimistic_authentication_state;
+    const size_t communication_before = P.total_comm().sent;
+    const size_t width = base_field_ftag_chunk_width();
+    const size_t dealer_block_width = checked_size_sum(
+            invocation.max_ftag_chunk_count, 1,
+            "AtlasGsz: global Check-Tag dealer-block width overflow");
+    const size_t total_positions = checked_size_product(
+            invocation.members.size(), dealer_block_width,
+            "AtlasGsz: global Check-Tag position count overflow");
+
+    // The uniform layout has maximum degree total_positions - 1, even when
+    // some dealer-block positions are implicit zero coefficients. Concrete
+    // soundness is over p=2^61-1 and must be union-bounded over every
+    // verifier-holder relation and invocation; it is not an arbitrary
+    // kappa-bit claim.
+
+    invocation.challenge = sample_agreed_challenge();
+    // Focused negative-test override only: a literal ordinary-chunk error is
+    // multiplied by a positive power of lambda, so lambda=0 would erase it.
+    // Honest and production invocations retain the sampled zero-permitted
+    // challenge unchanged.
+    if (test_fault
+                    == GlobalAuthenticationTestFault::
+                        ordinary_source_presentation
+            && invocation.challenge == typename T::open_type{})
+        invocation.challenge = typename T::open_type(1);
+    invocation.challenge_sampled = true;
+    state.global_check_tag_challenges++;
+    vector<typename T::open_type> powers(total_positions);
+    typename T::open_type power(1);
+    for (size_t position = 0; position < total_positions; position++)
+    {
+        powers.at(position) = power;
+        power *= invocation.challenge;
+    }
+
     vector<octetStream> presentations(P.num_players());
     for (const auto& key : state.keys)
         if (P.my_num() == key.holder)
         {
-            assert(key.has_local_twisted_share == false);
             vector<typename T::open_type> sigma(width);
-            assert(sigma.size() == width);
-            for (size_t k = 0; k < width; k++)
-                sigma.at(k) = check_mask_shares.at(k);
-
-            const auto* mask_tag = find_holder_tag(
-                    batch.batch_id, 0, true,
-                    key.verifier, key.holder);
-            assert(mask_tag != 0 && mask_tag->owns_tag);
-            typename T::open_type aggregate_tag = mask_tag->tag;
-            typename T::open_type power = challenge;
-            for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+            typename T::open_type aggregate_tag{};
+            bool injected_ordinary_sigma = false;
+            bool injected_base_sigma = false;
+            bool injected_aggregate_tag = false;
+            for (size_t member_index = 0;
+                    member_index < invocation.members.size(); member_index++)
             {
-                for (size_t k = 0; k < width; k++)
+                const auto& member = invocation.members.at(member_index);
+                const auto& working_member =
+                        working.members.at(member_index);
+                const size_t block_start = checked_size_product(
+                        member_index, dealer_block_width,
+                        "AtlasGsz: global Check-Tag block offset overflow");
+                const auto base_coefficient = powers.at(block_start);
+                for (size_t component = 0; component < width; component++)
+                    sigma.at(component) += base_coefficient
+                            * typename T::open_type(
+                                    working_member.base_sharing.at(component));
+                if (key.verifier == 0 && key.holder == 1
+                        && member_index == 0
+                        && test_fault
+                                == GlobalAuthenticationTestFault::
+                                    base_sharing_presentation)
                 {
-                    typename T::open_type source_share =
-                            source_chunks.at(chunk).components.at(k);
-                    sigma.at(k) += power * source_share;
+                    const auto sigma_before = sigma.at(0);
+                    const auto tag_before = aggregate_tag;
+                    sigma.at(0) += base_coefficient;
+                    assert(sigma.at(0) != sigma_before);
+                    assert(aggregate_tag == tag_before);
+                    injected_base_sigma = true;
                 }
-                const auto* tag = find_holder_tag(
-                        batch.batch_id, chunk, false,
+                const auto* base_tag = find_holder_tag(member.batch_id,
+                        0, true, invocation.key_epoch,
                         key.verifier, key.holder);
-                assert(tag != 0 && tag->owns_tag);
-                aggregate_tag += power * tag->tag;
-                power *= challenge;
+                assert(base_tag != 0 && base_tag->owns_tag);
+                aggregate_tag += base_coefficient * base_tag->tag;
+
+                for (size_t chunk = 0;
+                        chunk < member.ftag_chunk_count; chunk++)
+                {
+                    const auto coefficient =
+                            powers.at(block_start + chunk + 1);
+                    for (size_t component = 0;
+                            component < width; component++)
+                        sigma.at(component) += coefficient
+                                * typename T::open_type(
+                                        working_member.source_chunks.at(chunk)
+                                                .components.at(component));
+                    if (key.verifier == 0 && key.holder == 1
+                            && member_index == 0 && chunk == 0
+                            && test_fault
+                                    == GlobalAuthenticationTestFault::
+                                        ordinary_source_presentation)
+                    {
+                        assert(coefficient
+                                != typename T::open_type{});
+                        const auto sigma_before = sigma.at(0);
+                        const auto tag_before = aggregate_tag;
+                        sigma.at(0) += coefficient;
+                        assert(sigma.at(0) != sigma_before);
+                        assert(aggregate_tag == tag_before);
+                        injected_ordinary_sigma = true;
+                    }
+                    const auto* tag = find_holder_tag(member.batch_id,
+                            chunk, false, invocation.key_epoch,
+                            key.verifier, key.holder);
+                    assert(tag != 0 && tag->owns_tag);
+                    aggregate_tag += coefficient * tag->tag;
+                }
             }
 
-            if (inject_bad_presentation
-                    && key.verifier == 0 && key.holder == 1)
-                aggregate_tag += typename T::open_type(1);
+            if (key.verifier == 0 && key.holder == 1)
+            {
+                if (test_fault
+                        == GlobalAuthenticationTestFault::
+                            aggregate_holder_tag)
+                {
+                    const auto sigma_before = sigma;
+                    const auto tag_before = aggregate_tag;
+                    aggregate_tag += typename T::open_type(1);
+                    assert(sigma == sigma_before);
+                    assert(aggregate_tag != tag_before);
+                    injected_aggregate_tag = true;
+                }
+                assert(injected_ordinary_sigma
+                        == (test_fault
+                                == GlobalAuthenticationTestFault::
+                                    ordinary_source_presentation));
+                assert(injected_base_sigma
+                        == (test_fault
+                                == GlobalAuthenticationTestFault::
+                                    base_sharing_presentation));
+                assert(injected_aggregate_tag
+                        == (test_fault
+                                == GlobalAuthenticationTestFault::
+                                    aggregate_holder_tag));
+            }
 
             for (const auto& component : sigma)
                 component.pack(presentations.at(key.verifier));
@@ -1282,81 +1872,269 @@ bool AtlasGsz<T>::check_batch_tags(
 
     vector<octetStream> received_presentations;
     P.send_receive_all(presentations, received_presentations);
-    vector<bool> verifier_votes(state.keys.size(), false);
+    vector<bool> relation_passes(state.keys.size(), false);
+    vector<vector<typename T::open_type>> received_sigma(
+            state.keys.size());
+    vector<typename T::open_type> received_tags(state.keys.size());
     for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
     {
         const auto& key = state.keys.at(key_index);
         if (P.my_num() != key.verifier)
             continue;
-        assert(key.owns_clear_mu);
-        assert(key.clear_mu.size() == width);
-        vector<typename T::open_type> sigma(width);
-        assert(sigma.size() == width);
-        for (auto& component : sigma)
+        received_sigma.at(key_index).resize(width);
+        for (auto& component : received_sigma.at(key_index))
             component.unpack(received_presentations.at(key.holder));
-        typename T::open_type presented_tag;
-        presented_tag.unpack(received_presentations.at(key.holder));
+        received_tags.at(key_index).unpack(
+                received_presentations.at(key.holder));
 
-        const auto* mask_nu = find_batch_nu_material(
-                batch.batch_id, 0, true,
-                key.verifier, key.holder);
-        assert(mask_nu != 0 && mask_nu->owns_nu);
-        typename T::open_type aggregate_nu = mask_nu->nu;
-        typename T::open_type power = challenge;
-        for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+        typename T::open_type aggregate_nu{};
+        for (size_t member_index = 0;
+                member_index < invocation.members.size(); member_index++)
         {
-            const auto* nu = find_batch_nu_material(
-                    batch.batch_id, chunk, false,
+            const auto& member = invocation.members.at(member_index);
+            const size_t block_start = checked_size_product(
+                    member_index, dealer_block_width,
+                    "AtlasGsz: global Check-Tag block offset overflow");
+            const auto* base_nu = find_batch_nu_material(
+                    member.batch_id, 0, true, invocation.key_epoch,
                     key.verifier, key.holder);
-            assert(nu != 0 && nu->owns_nu);
-            aggregate_nu += power * nu->nu;
-            power *= challenge;
+            assert(base_nu != 0 && base_nu->owns_nu);
+            aggregate_nu += powers.at(block_start) * base_nu->nu;
+            for (size_t chunk = 0;
+                    chunk < member.ftag_chunk_count; chunk++)
+            {
+                const auto* nu = find_batch_nu_material(
+                        member.batch_id, chunk, false,
+                        invocation.key_epoch,
+                        key.verifier, key.holder);
+                assert(nu != 0 && nu->owns_nu);
+                aggregate_nu += powers.at(block_start + chunk + 1)
+                        * nu->nu;
+            }
         }
-
         typename T::open_type expected = aggregate_nu;
-        for (size_t k = 0; k < width; k++)
-            expected += key.clear_mu.at(k) * sigma.at(k);
-        verifier_votes.at(key_index) = expected == presented_tag;
+        for (size_t component = 0; component < width; component++)
+            expected += key.clear_mu.at(component)
+                    * received_sigma.at(key_index).at(component);
+        relation_passes.at(key_index) =
+                expected == received_tags.at(key_index);
     }
     for (int sender = 0; sender < P.num_players(); sender++)
         if (sender != P.my_num())
             assert(not received_presentations.at(sender).left());
 
-    vector<octetStream> vote_streams(P.num_players());
+    // Protocol 27 Step 5: every verifier broadcasts exactly one compact
+    // invocation decision, not one Boolean per verifier-holder relation.
+    // Encoding: 0 means ok; holder+1 means fault(holder).
+    int local_smallest_failed_holder = -1;
     for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
-        if (P.my_num() == state.keys.at(key_index).verifier)
-        {
-            typename T::open_type vote(
-                    verifier_votes.at(key_index) ? 1 : 0);
-            vote.pack(vote_streams.at(P.my_num()));
-        }
-    P.Broadcast_Receive(vote_streams);
+    {
+        const auto& key = state.keys.at(key_index);
+        if (P.my_num() == key.verifier
+                && not relation_passes.at(key_index)
+                && (local_smallest_failed_holder < 0
+                        || key.holder < local_smallest_failed_holder))
+            local_smallest_failed_holder = key.holder;
+    }
+    vector<octetStream> decision_streams(P.num_players());
+    typename T::open_type(local_smallest_failed_holder + 1).pack(
+            decision_streams.at(P.my_num()));
+    P.Broadcast_Receive(decision_streams);
     P.Check_Broadcast();
 
-    bool all_pass = true;
+    vector<int> decoded_failed_holders(P.num_players(), -1);
+    int first_malformed_verifier = -1;
+    for (int verifier = 0; verifier < P.num_players(); verifier++)
+    {
+        typename T::open_type encoded_decision;
+        encoded_decision.unpack(decision_streams.at(verifier));
+        bool valid_encoding = not decision_streams.at(verifier).left();
+        if (encoded_decision != typename T::open_type{})
+        {
+            int decoded_holder = -1;
+            for (int holder = 0; holder < P.num_players(); holder++)
+                if (holder != verifier
+                        && encoded_decision
+                                == typename T::open_type(holder + 1))
+                {
+                    decoded_holder = holder;
+                    break;
+                }
+            if (decoded_holder < 0)
+                valid_encoding = false;
+            else
+                decoded_failed_holders.at(verifier) = decoded_holder;
+        }
+        if (not valid_encoding && first_malformed_verifier < 0)
+            first_malformed_verifier = verifier;
+    }
+    state.tag_checking_communication +=
+            P.total_comm().sent - communication_before;
+    if (first_malformed_verifier >= 0)
+    {
+        invocation.completed = true;
+        invocation.passed = false;
+        fail_global_authentication(&invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation,
+                first_malformed_verifier, -1);
+        return false;
+    }
+
     int failed_verifier = -1;
     int failed_holder = -1;
     for (int verifier = 0; verifier < P.num_players(); verifier++)
-        for (const auto& key : state.keys)
-            if (key.verifier == verifier)
-            {
-                typename T::open_type vote;
-                vote.unpack(vote_streams.at(verifier));
-                if (vote != typename T::open_type(1) && all_pass)
-                {
-                    all_pass = false;
-                    failed_verifier = key.verifier;
-                    failed_holder = key.holder;
-                }
-            }
-    for (const auto& stream : vote_streams)
-        assert(not stream.left());
+        if (decoded_failed_holders.at(verifier) >= 0)
+        {
+            failed_verifier = verifier;
+            failed_holder = decoded_failed_holders.at(verifier);
+            break;
+        }
 
-    if (not all_pass)
-        fail_optimistic_authentication(&batch,
-                OptimisticAuthenticationFailureClass::tag_check,
-                failed_verifier, failed_holder);
-    return all_pass;
+    const bool all_pass = failed_verifier < 0;
+    invocation.completed = true;
+    invocation.passed = all_pass;
+    if (all_pass)
+        return true;
+
+    if (P.my_num() == failed_verifier)
+        for (size_t key_index = 0;
+                key_index < state.keys.size(); key_index++)
+        {
+            const auto& key = state.keys.at(key_index);
+            if (key.verifier == failed_verifier
+                    && key.holder == failed_holder)
+            {
+                invocation.owns_failure_presentation = true;
+                invocation.failure_sigma = received_sigma.at(key_index);
+                invocation.failure_tag = received_tags.at(key_index);
+                break;
+            }
+        }
+    fail_global_authentication(&invocation, 0,
+            OptimisticAuthenticationFailureClass::tag_check,
+            failed_verifier, failed_holder);
+    return false;
+}
+
+template<class T>
+bool AtlasGsz<T>::commit_global_authentication(
+        GlobalAuthenticationInvocationRecord& invocation,
+        const GlobalAuthenticationWorkingSet& working)
+{
+    if (not invocation.completed || not invocation.passed)
+        return false;
+    auto* checkpoint =
+            find_optimistic_checkpoint(invocation.checkpoint_id);
+    if (checkpoint == 0 || checkpoint->sealed || checkpoint->promoted
+            || invocation.members.size() != working.members.size())
+        return false;
+
+    vector<vector<AuthenticatedSourceHandle>> candidate_handles(
+            invocation.members.size());
+    for (size_t member_index = 0;
+            member_index < invocation.members.size(); member_index++)
+    {
+        const auto& member = invocation.members.at(member_index);
+        auto* batch = find_dealer_source_batch(member.batch_id);
+        if (batch == 0 || batch->dealer != member.dealer
+                || batch->authentication_state
+                        != DealerBatchAuthenticationState::pending
+                || batch->source_ordinals.size()
+                        != batch->local_source_shares.size()
+                || not batch->authenticated_handles.empty())
+            return false;
+        auto& handles = candidate_handles.at(member_index);
+        if (batch->source_ordinals.size() > handles.max_size())
+            throw length_error(
+                    "AtlasGsz: candidate authenticated handle count exceeds vector capacity");
+        handles.reserve(batch->source_ordinals.size());
+        for (size_t ordinal = 0;
+                ordinal < batch->source_ordinals.size(); ordinal++)
+        {
+            if (batch->source_ordinals.at(ordinal) != ordinal)
+                return false;
+            AuthenticatedSourceHandle handle{};
+            handle.batch_id = batch->batch_id;
+            handle.dealer = batch->dealer;
+            handle.source_ordinal = ordinal;
+            handles.push_back(handle);
+        }
+    }
+
+    auto candidate_handle_exists = [&](const AuthenticatedSourceHandle& handle)
+    {
+        for (size_t member_index = 0;
+                member_index < invocation.members.size(); member_index++)
+            if (invocation.members.at(member_index).batch_id
+                    == handle.batch_id)
+                return find(candidate_handles.at(member_index).begin(),
+                        candidate_handles.at(member_index).end(), handle)
+                        != candidate_handles.at(member_index).end();
+        return authenticated_handle_exists(handle);
+    };
+    for (const auto& derivation : checkpoint->output_derivations)
+    {
+        if (derivation.terms.empty())
+            return false;
+        for (const auto& term : derivation.terms)
+            if (not candidate_handle_exists(term.handle))
+                return false;
+    }
+
+    // Every allocation and provenance validation above completes before the
+    // first authoritative mutation. No batch prefix can be committed.
+    for (size_t member_index = 0;
+            member_index < invocation.members.size(); member_index++)
+    {
+        auto* batch = find_dealer_source_batch(
+                invocation.members.at(member_index).batch_id);
+        assert(batch != 0);
+        batch->authenticated_handles =
+                std::move(candidate_handles.at(member_index));
+        batch->authentication_state =
+                DealerBatchAuthenticationState::authenticated;
+        batch->failure_class =
+                OptimisticAuthenticationFailureClass::none;
+    }
+    checkpoint->sealed = true;
+    checkpoint->promoted = true;
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::authenticate_checkpoint_source_batches(
+        uint64_t checkpoint_id,
+        const vector<uint64_t>& requested_batch_ids,
+        GlobalAuthenticationTestFault test_fault,
+        int inject_bad_verify_sharing_dealer,
+        int inject_bad_base_sharing_dealer)
+{
+    auto& state = optimistic_authentication_state;
+    GlobalAuthenticationInvocationRecord invocation{};
+    invocation.invocation_id = state.next_global_invocation_id++;
+    invocation.key_epoch = state.key_epoch;
+    invocation.checkpoint_id = checkpoint_id;
+    state.global_invocations.push_back(invocation);
+    auto& retained_invocation = state.global_invocations.back();
+    GlobalAuthenticationWorkingSet working{};
+
+    if (not prepare_global_authentication(retained_invocation,
+            requested_batch_ids, working,
+            inject_bad_verify_sharing_dealer,
+            inject_bad_base_sharing_dealer, test_fault))
+        return false;
+    if (not check_global_authentication(
+            retained_invocation, working, test_fault))
+        return false;
+    if (not commit_global_authentication(retained_invocation, working))
+    {
+        fail_global_authentication(&retained_invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation);
+        return false;
+    }
+    return true;
 }
 
 template<class T>
@@ -1365,106 +2143,33 @@ bool AtlasGsz<T>::authenticate_dealer_source_batch(
         bool inject_bad_verify_sharing,
         bool inject_bad_base_sharing)
 {
-    auto* batch = find_dealer_source_batch(batch_id);
-    assert(batch != 0);
-    if (batch->authentication_state
-            == DealerBatchAuthenticationState::authenticated)
-        return true;
-    if (batch->authentication_state
-            == DealerBatchAuthenticationState::rejected)
+    // Compatibility-only singleton adapter. The global invocation remains
+    // the sole checker and the sole handle/checkpoint commit path.
+    const auto* batch = find_dealer_source_batch(batch_id);
+    if (batch == 0)
         return false;
-
-    if (not verify_dealer_source_batch(
-            *batch, inject_bad_verify_sharing))
+    uint64_t checkpoint_id = 0;
+    for (const auto& checkpoint : optimistic_authentication_state.checkpoints)
+        if (not checkpoint.promoted)
+            for (const auto& derivation : checkpoint.output_derivations)
+                for (const auto& term : derivation.terms)
+                    if (term.handle.batch_id == batch_id)
+                    {
+                        if (checkpoint_id != 0
+                                && checkpoint_id
+                                        != checkpoint.checkpoint_id)
+                            return false;
+                        checkpoint_id = checkpoint.checkpoint_id;
+                    }
+    if (checkpoint_id == 0)
         return false;
-
-    if (not establish_optimistic_authentication_keys())
-    {
-        fail_optimistic_authentication(batch,
-                OptimisticAuthenticationFailureClass::key_check);
-        return false;
-    }
-
-    auto source_chunks = source_chunks_for_batch(*batch);
-    batch->ftag_chunk_count = source_chunks.size();
-    optimistic_authentication_state.total_ftag_chunks = checked_size_sum(
-            optimistic_authentication_state.total_ftag_chunks,
-            source_chunks.size(),
-            "AtlasGsz: total FTag chunk count overflow");
-
-    size_t communication_before = P.total_comm().sent;
-    if (not compute_and_deliver_batch_tags(
-            *batch, source_chunks, false))
-    {
-        fail_optimistic_authentication(batch,
-                OptimisticAuthenticationFailureClass::tag_generation);
-        return false;
-    }
-    optimistic_authentication_state.tag_generation_communication +=
-            P.total_comm().sent - communication_before;
-
-    vector<T> check_mask_shares;
-    if (not prepare_and_verify_base_sharing(
-            *batch, check_mask_shares, inject_bad_base_sharing))
-        return false;
-
-    communication_before = P.total_comm().sent;
-    const size_t width = base_field_ftag_chunk_width();
-    if (check_mask_shares.size() != width)
-        throw logic_error(
-                "AtlasGsz: BaseSharing does not have the configured base-field FTag chunk width");
-    BaseFieldFTagSourceChunk check_mask_chunk{};
-    check_mask_chunk.chunk_ordinal = 0;
-    check_mask_chunk.original_source_offset = 0;
-    check_mask_chunk.original_source_count = width;
-    check_mask_chunk.components = check_mask_shares;
-    vector<BaseFieldFTagSourceChunk> check_mask_chunks(
-            1, check_mask_chunk);
-    if (not compute_and_deliver_batch_tags(
-            *batch, check_mask_chunks, true))
-    {
-        fail_optimistic_authentication(batch,
-                OptimisticAuthenticationFailureClass::tag_generation);
-        return false;
-    }
-    if (not check_batch_tags(*batch, source_chunks,
-            check_mask_shares, inject_bad_presentation))
-    {
-        optimistic_authentication_state.tag_checking_communication +=
-                P.total_comm().sent - communication_before;
-        return false;
-    }
-    optimistic_authentication_state.tag_checking_communication +=
-            P.total_comm().sent - communication_before;
-
-    batch->authenticated_handles.clear();
-    if (batch->source_ordinals.size()
-            != batch->local_source_shares.size())
-        throw logic_error(
-                "AtlasGsz: dealer source ordinals and local shares have different dimensions");
-    if (batch->source_ordinals.size()
-            > batch->authenticated_handles.max_size())
-        throw length_error(
-                "AtlasGsz: authenticated handle count exceeds vector capacity");
-    batch->authenticated_handles.reserve(batch->source_ordinals.size());
-    for (auto ordinal : batch->source_ordinals)
-    {
-        if (ordinal >= batch->local_source_shares.size())
-            throw logic_error(
-                    "AtlasGsz: source ordinal refers to structural FTag padding");
-        AuthenticatedSourceHandle handle{};
-        handle.batch_id = batch->batch_id;
-        handle.dealer = batch->dealer;
-        handle.source_ordinal = ordinal;
-        batch->authenticated_handles.push_back(handle);
-    }
-    assert(batch->authenticated_handles.size()
-            == batch->local_source_shares.size());
-    batch->authentication_state =
-            DealerBatchAuthenticationState::authenticated;
-    batch->failure_class =
-            OptimisticAuthenticationFailureClass::none;
-    return true;
+    return authenticate_checkpoint_source_batches(checkpoint_id,
+            vector<uint64_t>(1, batch_id),
+            inject_bad_presentation
+                    ? GlobalAuthenticationTestFault::aggregate_holder_tag
+                    : GlobalAuthenticationTestFault::none,
+            inject_bad_verify_sharing ? batch->dealer : -1,
+            inject_bad_base_sharing ? batch->dealer : -1);
 }
 
 template<class T>
@@ -1541,556 +2246,360 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             expected_first_ftag_chunks, expected_second_ftag_chunks,
             "AtlasGsz test: total FTag chunk count overflow");
 
-    auto validate_source_chunks = [&](const DealerSourceBatchRecord& batch,
-            size_t expected_original_source_count,
-            size_t expected_chunk_count)
+    const bool global_mode = mode == "honest"
+            || mode == "singleton-honest"
+            || mode == "failure"
+            || mode == "ordinary-failure"
+            || mode == "base-contribution-failure"
+            || mode == "verify-failure"
+            || mode == "base-failure"
+            || mode == "duplicate-batch"
+            || mode == "duplicate-dealer"
+            || mode == "omission"
+            || mode == "missing-chunk"
+            || mode == "duplicate-chunk"
+            || mode == "epoch-mismatch";
+    if (global_mode)
     {
-        assert(batch.source_ordinals.size()
-                == batch.local_source_shares.size());
-        assert(batch.local_source_shares.size()
-                == expected_original_source_count);
-        auto chunks = source_chunks_for_batch(batch);
-        assert(chunks.size() == expected_chunk_count);
-        for (size_t ordinal = 0; ordinal < chunks.size(); ordinal++)
+        const bool singleton = mode == "singleton-honest";
+        const bool duplicate_dealer = mode == "duplicate-dealer";
+        vector<typename T::open_type> first_values;
+        if (P.my_num() == 0)
+            for (size_t i = 0; i < first_original_source_count; i++)
+                first_values.push_back(
+                        typename T::open_type(100 + int(i)));
+        auto first_local_shares = deal_optimistic_source_values(
+                0, first_values, first_original_source_count);
+        const uint64_t first_batch_id = register_dealer_source_batch(
+                0, first_local_shares);
+
+        uint64_t second_batch_id = 0;
+        int second_dealer = duplicate_dealer ? 0 : 1;
+        if (not singleton)
         {
-            const auto& chunk = chunks.at(ordinal);
-            const size_t expected_offset = checked_size_product(
-                    ordinal, width,
-                    "AtlasGsz test: source-chunk offset overflow");
-            const size_t expected_count = min(width,
-                    expected_original_source_count - expected_offset);
-            assert(chunk.chunk_ordinal == ordinal);
-            assert(chunk.original_source_offset == expected_offset);
-            assert(chunk.original_source_count == expected_count);
-            assert(chunk.components.size() == width);
-            for (size_t k = 0; k < expected_count; k++)
-                assert(chunk.components.at(k)
-                        == batch.local_source_shares.at(
-                                expected_offset + k));
-            for (size_t k = expected_count; k < width; k++)
-                assert(chunk.components.at(k) == T{});
+            vector<typename T::open_type> second_values;
+            if (P.my_num() == second_dealer)
+                for (size_t i = 0;
+                        i < second_original_source_count; i++)
+                    second_values.push_back(
+                            typename T::open_type(200 + int(i)));
+            auto second_local_shares = deal_optimistic_source_values(
+                    second_dealer, second_values,
+                    second_original_source_count);
+            second_batch_id = register_dealer_source_batch(
+                    second_dealer, second_local_shares);
         }
-    };
 
-    vector<typename T::open_type> first_values;
-    if (P.my_num() == 0)
-        for (size_t i = 0; i < first_original_source_count; i++)
-            first_values.push_back(
-                    typename T::open_type(100 + int(i)));
-    auto first_local_shares = deal_optimistic_source_values(
-            0, first_values, first_original_source_count);
-    uint64_t first_batch_id = register_dealer_source_batch(
-            0, first_local_shares);
+        LinearDerivation checkpoint_derivation{};
+        auto append_derivation_terms = [&](uint64_t batch_id,
+                int dealer, size_t source_count)
+        {
+            for (size_t ordinal = 0; ordinal < source_count; ordinal++)
+            {
+                LinearDerivationTerm term{};
+                term.handle.batch_id = batch_id;
+                term.handle.dealer = dealer;
+                term.handle.source_ordinal = ordinal;
+                term.coefficient =
+                        typename T::open_type(int(ordinal + 1));
+                checkpoint_derivation.terms.push_back(term);
+            }
+        };
+        append_derivation_terms(first_batch_id, 0,
+                first_original_source_count);
+        if (not singleton)
+            append_derivation_terms(second_batch_id, second_dealer,
+                    second_original_source_count);
+        const uint64_t checkpoint_id = create_optimistic_checkpoint(
+                vector<LinearDerivation>(1, checkpoint_derivation));
+        assert(not promote_optimistic_checkpoint(checkpoint_id));
 
-    LinearDerivation first_derivation{};
-    for (size_t ordinal = 0; ordinal < first_local_shares.size(); ordinal++)
-    {
-        LinearDerivationTerm term{};
-        term.handle.batch_id = first_batch_id;
-        term.handle.dealer = 0;
-        term.handle.source_ordinal = ordinal;
-        term.coefficient = typename T::open_type(int(ordinal + 1));
-        first_derivation.terms.push_back(term);
-    }
-    uint64_t first_checkpoint_id = create_optimistic_checkpoint(
-            vector<LinearDerivation>(1, first_derivation));
-    assert(not state.checkpoints.at(0).sealed);
-    assert(not promote_optimistic_checkpoint(first_checkpoint_id));
-    assert(not state.checkpoints.at(0).sealed);
+        vector<uint64_t> requested_batch_ids;
+        if (singleton)
+            requested_batch_ids.push_back(first_batch_id);
+        else
+        {
+            // Deliberately reversed: the retained invocation must have the
+            // same ascending-dealer layout as a canonical caller.
+            requested_batch_ids.push_back(second_batch_id);
+            requested_batch_ids.push_back(first_batch_id);
+        }
+        if (mode == "duplicate-batch")
+            requested_batch_ids.insert(
+                    requested_batch_ids.begin(), first_batch_id);
+        else if (mode == "omission")
+            requested_batch_ids.assign(1, first_batch_id);
 
-    bool failure_mode = mode == "failure";
-    bool verify_failure_mode = mode == "verify-failure";
-    bool base_failure_mode = mode == "base-failure";
-    bool first_authenticated = authenticate_dealer_source_batch(
-            first_batch_id, failure_mode, verify_failure_mode,
-            base_failure_mode);
-    auto* first_batch = find_dealer_source_batch(first_batch_id);
-    assert(first_batch != 0);
+        GlobalAuthenticationTestFault test_fault =
+                GlobalAuthenticationTestFault::none;
+        if (mode == "failure")
+            test_fault =
+                    GlobalAuthenticationTestFault::aggregate_holder_tag;
+        else if (mode == "ordinary-failure")
+            test_fault = GlobalAuthenticationTestFault::
+                    ordinary_source_presentation;
+        else if (mode == "base-contribution-failure")
+            test_fault = GlobalAuthenticationTestFault::
+                    base_sharing_presentation;
+        else if (mode == "missing-chunk")
+            test_fault = GlobalAuthenticationTestFault::missing_chunk;
+        else if (mode == "duplicate-chunk")
+            test_fault = GlobalAuthenticationTestFault::duplicate_chunk;
+        else if (mode == "epoch-mismatch")
+            test_fault = GlobalAuthenticationTestFault::key_epoch_mismatch;
 
-    if (verify_failure_mode)
-    {
-        assert(not first_authenticated);
-        assert(first_batch->verify_sharing_completed);
-        assert(not first_batch->verify_sharing_passed);
-        assert(first_batch->has_verify_sharing_failure_evidence);
-        assert(first_batch->verify_sharing_failure_published_shares.size()
-                == size_t(P.num_players()));
-        assert(state.verify_sharing_communication > 0);
+        const int verify_failure_dealer =
+                mode == "verify-failure" ? 0 : -1;
+        const int base_failure_dealer =
+                mode == "base-failure" ? 0 : -1;
+        const bool accepted = authenticate_checkpoint_source_batches(
+                checkpoint_id, requested_batch_ids, test_fault,
+                verify_failure_dealer, base_failure_dealer);
+        assert(state.global_invocations.size() == 1);
+        const auto& invocation = state.global_invocations.front();
+        assert(invocation.invocation_id == 1);
+        assert(invocation.checkpoint_id == checkpoint_id);
+        assert(invocation.key_epoch == state.key_epoch);
+
+        const bool expected_success = mode == "honest" || singleton;
+        assert(accepted == expected_success);
+        const auto* checkpoint = find_optimistic_checkpoint(checkpoint_id);
+        assert(checkpoint != 0);
+        const auto* first_batch =
+                find_dealer_source_batch(first_batch_id);
+        const auto* second_batch = singleton ? 0 :
+                find_dealer_source_batch(second_batch_id);
+        assert(first_batch != 0);
+        assert(second_batch != 0 || singleton);
+
+        if (expected_success)
+        {
+            const size_t expected_member_count = singleton ? 1 : 2;
+            const size_t expected_chunks = singleton
+                    ? expected_first_ftag_chunks
+                    : expected_total_ftag_chunks;
+            assert(invocation.completed && invocation.passed);
+            assert(invocation.failure_class
+                    == OptimisticAuthenticationFailureClass::none);
+            assert(invocation.challenge_sampled);
+            assert(invocation.members.size() == expected_member_count);
+            assert(invocation.members.front().dealer == 0);
+            assert(invocation.members.front().batch_id == first_batch_id);
+            assert(invocation.members.front().ftag_chunk_count
+                    == expected_first_ftag_chunks);
+            if (not singleton)
+            {
+                assert(invocation.members.at(1).dealer == 1);
+                assert(invocation.members.at(1).batch_id
+                        == second_batch_id);
+                assert(invocation.members.at(1).ftag_chunk_count
+                        == expected_second_ftag_chunks);
+            }
+            assert(invocation.max_ftag_chunk_count
+                    == max(expected_first_ftag_chunks,
+                            singleton ? size_t(0)
+                                    : expected_second_ftag_chunks));
+            assert(state.global_check_tag_challenges == 1);
+            assert(checkpoint->sealed && checkpoint->promoted);
+            assert(first_batch->authentication_state
+                    == DealerBatchAuthenticationState::authenticated);
+            assert(first_batch->authenticated_handles.size()
+                    == first_original_source_count);
+            if (not singleton)
+            {
+                assert(second_batch->authentication_state
+                        == DealerBatchAuthenticationState::authenticated);
+                assert(second_batch->authenticated_handles.size()
+                        == second_original_source_count);
+            }
+            assert(state.status == OptimisticAuthenticationStatus::ready);
+            assert(state.key_establishment_runs == 1);
+            assert(state.keys_established && state.keys_checked);
+            assert(state.total_ftag_chunks == expected_chunks);
+
+            const size_t expected_material_records =
+                    checked_size_product(state.keys.size(),
+                            checked_size_sum(expected_chunks,
+                                    expected_member_count,
+                                    "AtlasGsz test: global material count overflow"),
+                            "AtlasGsz test: global material count overflow");
+            assert(state.nu_material.size()
+                    == expected_material_records);
+            assert(state.holder_tags.size()
+                    == expected_material_records);
+            for (const auto& material : state.nu_material)
+            {
+                assert(material.key_epoch == state.key_epoch);
+                assert(material.owns_nu
+                        == (P.my_num() == material.verifier));
+            }
+            for (const auto& tag : state.holder_tags)
+            {
+                assert(tag.key_epoch == state.key_epoch);
+                assert(tag.owns_tag
+                        == (P.my_num() == tag.holder));
+            }
+            for (const auto& batch : state.dealer_batches)
+                for (size_t handle_index = 0;
+                        handle_index < batch.authenticated_handles.size();
+                        handle_index++)
+                {
+                    const auto& handle =
+                            batch.authenticated_handles.at(handle_index);
+                    assert(handle.batch_id == batch.batch_id);
+                    assert(handle.dealer == batch.dealer);
+                    assert(handle.source_ordinal == handle_index);
+                    assert(handle.source_ordinal
+                            < batch.local_source_shares.size());
+                }
+
+            const size_t max_degree = checked_size_product(
+                    invocation.members.size(),
+                    checked_size_sum(invocation.max_ftag_chunk_count, 1,
+                            "AtlasGsz test: global degree overflow"),
+                    "AtlasGsz test: global degree overflow") - 1;
+            assert(state.verify_sharing_communication > 0);
+            assert(state.base_sharing_communication > 0);
+            assert(state.tag_generation_communication > 0);
+            assert(state.tag_checking_communication > 0);
+            if (P.my_num() == 0)
+                cout << "ATLAS_GSZ_AUTH_TEST " << mode
+                     << " PASS checker=global batches="
+                     << expected_member_count
+                     << " caller_order="
+                     << (singleton ? "canonical" : "reversed")
+                     << " canonical_order=ascending-dealer"
+                     << " base_field_ftag_chunk_width=" << width
+                     << " first_original_source_count="
+                     << first_original_source_count
+                     << " second_original_source_count="
+                     << (singleton ? 0 : second_original_source_count)
+                     << " first_ftag_chunks="
+                     << expected_first_ftag_chunks
+                     << " second_ftag_chunks="
+                     << (singleton ? 0 : expected_second_ftag_chunks)
+                     << " W=" << invocation.max_ftag_chunk_count
+                     << " max_degree=" << max_degree
+                     << " global_challenges=1 zero_permitted=1"
+                     << " compact_decisions=" << P.num_players()
+                     << " decision_rounds=1"
+                     << " base_sharings=" << expected_member_count
+                     << " key_epoch=1 key_runs=1"
+                     << " verify_sharing_comm="
+                     << state.verify_sharing_communication
+                     << " base_sharing_comm="
+                     << state.base_sharing_communication
+                     << " tag_comm="
+                     << state.tag_generation_communication
+                     << " global_check_comm="
+                     << state.tag_checking_communication
+                     << " handles="
+                     << (first_original_source_count
+                             + (singleton ? 0
+                                     : second_original_source_count))
+                     << " sealed=1 promoted=1" << endl;
+            return true;
+        }
+
+        assert(not accepted);
+        assert(invocation.completed && not invocation.passed);
+        assert(not checkpoint->sealed && not checkpoint->promoted);
         assert(first_batch->authentication_state
-                == DealerBatchAuthenticationState::rejected);
-        assert(first_batch->failure_class
-                == OptimisticAuthenticationFailureClass::verify_sharing);
+                != DealerBatchAuthenticationState::authenticated);
         assert(first_batch->authenticated_handles.empty());
-        assert(not promote_optimistic_checkpoint(first_checkpoint_id));
-        assert(not state.checkpoints.at(0).sealed);
-        assert(not state.checkpoints.at(0).promoted);
-        assert(state.status
-                == OptimisticAuthenticationStatus::
-                    RecoveryNotImplemented);
-        assert(state.failure_class
-                == OptimisticAuthenticationFailureClass::verify_sharing);
-        assert(state.failed_batch_id == first_batch_id);
-        assert(state.failed_verifier == -1);
-        assert(state.failed_holder == -1);
-        assert(first_batch->ftag_chunk_count == 0);
-        assert(not state.keys_established);
-        assert(not state.keys_checked);
-        assert(not state.base_field_ftag_chunk_width_agreed);
-        assert(state.base_field_ftag_chunk_width_agreement_communication == 0);
-        assert(state.keys.empty());
-        assert(state.key_establishment_runs == 0);
-        assert(state.key_establishment_communication == 0);
-        assert(state.check_key_masking_equation_checks == 0);
-        assert(not first_batch->base_sharing_check_completed);
-        assert(not first_batch->base_sharing_check_passed);
-        assert(not first_batch->has_base_sharing_failure_evidence);
-        assert(first_batch->base_sharing_failure_published_shares.empty());
-        assert(state.base_sharing_communication == 0);
-        assert(state.nu_material.empty());
-        assert(state.holder_tags.empty());
-        assert(state.total_ftag_chunks == 0);
-        assert(state.tag_generation_communication == 0);
-        assert(state.tag_checking_communication == 0);
+        if (second_batch != 0)
+        {
+            assert(second_batch->authentication_state
+                    != DealerBatchAuthenticationState::authenticated);
+            assert(second_batch->authenticated_handles.empty());
+        }
+        assert(state.status == OptimisticAuthenticationStatus::
+                RecoveryNotImplemented);
+        const bool tag_failure = mode == "failure"
+                || mode == "ordinary-failure"
+                || mode == "base-contribution-failure";
+        const char* fault_component = mode == "ordinary-failure"
+                ? "ordinary_sigma"
+                : mode == "base-contribution-failure"
+                    ? "base_sigma"
+                    : mode == "failure"
+                        ? "aggregate_tag"
+                        : "none";
+        if (tag_failure)
+        {
+            assert(invocation.failure_class
+                    == OptimisticAuthenticationFailureClass::tag_check);
+            assert(invocation.challenge_sampled);
+            assert(state.global_check_tag_challenges == 1);
+            assert(state.failed_batch_id == 0);
+            assert(invocation.failed_verifier == 0);
+            assert(invocation.failed_holder == 1);
+            assert(invocation.owns_failure_presentation
+                    == (P.my_num() == 0));
+            assert(not invocation.owns_failure_presentation
+                    || invocation.failure_sigma.size() == width);
+            assert(state.tag_checking_communication > 0);
+        }
+        else
+        {
+            assert(not invocation.challenge_sampled);
+            assert(state.global_check_tag_challenges == 0);
+            assert(not invocation.owns_failure_presentation);
+            if (mode == "verify-failure")
+            {
+                assert(invocation.failure_class
+                        == OptimisticAuthenticationFailureClass::
+                            verify_sharing);
+                assert(first_batch->has_verify_sharing_failure_evidence);
+                assert(not state.keys_established);
+            }
+            else if (mode == "base-failure")
+            {
+                assert(invocation.failure_class
+                        == OptimisticAuthenticationFailureClass::
+                            base_sharing);
+                assert(first_batch->has_base_sharing_failure_evidence);
+                assert(state.keys_established && state.keys_checked);
+            }
+            else
+                assert(invocation.failure_class
+                        == OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+        }
         assert(dispute_control_state.corr.empty());
         assert(dispute_control_state.disp.empty());
         assert(pending_analyze_sharing_state.requests.empty());
         if (P.my_num() == 0)
-            cout << "ATLAS_GSZ_AUTH_TEST verify-failure PASS "
-                 << "status=RecoveryNotImplemented handles=0 sealed=0 "
-                 << "promoted=0 checker=per-dealer-restricted "
-                 << "base_field_ftag_chunk_width=" << width
-                 << " first_original_source_count="
-                 << first_original_source_count
-                 << " first_ftag_chunks=0 total_ftag_chunks=0 "
-                 << "width_agreement_comm=0 key_runs=0 key_comm=0 "
-                 << "verify_sharing_comm="
-                 << state.verify_sharing_communication
-                 << " base_sharing_comm=0 tag_comm=0 "
-                 << "restricted_check_comm=0" << endl;
-        return false;
-    }
-
-    assert(first_batch->verify_sharing_completed);
-    assert(first_batch->verify_sharing_passed);
-    assert(not first_batch->has_verify_sharing_failure_evidence);
-    assert(first_batch->verify_sharing_failure_published_shares.empty());
-    assert(state.verify_sharing_communication > 0);
-    assert(state.keys_established && state.keys_checked);
-    assert(state.base_field_ftag_chunk_width_agreed);
-    assert(state.base_field_ftag_chunk_width_agreement_communication > 0);
-    assert(state.key_epoch == 1);
-    assert(state.key_establishment_runs == 1);
-    assert(state.check_key_masking_equation_checks
-            == size_t(P.num_players() - 1));
-    for (const auto& key : state.keys)
-    {
-        assert(not key.owns_clear_mu || key.clear_mu.size() == width);
-        assert(not key.has_local_twisted_share
-                || key.local_twisted_share.size() == width);
-    }
-    const size_t key_communication = state.key_establishment_communication;
-    assert(key_communication > 0);
-
-    if (base_failure_mode)
-    {
-        assert(not first_authenticated);
-        assert(first_batch->ftag_chunk_count
-                == expected_first_ftag_chunks);
-        assert(state.total_ftag_chunks == expected_first_ftag_chunks);
-        validate_source_chunks(*first_batch,
-                first_original_source_count,
-                expected_first_ftag_chunks);
-        assert(state.tag_generation_communication > 0);
-
-        size_t ordinary_nu_records = 0;
-        size_t ordinary_tag_records = 0;
-        for (const auto& material : state.nu_material)
-        {
-            assert(material.batch_id == first_batch_id);
-            assert(not material.check_mask);
-            ordinary_nu_records++;
-        }
-        for (const auto& tag : state.holder_tags)
-        {
-            assert(tag.batch_id == first_batch_id);
-            assert(not tag.check_mask);
-            ordinary_tag_records++;
-        }
-        const size_t expected_ordinary_records = checked_size_product(
-                state.keys.size(), expected_first_ftag_chunks,
-                "AtlasGsz test: ordinary FTag record count overflow");
-        assert(ordinary_nu_records == expected_ordinary_records);
-        assert(ordinary_tag_records == expected_ordinary_records);
-
-        assert(first_batch->base_sharing_check_completed);
-        assert(not first_batch->base_sharing_check_passed);
-        assert(first_batch->has_base_sharing_failure_evidence);
-        assert(first_batch->base_sharing_failure_published_shares.size()
-                == size_t(P.num_players()));
-        assert(state.base_sharing_communication > 0);
-        assert(state.tag_checking_communication == 0);
-        assert(first_batch->authentication_state
-                == DealerBatchAuthenticationState::rejected);
-        assert(first_batch->failure_class
-                == OptimisticAuthenticationFailureClass::base_sharing);
-        assert(first_batch->authenticated_handles.empty());
-        assert(not promote_optimistic_checkpoint(first_checkpoint_id));
-        assert(not state.checkpoints.at(0).sealed);
-        assert(not state.checkpoints.at(0).promoted);
-        assert(state.status
-                == OptimisticAuthenticationStatus::
-                    RecoveryNotImplemented);
-        assert(state.failure_class
-                == OptimisticAuthenticationFailureClass::base_sharing);
-        assert(state.failed_batch_id == first_batch_id);
-        assert(state.failed_verifier == -1);
-        assert(state.failed_holder == -1);
-        assert(dispute_control_state.corr.empty());
-        assert(dispute_control_state.disp.empty());
-        assert(pending_analyze_sharing_state.requests.empty());
-        if (P.my_num() == 0)
-            cout << "ATLAS_GSZ_AUTH_TEST base-failure PASS "
-                 << "status=RecoveryNotImplemented handles=0 sealed=0 "
-                 << "promoted=0 checker=per-dealer-restricted "
-                 << "base_sharing=checked-rejected "
-                 << "base_field_ftag_chunk_width=" << width
-                 << " first_original_source_count="
-                 << first_original_source_count
+            cout << "ATLAS_GSZ_AUTH_TEST " << mode
+                 << " PASS status=RecoveryNotImplemented"
+                 << " checker=global handles=0 sealed=0 promoted=0"
+                 << " failed_batch_id=" << state.failed_batch_id
+                 << " failed_verifier=" << state.failed_verifier
+                 << " failed_holder=" << state.failed_holder
+                 << " global_challenges="
+                 << state.global_check_tag_challenges
+                 << " zero_permitted=1"
+                 << " compact_decisions="
+                 << (tag_failure ? P.num_players() : 0)
+                 << " decision_rounds=" << (tag_failure ? 1 : 0)
+                 << " fault_component=" << fault_component
+                 << " base_field_ftag_chunk_width=" << width
                  << " first_ftag_chunks="
                  << expected_first_ftag_chunks
-                 << " total_ftag_chunks=" << state.total_ftag_chunks
-                 << " width_agreement_comm="
-                 << state.base_field_ftag_chunk_width_agreement_communication
-                 << " key_comm=" << state.key_establishment_communication
+                 << " second_ftag_chunks="
+                 << (singleton ? 0 : expected_second_ftag_chunks)
                  << " verify_sharing_comm="
                  << state.verify_sharing_communication
                  << " base_sharing_comm="
                  << state.base_sharing_communication
-                 << " tag_comm=" << state.tag_generation_communication
-                 << " restricted_check_comm=0" << endl;
+                 << " tag_comm="
+                 << state.tag_generation_communication
+                 << " global_check_comm="
+                 << state.tag_checking_communication << endl;
         return false;
     }
 
-    assert(first_batch->base_sharing_check_completed);
-    assert(first_batch->base_sharing_check_passed);
-    assert(not first_batch->has_base_sharing_failure_evidence);
-    assert(first_batch->base_sharing_failure_published_shares.empty());
-    assert(state.base_sharing_communication > 0);
-
-    if (failure_mode)
-    {
-        assert(not first_authenticated);
-        assert(first_batch->ftag_chunk_count
-                == expected_first_ftag_chunks);
-        assert(state.total_ftag_chunks == expected_first_ftag_chunks);
-        validate_source_chunks(*first_batch,
-                first_original_source_count,
-                expected_first_ftag_chunks);
-        assert(first_batch->authentication_state
-                == DealerBatchAuthenticationState::rejected);
-        assert(first_batch->authenticated_handles.empty());
-        assert(not promote_optimistic_checkpoint(first_checkpoint_id));
-        assert(not state.checkpoints.at(0).sealed);
-        assert(not state.checkpoints.at(0).promoted);
-        assert(state.status
-                == OptimisticAuthenticationStatus::
-                    RecoveryNotImplemented);
-        assert(state.failure_class
-                == OptimisticAuthenticationFailureClass::tag_check);
-        assert(state.failed_verifier == 0);
-        assert(state.failed_holder == 1);
-        const size_t expected_ordinary_records = checked_size_product(
-                state.keys.size(), expected_first_ftag_chunks,
-                "AtlasGsz test: ordinary FTag record count overflow");
-        const size_t expected_mask_records = state.keys.size();
-        size_t ordinary_nu_records = 0;
-        size_t ordinary_tag_records = 0;
-        size_t mask_nu_records = 0;
-        size_t mask_tag_records = 0;
-        for (const auto& material : state.nu_material)
-            if (material.check_mask)
-                mask_nu_records++;
-            else
-                ordinary_nu_records++;
-        for (const auto& tag : state.holder_tags)
-            if (tag.check_mask)
-                mask_tag_records++;
-            else
-                ordinary_tag_records++;
-        assert(ordinary_nu_records == expected_ordinary_records);
-        assert(ordinary_tag_records == expected_ordinary_records);
-        assert(mask_nu_records == expected_mask_records);
-        assert(mask_tag_records == expected_mask_records);
-        assert(state.tag_checking_communication > 0);
-        assert(dispute_control_state.corr.empty());
-        assert(dispute_control_state.disp.empty());
-        assert(pending_analyze_sharing_state.requests.empty());
-        if (P.my_num() == 0)
-            cout << "ATLAS_GSZ_AUTH_TEST failure PASS "
-                 << "status=RecoveryNotImplemented handles=0 sealed=0 "
-                 << "promoted=0 checker=per-dealer-restricted "
-                 << "base_field_ftag_chunk_width=" << width
-                 << " first_original_source_count="
-                 << first_original_source_count
-                 << " first_ftag_chunks="
-                 << expected_first_ftag_chunks
-                 << " total_ftag_chunks=" << state.total_ftag_chunks
-                 << " width_agreement_comm="
-                 << state.base_field_ftag_chunk_width_agreement_communication
-                 << " key_comm=" << state.key_establishment_communication
-                 << " verify_sharing_comm="
-                 << state.verify_sharing_communication
-                 << " base_sharing_comm="
-                 << state.base_sharing_communication
-                 << " tag_comm=" << state.tag_generation_communication
-                 << " restricted_check_comm="
-                 << state.tag_checking_communication
-                 << endl;
-        return false;
-    }
-
-    assert(first_authenticated);
-    assert(first_batch->authentication_state
-            == DealerBatchAuthenticationState::authenticated);
-    assert(first_batch->authenticated_handles.size()
-            == first_local_shares.size());
-    assert(first_batch->ftag_chunk_count
-            == expected_first_ftag_chunks);
-    validate_source_chunks(*first_batch,
-            first_original_source_count,
-            expected_first_ftag_chunks);
-    assert(promote_optimistic_checkpoint(first_checkpoint_id));
-    assert(state.checkpoints.at(0).sealed);
-    assert(state.checkpoints.at(0).promoted);
-
-    vector<typename T::open_type> first_mu;
-    if (P.my_num() == 0)
-    {
-        const auto* key = find_long_term_mu_key(0, 1);
-        assert(key != 0 && key->owns_clear_mu);
-        first_mu = key->clear_mu;
-    }
-    size_t communication_before_reuse = P.total_comm().sent;
-    assert(establish_optimistic_authentication_keys());
-    assert(P.total_comm().sent == communication_before_reuse);
-    assert(state.key_establishment_runs == 1);
-    assert(state.key_establishment_communication == key_communication);
-
-    vector<typename T::open_type> second_values;
-    if (P.my_num() == 1)
-        for (size_t i = 0; i < second_original_source_count; i++)
-            second_values.push_back(
-                    typename T::open_type(200 + int(i)));
-    auto second_local_shares = deal_optimistic_source_values(
-            1, second_values, second_original_source_count);
-    uint64_t second_batch_id = register_dealer_source_batch(
-            1, second_local_shares);
-
-    LinearDerivation second_derivation{};
-    for (size_t ordinal = 0; ordinal < second_local_shares.size(); ordinal++)
-    {
-        LinearDerivationTerm term{};
-        term.handle.batch_id = second_batch_id;
-        term.handle.dealer = 1;
-        term.handle.source_ordinal = ordinal;
-        term.coefficient = typename T::open_type(1);
-        second_derivation.terms.push_back(term);
-    }
-    uint64_t second_checkpoint_id = create_optimistic_checkpoint(
-            vector<LinearDerivation>(1, second_derivation));
-    assert(not state.checkpoints.at(1).sealed);
-    assert(not promote_optimistic_checkpoint(second_checkpoint_id));
-    assert(not state.checkpoints.at(1).sealed);
-    assert(authenticate_dealer_source_batch(second_batch_id));
-    auto* second_batch = find_dealer_source_batch(second_batch_id);
-    assert(second_batch != 0);
-    assert(second_batch->verify_sharing_completed);
-    assert(second_batch->verify_sharing_passed);
-    assert(not second_batch->has_verify_sharing_failure_evidence);
-    assert(second_batch->verify_sharing_failure_published_shares.empty());
-    assert(second_batch->base_sharing_check_completed);
-    assert(second_batch->base_sharing_check_passed);
-    assert(not second_batch->has_base_sharing_failure_evidence);
-    assert(second_batch->base_sharing_failure_published_shares.empty());
-    assert(second_batch->ftag_chunk_count
-            == expected_second_ftag_chunks);
-    validate_source_chunks(*second_batch,
-            second_original_source_count,
-            expected_second_ftag_chunks);
-    assert(second_batch->authenticated_handles.size()
-            == second_local_shares.size());
-    assert(promote_optimistic_checkpoint(second_checkpoint_id));
-    assert(state.checkpoints.at(1).sealed);
-    assert(state.checkpoints.at(1).promoted);
-
-    auto validate_nu_records = [&](uint64_t batch_id,
-            size_t chunk_count, bool check_mask)
-    {
-        for (const auto& key : state.keys)
-            for (size_t chunk_ordinal = 0;
-                    chunk_ordinal < chunk_count; chunk_ordinal++)
-            {
-                const auto* material = find_batch_nu_material(
-                        batch_id, chunk_ordinal, check_mask,
-                        key.verifier, key.holder);
-                assert(material != 0);
-                assert(material->batch_id == batch_id);
-                assert(material->chunk_ordinal == chunk_ordinal);
-                assert(material->verifier == key.verifier);
-                assert(material->holder == key.holder);
-                assert(material->check_mask == check_mask);
-                assert(material->key_epoch == state.key_epoch);
-                assert(material->owns_nu
-                        == (P.my_num() == key.verifier));
-            }
-    };
-    validate_nu_records(first_batch_id,
-            expected_first_ftag_chunks, false);
-    validate_nu_records(second_batch_id,
-            expected_second_ftag_chunks, false);
-    validate_nu_records(first_batch_id, 1, true);
-    validate_nu_records(second_batch_id, 1, true);
-    for (size_t left = 0; left < state.nu_material.size(); left++)
-        for (size_t right = left + 1;
-                right < state.nu_material.size(); right++)
-        {
-            const auto& left_nu = state.nu_material.at(left);
-            const auto& right_nu = state.nu_material.at(right);
-            assert(left_nu.batch_id != right_nu.batch_id
-                    || left_nu.chunk_ordinal != right_nu.chunk_ordinal
-                    || left_nu.check_mask != right_nu.check_mask
-                    || left_nu.verifier != right_nu.verifier
-                    || left_nu.holder != right_nu.holder);
-        }
-
-    if (P.my_num() == 0)
-    {
-        const auto* reused_key = find_long_term_mu_key(0, 1);
-        assert(reused_key != 0 && reused_key->owns_clear_mu);
-        assert(reused_key->epoch == 1);
-        assert(reused_key->clear_mu == first_mu);
-        const auto* first_nu = find_batch_nu_material(
-                first_batch_id, 0, false, 0, 1);
-        const auto* second_nu = find_batch_nu_material(
-                second_batch_id, 0, false, 0, 1);
-        assert(first_nu != 0 && first_nu->owns_nu);
-        assert(second_nu != 0 && second_nu->owns_nu);
-        assert(first_nu->key_epoch == second_nu->key_epoch);
-        assert(first_nu != second_nu);
-        assert(first_nu->batch_id == first_batch_id);
-        assert(second_nu->batch_id == second_batch_id);
-        assert(first_nu->chunk_ordinal == 0);
-        assert(second_nu->chunk_ordinal == 0);
-        assert(not first_nu->check_mask);
-        assert(not second_nu->check_mask);
-        assert(first_nu->verifier == 0 && first_nu->holder == 1);
-        assert(second_nu->verifier == 0 && second_nu->holder == 1);
-    }
-
-    size_t base_nu_records = 0;
-    size_t base_tag_records = 0;
-    for (const auto& material : state.nu_material)
-        if (material.check_mask)
-        {
-            const auto* batch = find_dealer_source_batch(
-                    material.batch_id);
-            assert(batch != 0);
-            assert(batch->base_sharing_check_completed);
-            assert(batch->base_sharing_check_passed);
-            base_nu_records++;
-        }
-    for (const auto& tag : state.holder_tags)
-        if (tag.check_mask)
-        {
-            const auto* batch = find_dealer_source_batch(tag.batch_id);
-            assert(batch != 0);
-            assert(batch->base_sharing_check_completed);
-            assert(batch->base_sharing_check_passed);
-            base_tag_records++;
-        }
-    const size_t expected_base_records = checked_size_product(
-            state.keys.size(), size_t(2),
-            "AtlasGsz test: BaseSharing FTag record count overflow");
-    assert(base_nu_records == expected_base_records);
-    assert(base_tag_records == expected_base_records);
-
-    size_t ordinary_nu_records = 0;
-    size_t ordinary_tag_records = 0;
-    for (const auto& material : state.nu_material)
-        if (not material.check_mask)
-            ordinary_nu_records++;
-    for (const auto& tag : state.holder_tags)
-        if (not tag.check_mask)
-            ordinary_tag_records++;
-    const size_t expected_ordinary_records = checked_size_product(
-            state.keys.size(), expected_total_ftag_chunks,
-            "AtlasGsz test: ordinary FTag record count overflow");
-    assert(ordinary_nu_records == expected_ordinary_records);
-    assert(ordinary_tag_records == expected_ordinary_records);
-
-    assert(state.total_ftag_chunks == expected_total_ftag_chunks);
-    assert(state.dealer_batches.size() == 2);
-    for (const auto& batch : state.dealer_batches)
-    {
-        assert(batch.authenticated_handles.size()
-                == batch.local_source_shares.size());
-        for (size_t handle_index = 0;
-                handle_index < batch.authenticated_handles.size();
-                handle_index++)
-        {
-            const auto& handle =
-                    batch.authenticated_handles.at(handle_index);
-            assert(handle.batch_id == batch.batch_id);
-            assert(handle.dealer == batch.dealer);
-            assert(handle.source_ordinal
-                    == batch.source_ordinals.at(handle_index));
-            assert(handle.source_ordinal
-                    < batch.local_source_shares.size());
-        }
-    }
-    assert(state.base_sharing_communication > 0);
-    assert(state.tag_generation_communication > 0);
-    assert(state.tag_checking_communication > 0);
-    assert(state.status == OptimisticAuthenticationStatus::ready);
-    assert(state.checkpoints.size() == 2);
-    assert(state.checkpoints.at(0).promoted);
-    assert(state.checkpoints.at(1).promoted);
-    for (const auto& checkpoint : state.checkpoints)
-        for (const auto& derivation : checkpoint.output_derivations)
-            for (const auto& term : derivation.terms)
-            {
-                const auto* source_batch = find_dealer_source_batch(
-                        term.handle.batch_id);
-                assert(source_batch != 0);
-                assert(term.handle.source_ordinal
-                        < source_batch->local_source_shares.size());
-            }
-    if (P.my_num() == 0)
-        cout << "ATLAS_GSZ_AUTH_TEST honest PASS batches=2 "
-             << "base_field_ftag_chunk_width=" << width
-             << " first_original_source_count="
-             << first_original_source_count
-             << " second_original_source_count="
-             << second_original_source_count
-             << " first_ftag_chunks=" << expected_first_ftag_chunks
-             << " second_ftag_chunks=" << expected_second_ftag_chunks
-             << " total_ftag_chunks=" << expected_total_ftag_chunks
-             << " width_agreement_comm="
-             << state.base_field_ftag_chunk_width_agreement_communication
-             << " key_epoch=1 key_runs=1 key_comm="
-             << state.key_establishment_communication
-             << " check_key_equations="
-             << state.check_key_masking_equation_checks
-             << " verify_sharing_comm="
-             << state.verify_sharing_communication
-             << " base_sharing_comm="
-             << state.base_sharing_communication
-             << " tag_comm=" << state.tag_generation_communication
-             << " restricted_check_comm="
-             << state.tag_checking_communication
-             << " checkpoints=2 sealed=2 "
-             << "checker=per-dealer-restricted" << endl;
-    return true;
+    throw logic_error("AtlasGsz: unreachable focused authentication mode");
 }
 
 template<class T>
@@ -11504,14 +12013,22 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 && not optimistic_authentication_state.test_hook_ran)
         {
             string mode(auth_test);
-            if (mode == "honest")
+            if (mode == "honest" || mode == "singleton-honest")
             {
                 if (not run_optimistic_authentication_test_hook(mode))
                     throw mac_fail(
                             "AtlasGsz: optimistic authentication test failed");
             }
-            else if (mode == "failure" || mode == "verify-failure"
-                    || mode == "base-failure")
+            else if (mode == "failure" || mode == "ordinary-failure"
+                    || mode == "base-contribution-failure"
+                    || mode == "verify-failure"
+                    || mode == "base-failure"
+                    || mode == "duplicate-batch"
+                    || mode == "duplicate-dealer"
+                    || mode == "omission"
+                    || mode == "missing-chunk"
+                    || mode == "duplicate-chunk"
+                    || mode == "epoch-mismatch")
             {
                 bool accepted = run_optimistic_authentication_test_hook(mode);
                 assert(not accepted);
@@ -11520,8 +12037,7 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
             }
             else
                 throw invalid_argument(
-                        "ATLAS_GSZ_AUTH_TEST must be honest, failure, "
-                        "verify-failure, or base-failure");
+                        "ATLAS_GSZ_AUTH_TEST selected an unknown focused global authentication mode");
         }
     }
 }

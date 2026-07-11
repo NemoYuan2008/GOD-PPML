@@ -135,8 +135,9 @@ The repository contains working GS20/Atlas verification machinery, including
 multiplication and dot-product transcript collection, virtual-transcript
 construction, and the optimized ultimate-tuple success path.
 
-It also contains an opt-in, real, **per-dealer restricted optimistic FTag
-vertical slice**, exercised through a focused runtime hook. The slice includes:
+It also contains an opt-in, real, **global optimistic FTag vertical slice** for
+one checkpoint authentication round, exercised through a focused runtime hook.
+The slice includes:
 
 - authoritative ordered dealer-source batches;
 - restricted `e = 1` dealer Verify-Sharing over each exact unpadded source
@@ -153,7 +154,16 @@ vertical slice**, exercised through a focused runtime hook. The slice includes:
   independently sampled field elements is allowed and is not reuse;
 - real twisted-sharing MPC tag computation;
 - holder-only tag reconstruction;
-- per-dealer restricted Check-Tag presentation and checking;
+- one global all-dealer/all-batch Check-Tag challenge and aggregate check for
+  the exact pending dealer-source batches required by one checkpoint;
+- canonical ascending dealer order and the uniform exponent layout
+  `position(r,k) = r * (W + 1) + k`, with one checked BaseSharing at `k=0`
+  and only real source chunks at `k=1,...,w_r`;
+- one aggregate `B`-vector and one aggregate tag scalar per holder-to-verifier
+  relation, with zero permitted for the shared Protocol-27 challenge;
+- one compact Protocol-27 decision per verifier (`ok` or that verifier's
+  smallest rejected holder), broadcast in one decision round; the public
+  payload is not a vector of verifier-holder Boolean results;
 - authenticated source handles assigned only after success;
 - public linear checkpoint derivations over those handles;
 - unsealed checkpoint candidates that seal and promote only after validation;
@@ -164,10 +174,9 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. global Check-Tag aggregation across all dealers and batches;
-2. propagation of real source provenance through the normal PPML execution;
-3. normal segment/checkpoint scheduler integration;
-4. final production output gating through that scheduler.
+1. propagation of real source provenance through the normal PPML execution;
+2. normal segment/checkpoint scheduler integration;
+3. final production output gating through that scheduler.
 
 Legacy authentication, recovery, and Analyze-related metadata skeletons remain
 in the code. They are not authoritative production provenance. Do not build
@@ -216,8 +225,13 @@ private authentication material.
   chunk.
 - Authentication instances must scale with batch chunks, not with
   `wire × verifier × holder`.
-- The current checker is per-dealer restricted; do not call it the complete
-  Protocol-27 all-dealer aggregation.
+- The current global checker covers one checkpoint authentication invocation
+  while `Corr` and `Disp` remain empty. Do not call this focused optimistic
+  vertical slice the complete GSZ20 `TAG` protocol.
+- For `m` dealers and `W=max_r w_r`, the global polynomial identity has
+  maximum degree at most `m * (W + 1) - 1`. Concrete soundness depends on
+  `p=2^61-1` and union bounds over all verifier-holder relations and
+  invocations; do not claim arbitrary kappa-bit soundness.
 
 ### Communication and randomness discipline
 
@@ -368,21 +382,42 @@ ATLAS_GSZ_AUTH_TEST=base-failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
 ATLAS_GSZ_AUTH_TEST=failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
+
+ATLAS_GSZ_AUTH_TEST=singleton-honest PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=ordinary-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=base-contribution-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=duplicate-batch PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=duplicate-dealer PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=omission PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=missing-chunk PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=duplicate-chunk PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=epoch-mismatch PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ```
 
-The three failure-mode families are expected to terminate nonzero after
+The failure-mode families are expected to terminate nonzero after
 reporting their focused PASS state and the fail-stop
 `RecoveryNotImplemented` boundary. They must create no authenticated handles
 and must not seal or promote the affected checkpoint.
+
+The three Check-Tag presentation failures are distinct: `ordinary-failure`
+changes sigma at a real ordinary-source contribution (using an explicit
+test-only `lambda=1` override only if its sampled challenge is zero),
+`base-contribution-failure` changes sigma at the BaseSharing contribution,
+and `failure` changes only the final aggregate holder tag. Honest execution
+always uses the sampled zero-permitted challenge without an override.
 
 ## Near-term honest-path milestones
 
 Unless the user changes priorities, the expected sequence is:
 
-1. global all-dealer/all-batch Check-Tag aggregation;
-2. provenance capture from real segment-produced dealer sharings;
-3. normal segment verification → authentication → promotion integration;
-4. final output gating.
+1. provenance capture from real segment-produced dealer sharings;
+2. normal segment verification → authentication → promotion integration;
+3. final output gating.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.

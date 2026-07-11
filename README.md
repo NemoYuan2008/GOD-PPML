@@ -39,7 +39,8 @@ These contain the main GS20/GOD-PPML implementation, including:
 - virtual-transcript construction;
 - optimized ultimate-tuple checking;
 - GOD control-plane and diagnostic state;
-- an opt-in real per-dealer restricted optimistic FTag vertical slice;
+- an opt-in real global optimistic FTag vertical slice for one checkpoint
+  authentication invocation;
 - authenticated source handles and derivation-based checkpoint promotion.
 
 The optimistic FTag slice is currently exercised through a focused test hook.
@@ -83,7 +84,16 @@ Implemented:
 - a newly and independently uniformly sampled `nu` for each
   batch/chunk/verifier/holder relation;
 - real MPC tag computation and holder reconstruction;
-- per-dealer restricted Check-Tag;
+- one global Check-Tag over the exact pending dealer batches for one
+  checkpoint, using canonical ascending dealer order and
+  `position(r,k)=r*(W+1)+k`;
+- one zero-permitted shared challenge, one aggregate `B`-vector, and one
+  aggregate tag scalar per holder-to-verifier relation;
+- one compact `ok`/smallest-failed-holder decision per verifier in one
+  broadcast round, rather than one public Boolean per verifier-holder
+  relation;
+- atomic candidate-handle validation, batch authentication, and checkpoint
+  sealing/promotion after every global equation passes;
 - authenticated dealer-source handles;
 - derivation-based checkpoint sealing and promotion;
 - fail-stop `RecoveryNotImplemented` behavior;
@@ -95,13 +105,19 @@ packing.
 
 Not yet implemented or integrated:
 
-- global all-dealer/all-batch Check-Tag aggregation;
 - normal segment-scheduler integration;
+- provenance capture from real segment-produced dealer sharings;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
 
 Therefore, this is currently an implementation of the optimistic execution
 path and supporting vertical slices, not a complete GOD implementation.
+
+For `m` dealers and `W=max_r w_r`, the uniform global Check-Tag layout has
+maximum degree at most `m*(W+1)-1`. Its concrete soundness uses
+`p=2^61-1` and must be union-bounded over all verifier-holder relations and
+invocations; the implementation does not claim arbitrary kappa-bit
+soundness.
 
 ## Build and tests
 
