@@ -9,13 +9,15 @@
 #include "AtlasGsz.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
 #include "BufferScope.h"
 #include "AtlasConfig.h"
 
 
 template<class T>
-AtlasGsz<T>::AtlasGsz(Player& P) : honest(P), P(P)
+AtlasGsz<T>::AtlasGsz(Player& P) : honest(P),
+        optimistic_authentication_input(0, P), P(P)
 {
     honest.set_fixed_king(0);
     x_verify.reserve(AtlasConfig::max_before_check);
@@ -166,6 +168,1162 @@ typename T::open_type AtlasGsz<T>::sample_agreed_challenge()
 
     assert(opened.size() == 1);
     return opened.at(0);
+}
+
+template<class T>
+typename T::open_type AtlasGsz<T>::sample_nonzero_agreed_challenge()
+{
+    typename T::open_type challenge{};
+    do
+        challenge = sample_agreed_challenge();
+    while (challenge == typename T::open_type{});
+    return challenge;
+}
+
+template<class T>
+vector<typename T::open_type> AtlasGsz<T>::make_twisted_sharing(
+        const typename T::open_type& value,
+        int degree,
+        int holder)
+{
+    assert(0 <= holder && holder < P.num_players());
+    assert(degree > 0);
+
+    // f(0)=0 and f(alpha_holder)=value.  Coefficients of X^2,...,
+    // X^degree are random and the coefficient of X is solved from the
+    // second constraint.
+    vector<typename T::open_type> coefficients(degree + 1);
+    coefficients.at(0) = typename T::open_type{};
+    for (int k = 2; k <= degree; k++)
+        coefficients.at(k).randomize(optimistic_authentication_prng);
+
+    typename T::open_type holder_point(holder + 1);
+    typename T::open_type power = holder_point * holder_point;
+    typename T::open_type remainder{};
+    for (int k = 2; k <= degree; k++)
+    {
+        remainder += coefficients.at(k) * power;
+        power *= holder_point;
+    }
+    coefficients.at(1) =
+            (value - remainder) * holder_point.invert();
+
+    vector<typename T::open_type> shares(P.num_players());
+    for (int player = 0; player < P.num_players(); player++)
+    {
+        typename T::open_type point(player + 1);
+        typename T::open_type point_power(1);
+        for (int k = 1; k <= degree; k++)
+        {
+            point_power *= point;
+            shares.at(player) += coefficients.at(k) * point_power;
+        }
+    }
+    assert(shares.at(holder) == value);
+    return shares;
+}
+
+template<class T>
+typename T::open_type AtlasGsz<T>::reconstruct_twisted_at_holder(
+        const vector<typename T::open_type>& shares,
+        int holder) const
+{
+    assert(shares.size() == size_t(P.num_players()));
+    assert(0 <= holder && holder < P.num_players());
+
+    vector<int> points;
+    vector<typename T::open_type> values;
+    points.reserve(P.num_players());
+    values.reserve(P.num_players());
+    points.push_back(-1); // x=0, where every twisted sharing is zero
+    values.push_back(typename T::open_type{});
+    for (int player = 0; player < P.num_players(); player++)
+        if (player != holder)
+        {
+            points.push_back(player);
+            values.push_back(shares.at(player));
+        }
+
+    auto factors = Shamir<T>::get_rec_factors(points, holder);
+    typename T::open_type result{};
+    for (size_t i = 0; i < values.size(); i++)
+        result += values.at(i) * factors.at(i);
+    return result;
+}
+
+template<class T>
+bool AtlasGsz<T>::twisted_sharing_is_degree_at_most(
+        const vector<typename T::open_type>& shares,
+        int holder,
+        int degree) const
+{
+    assert(shares.size() == size_t(P.num_players()));
+    assert(0 <= holder && holder < P.num_players());
+    assert(degree > 0);
+
+    vector<int> base_points;
+    vector<typename T::open_type> base_values;
+    base_points.push_back(-1);
+    base_values.push_back(typename T::open_type{});
+    for (int player = 0;
+            player < P.num_players()
+                    && base_points.size() < size_t(degree + 1);
+            player++)
+        if (player != holder)
+        {
+            base_points.push_back(player);
+            base_values.push_back(shares.at(player));
+        }
+    if (base_points.size() != size_t(degree + 1))
+        return false;
+
+    for (int player = 0; player < P.num_players(); player++)
+        if (player != holder)
+        {
+            auto factors = Shamir<T>::get_rec_factors(
+                    base_points, player);
+            typename T::open_type expected{};
+            for (size_t k = 0; k < base_values.size(); k++)
+                expected += base_values.at(k) * factors.at(k);
+            if (expected != shares.at(player))
+                return false;
+        }
+    return true;
+}
+
+template<class T>
+typename AtlasGsz<T>::LongTermMuKeyRecord*
+AtlasGsz<T>::find_long_term_mu_key(int verifier, int holder)
+{
+    for (auto& key : optimistic_authentication_state.keys)
+        if (key.verifier == verifier && key.holder == holder)
+            return &key;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::LongTermMuKeyRecord*
+AtlasGsz<T>::find_long_term_mu_key(int verifier, int holder) const
+{
+    for (const auto& key : optimistic_authentication_state.keys)
+        if (key.verifier == verifier && key.holder == holder)
+            return &key;
+    return 0;
+}
+
+template<class T>
+typename AtlasGsz<T>::BatchNuMaterialRecord*
+AtlasGsz<T>::find_batch_nu_material(uint64_t batch_id,
+        size_t chunk_ordinal, bool check_mask, int verifier, int holder)
+{
+    for (auto& material : optimistic_authentication_state.nu_material)
+        if (material.batch_id == batch_id
+                && material.chunk_ordinal == chunk_ordinal
+                && material.check_mask == check_mask
+                && material.verifier == verifier
+                && material.holder == holder)
+            return &material;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::BatchNuMaterialRecord*
+AtlasGsz<T>::find_batch_nu_material(uint64_t batch_id,
+        size_t chunk_ordinal, bool check_mask, int verifier,
+        int holder) const
+{
+    for (const auto& material : optimistic_authentication_state.nu_material)
+        if (material.batch_id == batch_id
+                && material.chunk_ordinal == chunk_ordinal
+                && material.check_mask == check_mask
+                && material.verifier == verifier
+                && material.holder == holder)
+            return &material;
+    return 0;
+}
+
+template<class T>
+typename AtlasGsz<T>::HolderTagRecord*
+AtlasGsz<T>::find_holder_tag(uint64_t batch_id, size_t chunk_ordinal,
+        bool check_mask, int verifier, int holder)
+{
+    for (auto& tag : optimistic_authentication_state.holder_tags)
+        if (tag.batch_id == batch_id
+                && tag.chunk_ordinal == chunk_ordinal
+                && tag.check_mask == check_mask
+                && tag.verifier == verifier
+                && tag.holder == holder)
+            return &tag;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::HolderTagRecord*
+AtlasGsz<T>::find_holder_tag(uint64_t batch_id, size_t chunk_ordinal,
+        bool check_mask, int verifier, int holder) const
+{
+    for (const auto& tag : optimistic_authentication_state.holder_tags)
+        if (tag.batch_id == batch_id
+                && tag.chunk_ordinal == chunk_ordinal
+                && tag.check_mask == check_mask
+                && tag.verifier == verifier
+                && tag.holder == holder)
+            return &tag;
+    return 0;
+}
+
+template<class T>
+typename AtlasGsz<T>::DealerSourceBatchRecord*
+AtlasGsz<T>::find_dealer_source_batch(uint64_t batch_id)
+{
+    for (auto& batch : optimistic_authentication_state.dealer_batches)
+        if (batch.batch_id == batch_id)
+            return &batch;
+    return 0;
+}
+
+template<class T>
+const typename AtlasGsz<T>::DealerSourceBatchRecord*
+AtlasGsz<T>::find_dealer_source_batch(uint64_t batch_id) const
+{
+    for (const auto& batch : optimistic_authentication_state.dealer_batches)
+        if (batch.batch_id == batch_id)
+            return &batch;
+    return 0;
+}
+
+template<class T>
+bool AtlasGsz<T>::establish_optimistic_authentication_keys()
+{
+    auto& state = optimistic_authentication_state;
+    if (state.keys_established)
+        return state.keys_checked;
+
+    const size_t communication_before = P.total_comm().sent;
+    const size_t width = OptimisticAuthenticationState::batch_width;
+    state.keys.clear();
+    for (int verifier = 0; verifier < P.num_players(); verifier++)
+        for (int holder = 0; holder < P.num_players(); holder++)
+            if (verifier != holder)
+            {
+                LongTermMuKeyRecord key{};
+                key.key_id = state.next_key_id++;
+                key.epoch = state.key_epoch;
+                key.verifier = verifier;
+                key.holder = holder;
+                key.owns_clear_mu = P.my_num() == verifier;
+                key.has_local_twisted_share = P.my_num() != holder;
+                if (key.owns_clear_mu)
+                    key.clear_mu.resize(width);
+                if (key.has_local_twisted_share)
+                    key.local_twisted_share.resize(width);
+                state.keys.push_back(key);
+            }
+
+    vector<octetStream> outgoing(P.num_players());
+    for (auto& key : state.keys)
+        if (P.my_num() == key.verifier)
+            for (size_t k = 0; k < width; k++)
+            {
+                key.clear_mu.at(k).randomize(
+                        optimistic_authentication_prng);
+                auto sharing = make_twisted_sharing(
+                        key.clear_mu.at(k),
+                        ShamirMachine::s().threshold,
+                        key.holder);
+                key.local_twisted_share.at(k) =
+                        sharing.at(P.my_num());
+                for (int recipient = 0;
+                        recipient < P.num_players(); recipient++)
+                    if (recipient != P.my_num()
+                            && recipient != key.holder)
+                        sharing.at(recipient).pack(
+                                outgoing.at(recipient));
+            }
+
+    vector<octetStream> incoming;
+    P.send_receive_all(outgoing, incoming);
+    assert(incoming.size() == size_t(P.num_players()));
+    for (auto& key : state.keys)
+        if (P.my_num() != key.verifier
+                && P.my_num() != key.holder)
+            for (size_t k = 0; k < width; k++)
+                key.local_twisted_share.at(k).unpack(
+                        incoming.at(key.verifier));
+    for (int sender = 0; sender < P.num_players(); sender++)
+        if (sender != P.my_num())
+            assert(not incoming.at(sender).left());
+
+    state.keys_established = true;
+    state.key_establishment_runs++;
+    if (not check_optimistic_authentication_keys())
+    {
+        state.status = OptimisticAuthenticationStatus::
+                RecoveryNotImplemented;
+        state.failure_class =
+                OptimisticAuthenticationFailureClass::key_check;
+        state.key_establishment_communication +=
+                P.total_comm().sent - communication_before;
+        return false;
+    }
+
+    state.key_establishment_communication +=
+            P.total_comm().sent - communication_before;
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::check_optimistic_authentication_keys()
+{
+    auto& state = optimistic_authentication_state;
+    assert(state.keys_established);
+    const int t = ShamirMachine::s().threshold;
+    const size_t width = OptimisticAuthenticationState::batch_width;
+
+    // Restricted e=1 Check-Key: a fresh twisted sharing of random rho masks
+    // every public reusable-key combination. The clear rho values exist only
+    // transiently on their verifier processes during this execution.
+    vector<typename T::open_type> local_mask_shares(state.keys.size());
+    vector<typename T::open_type> verifier_mask_values(state.keys.size());
+    vector<octetStream> outgoing(P.num_players());
+    for (size_t index = 0; index < state.keys.size(); index++)
+    {
+        const auto& key = state.keys.at(index);
+        if (P.my_num() == key.verifier)
+        {
+            verifier_mask_values.at(index).randomize(
+                    optimistic_authentication_prng);
+            auto mask_sharing = make_twisted_sharing(
+                    verifier_mask_values.at(index), t, key.holder);
+            local_mask_shares.at(index) =
+                    mask_sharing.at(P.my_num());
+            for (int recipient = 0;
+                    recipient < P.num_players(); recipient++)
+                if (recipient != P.my_num()
+                        && recipient != key.holder)
+                    mask_sharing.at(recipient).pack(
+                            outgoing.at(recipient));
+        }
+    }
+
+    vector<octetStream> incoming;
+    P.send_receive_all(outgoing, incoming);
+    for (size_t index = 0; index < state.keys.size(); index++)
+    {
+        const auto& key = state.keys.at(index);
+        if (P.my_num() != key.verifier
+                && P.my_num() != key.holder)
+            local_mask_shares.at(index).unpack(
+                    incoming.at(key.verifier));
+    }
+    for (int sender = 0; sender < P.num_players(); sender++)
+        if (sender != P.my_num())
+            assert(not incoming.at(sender).left());
+
+    typename T::open_type challenge =
+            sample_nonzero_agreed_challenge();
+    vector<octetStream> combined_streams(P.num_players());
+    for (size_t index = 0; index < state.keys.size(); index++)
+    {
+        const auto& key = state.keys.at(index);
+        if (P.my_num() == key.holder)
+            continue;
+        assert(key.has_local_twisted_share);
+        typename T::open_type combined = local_mask_shares.at(index);
+        typename T::open_type power = challenge;
+        for (size_t k = 0; k < width; k++)
+        {
+            combined += power * key.local_twisted_share.at(k);
+            power *= challenge;
+        }
+        combined.pack(combined_streams.at(P.my_num()));
+    }
+    P.Broadcast_Receive(combined_streams);
+    P.Check_Broadcast();
+
+    vector<vector<typename T::open_type>> combined(
+            state.keys.size(),
+            vector<typename T::open_type>(P.num_players()));
+    for (int sender = 0; sender < P.num_players(); sender++)
+        for (size_t index = 0; index < state.keys.size(); index++)
+            if (sender != state.keys.at(index).holder)
+                combined.at(index).at(sender).unpack(
+                        combined_streams.at(sender));
+    for (const auto& stream : combined_streams)
+        assert(not stream.left());
+
+    bool local_pass = true;
+    for (size_t index = 0; index < state.keys.size(); index++)
+    {
+        const auto& key = state.keys.at(index);
+        if (not twisted_sharing_is_degree_at_most(
+                combined.at(index), key.holder, t))
+            local_pass = false;
+        if (P.my_num() == key.verifier)
+        {
+            assert(key.owns_clear_mu);
+            typename T::open_type unmasked_key_combination{};
+            typename T::open_type power = challenge;
+            for (size_t k = 0; k < width; k++)
+            {
+                unmasked_key_combination += power * key.clear_mu.at(k);
+                power *= challenge;
+            }
+            auto reconstructed = reconstruct_twisted_at_holder(
+                    combined.at(index), key.holder);
+            bool masking_equation = reconstructed
+                    == verifier_mask_values.at(index)
+                            + unmasked_key_combination;
+            if (not masking_equation)
+                local_pass = false;
+            else
+                state.check_key_masking_equation_checks++;
+        }
+    }
+
+    vector<octetStream> vote_streams(P.num_players());
+    typename T::open_type(local_pass ? 1 : 0).pack(
+            vote_streams.at(P.my_num()));
+    P.Broadcast_Receive(vote_streams);
+    P.Check_Broadcast();
+    bool all_pass = true;
+    for (int player = 0; player < P.num_players(); player++)
+    {
+        typename T::open_type vote;
+        vote.unpack(vote_streams.at(player));
+        assert(not vote_streams.at(player).left());
+        if (vote != typename T::open_type(1))
+            all_pass = false;
+    }
+
+    state.keys_checked = all_pass;
+    for (auto& key : state.keys)
+        key.checked = all_pass;
+    return all_pass;
+}
+
+template<class T>
+vector<T> AtlasGsz<T>::deal_optimistic_source_values(
+        int dealer,
+        const vector<typename T::open_type>& dealer_values,
+        size_t count)
+{
+    assert(0 <= dealer && dealer < P.num_players());
+    assert(P.my_num() != dealer || dealer_values.size() == count);
+
+    optimistic_authentication_input.reset_all(P);
+    for (size_t i = 0; i < count; i++)
+        if (P.my_num() == dealer)
+            optimistic_authentication_input.add_mine(
+                    dealer_values.at(i));
+        else
+            optimistic_authentication_input.add_other(dealer);
+    optimistic_authentication_input.exchange();
+
+    vector<T> result;
+    result.reserve(count);
+    for (size_t i = 0; i < count; i++)
+        result.push_back(
+                optimistic_authentication_input.finalize(dealer));
+    return result;
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::register_dealer_source_batch(
+        int dealer, const vector<T>& local_source_shares)
+{
+    assert(0 <= dealer && dealer < P.num_players());
+    assert(not local_source_shares.empty());
+    auto& state = optimistic_authentication_state;
+
+    DealerSourceBatchRecord batch{};
+    batch.batch_id = state.next_batch_id++;
+    batch.dealer = dealer;
+    batch.local_source_shares = local_source_shares;
+    batch.source_ordinals.reserve(local_source_shares.size());
+    for (size_t ordinal = 0; ordinal < local_source_shares.size(); ordinal++)
+        batch.source_ordinals.push_back(ordinal);
+    state.dealer_batches.push_back(batch);
+    return batch.batch_id;
+}
+
+template<class T>
+vector<vector<T>> AtlasGsz<T>::source_chunks_for_batch(
+        const DealerSourceBatchRecord& batch) const
+{
+    const size_t width = OptimisticAuthenticationState::batch_width;
+    vector<vector<T>> chunks;
+    for (size_t offset = 0;
+            offset < batch.local_source_shares.size(); offset += width)
+    {
+        vector<T> chunk(width, T{});
+        size_t count = min(width,
+                batch.local_source_shares.size() - offset);
+        for (size_t k = 0; k < count; k++)
+            chunk.at(k) = batch.local_source_shares.at(offset + k);
+        chunks.push_back(chunk);
+    }
+    return chunks;
+}
+
+template<class T>
+void AtlasGsz<T>::fail_optimistic_authentication(
+        DealerSourceBatchRecord* batch,
+        OptimisticAuthenticationFailureClass failure_class,
+        int verifier,
+        int holder)
+{
+    auto& state = optimistic_authentication_state;
+    state.status = OptimisticAuthenticationStatus::
+            RecoveryNotImplemented;
+    state.failure_class = failure_class;
+    state.failed_batch_id = batch == 0 ? 0 : batch->batch_id;
+    state.failed_verifier = verifier;
+    state.failed_holder = holder;
+    if (batch != 0)
+    {
+        batch->authentication_state =
+                DealerBatchAuthenticationState::rejected;
+        batch->failure_class = failure_class;
+        batch->authenticated_handles.clear();
+    }
+}
+
+template<class T>
+bool AtlasGsz<T>::compute_and_deliver_batch_tags(
+        DealerSourceBatchRecord& batch,
+        const vector<vector<T>>& source_chunks,
+        bool check_mask)
+{
+    auto& state = optimistic_authentication_state;
+    const int degree_2t = 2 * ShamirMachine::s().threshold;
+    const size_t width = OptimisticAuthenticationState::batch_width;
+    if (not state.keys_checked || source_chunks.empty())
+        return false;
+    for (const auto& chunk : source_chunks)
+        if (chunk.size() != width)
+            return false;
+
+    struct LocalTagMaterial
+    {
+        typename T::open_type nu_share{};
+        typename T::open_type zero_share{};
+        bool has_nu_share = false;
+        bool has_zero_share = false;
+    };
+    const size_t n_instances = state.keys.size() * source_chunks.size();
+    vector<LocalTagMaterial> local_material(n_instances);
+    vector<octetStream> outgoing(P.num_players());
+
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
+        assert(key.checked);
+        for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+        {
+            const size_t index =
+                    key_index * source_chunks.size() + chunk;
+            assert(find_batch_nu_material(batch.batch_id, chunk,
+                    check_mask, key.verifier, key.holder) == 0);
+            assert(find_holder_tag(batch.batch_id, chunk,
+                    check_mask, key.verifier, key.holder) == 0);
+
+            BatchNuMaterialRecord nu_record{};
+            nu_record.batch_id = batch.batch_id;
+            nu_record.chunk_ordinal = chunk;
+            nu_record.check_mask = check_mask;
+            nu_record.key_epoch = state.key_epoch;
+            nu_record.verifier = key.verifier;
+            nu_record.holder = key.holder;
+            nu_record.owns_nu = P.my_num() == key.verifier;
+
+            if (nu_record.owns_nu)
+            {
+                bool reused;
+                do
+                {
+                    reused = false;
+                    nu_record.nu.randomize(
+                            optimistic_authentication_prng);
+                    for (const auto& existing : state.nu_material)
+                        if (existing.owns_nu
+                                && existing.verifier == key.verifier
+                                && existing.holder == key.holder
+                                && existing.key_epoch == state.key_epoch
+                                && existing.nu == nu_record.nu)
+                            reused = true;
+                }
+                while (reused);
+
+                auto nu_sharing = make_twisted_sharing(
+                        nu_record.nu, degree_2t, key.holder);
+                local_material.at(index).nu_share =
+                        nu_sharing.at(P.my_num());
+                local_material.at(index).has_nu_share = true;
+                for (int recipient = 0;
+                        recipient < P.num_players(); recipient++)
+                    if (recipient != P.my_num()
+                            && recipient != key.holder)
+                        nu_sharing.at(recipient).pack(
+                                outgoing.at(recipient));
+            }
+            state.nu_material.push_back(nu_record);
+
+            HolderTagRecord tag_record{};
+            tag_record.batch_id = batch.batch_id;
+            tag_record.chunk_ordinal = chunk;
+            tag_record.check_mask = check_mask;
+            tag_record.verifier = key.verifier;
+            tag_record.holder = key.holder;
+            tag_record.owns_tag = P.my_num() == key.holder;
+            state.holder_tags.push_back(tag_record);
+
+            if (P.my_num() == batch.dealer)
+            {
+                auto zero_sharing = make_twisted_sharing(
+                        typename T::open_type{}, degree_2t,
+                        key.holder);
+                if (P.my_num() != key.holder)
+                {
+                    local_material.at(index).zero_share =
+                            zero_sharing.at(P.my_num());
+                    local_material.at(index).has_zero_share = true;
+                }
+                for (int recipient = 0;
+                        recipient < P.num_players(); recipient++)
+                    if (recipient != P.my_num()
+                            && recipient != key.holder)
+                        zero_sharing.at(recipient).pack(
+                                outgoing.at(recipient));
+            }
+        }
+    }
+
+    vector<octetStream> incoming;
+    P.send_receive_all(outgoing, incoming);
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
+        for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+        {
+            const size_t index =
+                    key_index * source_chunks.size() + chunk;
+            if (P.my_num() == key.holder)
+                continue;
+            if (P.my_num() != key.verifier)
+            {
+                local_material.at(index).nu_share.unpack(
+                        incoming.at(key.verifier));
+                local_material.at(index).has_nu_share = true;
+            }
+            if (P.my_num() != batch.dealer)
+            {
+                local_material.at(index).zero_share.unpack(
+                        incoming.at(batch.dealer));
+                local_material.at(index).has_zero_share = true;
+            }
+        }
+    }
+    for (int sender = 0; sender < P.num_players(); sender++)
+        if (sender != P.my_num())
+            assert(not incoming.at(sender).left());
+
+    vector<octetStream> tag_outgoing(P.num_players());
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
+        if (P.my_num() == key.holder)
+            continue;
+        assert(key.has_local_twisted_share);
+        for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+        {
+            const size_t index =
+                    key_index * source_chunks.size() + chunk;
+            assert(local_material.at(index).has_nu_share);
+            assert(local_material.at(index).has_zero_share);
+            typename T::open_type tag_share =
+                    local_material.at(index).nu_share
+                    + local_material.at(index).zero_share;
+            for (size_t k = 0; k < width; k++)
+            {
+                typename T::open_type source_share =
+                        source_chunks.at(chunk).at(k);
+                tag_share += key.local_twisted_share.at(k)
+                        * source_share;
+            }
+            tag_share.pack(tag_outgoing.at(key.holder));
+        }
+    }
+
+    vector<octetStream> tag_incoming;
+    P.send_receive_all(tag_outgoing, tag_incoming);
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
+        if (P.my_num() != key.holder)
+            continue;
+        for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+        {
+            vector<typename T::open_type> tag_shares(P.num_players());
+            for (int sender = 0; sender < P.num_players(); sender++)
+                if (sender != key.holder)
+                    tag_shares.at(sender).unpack(
+                            tag_incoming.at(sender));
+            auto* tag = find_holder_tag(batch.batch_id, chunk,
+                    check_mask, key.verifier, key.holder);
+            assert(tag != 0 && tag->owns_tag);
+            tag->tag = reconstruct_twisted_at_holder(
+                    tag_shares, key.holder);
+        }
+    }
+    for (int sender = 0; sender < P.num_players(); sender++)
+        if (sender != P.my_num())
+            assert(not tag_incoming.at(sender).left());
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::check_batch_tags(
+        DealerSourceBatchRecord& batch,
+        const vector<vector<T>>& source_chunks,
+        const vector<T>& check_mask_shares,
+        bool inject_bad_presentation)
+{
+    auto& state = optimistic_authentication_state;
+    const size_t width = OptimisticAuthenticationState::batch_width;
+    assert(check_mask_shares.size() == width);
+    assert(not source_chunks.empty());
+
+    // Per-dealer restricted Check-Tag vertical slice: the challenge is sampled
+    // only after this dealer's base-sharing tags exist. The base sharing
+    // one-time-pads the presented aggregate. This is not the full Protocol-27
+    // aggregation across every dealer and every batch.
+    typename T::open_type challenge =
+            sample_nonzero_agreed_challenge();
+    vector<octetStream> presentations(P.num_players());
+    for (const auto& key : state.keys)
+        if (P.my_num() == key.holder)
+        {
+            vector<typename T::open_type> sigma(width);
+            for (size_t k = 0; k < width; k++)
+                sigma.at(k) = check_mask_shares.at(k);
+
+            const auto* mask_tag = find_holder_tag(
+                    batch.batch_id, 0, true,
+                    key.verifier, key.holder);
+            assert(mask_tag != 0 && mask_tag->owns_tag);
+            typename T::open_type aggregate_tag = mask_tag->tag;
+            typename T::open_type power = challenge;
+            for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+            {
+                for (size_t k = 0; k < width; k++)
+                {
+                    typename T::open_type source_share =
+                            source_chunks.at(chunk).at(k);
+                    sigma.at(k) += power * source_share;
+                }
+                const auto* tag = find_holder_tag(
+                        batch.batch_id, chunk, false,
+                        key.verifier, key.holder);
+                assert(tag != 0 && tag->owns_tag);
+                aggregate_tag += power * tag->tag;
+                power *= challenge;
+            }
+
+            if (inject_bad_presentation
+                    && key.verifier == 0 && key.holder == 1)
+                aggregate_tag += typename T::open_type(1);
+
+            for (const auto& component : sigma)
+                component.pack(presentations.at(key.verifier));
+            aggregate_tag.pack(presentations.at(key.verifier));
+        }
+
+    vector<octetStream> received_presentations;
+    P.send_receive_all(presentations, received_presentations);
+    vector<bool> verifier_votes(state.keys.size(), false);
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
+        if (P.my_num() != key.verifier)
+            continue;
+        assert(key.owns_clear_mu);
+        vector<typename T::open_type> sigma(width);
+        for (auto& component : sigma)
+            component.unpack(received_presentations.at(key.holder));
+        typename T::open_type presented_tag;
+        presented_tag.unpack(received_presentations.at(key.holder));
+
+        const auto* mask_nu = find_batch_nu_material(
+                batch.batch_id, 0, true,
+                key.verifier, key.holder);
+        assert(mask_nu != 0 && mask_nu->owns_nu);
+        typename T::open_type aggregate_nu = mask_nu->nu;
+        typename T::open_type power = challenge;
+        for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
+        {
+            const auto* nu = find_batch_nu_material(
+                    batch.batch_id, chunk, false,
+                    key.verifier, key.holder);
+            assert(nu != 0 && nu->owns_nu);
+            aggregate_nu += power * nu->nu;
+            power *= challenge;
+        }
+
+        typename T::open_type expected = aggregate_nu;
+        for (size_t k = 0; k < width; k++)
+            expected += key.clear_mu.at(k) * sigma.at(k);
+        verifier_votes.at(key_index) = expected == presented_tag;
+    }
+    for (int sender = 0; sender < P.num_players(); sender++)
+        if (sender != P.my_num())
+            assert(not received_presentations.at(sender).left());
+
+    vector<octetStream> vote_streams(P.num_players());
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+        if (P.my_num() == state.keys.at(key_index).verifier)
+        {
+            typename T::open_type vote(
+                    verifier_votes.at(key_index) ? 1 : 0);
+            vote.pack(vote_streams.at(P.my_num()));
+        }
+    P.Broadcast_Receive(vote_streams);
+    P.Check_Broadcast();
+
+    bool all_pass = true;
+    int failed_verifier = -1;
+    int failed_holder = -1;
+    for (int verifier = 0; verifier < P.num_players(); verifier++)
+        for (const auto& key : state.keys)
+            if (key.verifier == verifier)
+            {
+                typename T::open_type vote;
+                vote.unpack(vote_streams.at(verifier));
+                if (vote != typename T::open_type(1) && all_pass)
+                {
+                    all_pass = false;
+                    failed_verifier = key.verifier;
+                    failed_holder = key.holder;
+                }
+            }
+    for (const auto& stream : vote_streams)
+        assert(not stream.left());
+
+    if (not all_pass)
+        fail_optimistic_authentication(&batch,
+                OptimisticAuthenticationFailureClass::tag_check,
+                failed_verifier, failed_holder);
+    return all_pass;
+}
+
+template<class T>
+bool AtlasGsz<T>::authenticate_dealer_source_batch(
+        uint64_t batch_id, bool inject_bad_presentation)
+{
+    auto* batch = find_dealer_source_batch(batch_id);
+    assert(batch != 0);
+    if (batch->authentication_state
+            == DealerBatchAuthenticationState::authenticated)
+        return true;
+    if (batch->authentication_state
+            == DealerBatchAuthenticationState::rejected)
+        return false;
+
+    if (not establish_optimistic_authentication_keys())
+    {
+        fail_optimistic_authentication(batch,
+                OptimisticAuthenticationFailureClass::key_check);
+        return false;
+    }
+
+    auto source_chunks = source_chunks_for_batch(*batch);
+    batch->authentication_instances = source_chunks.size();
+    optimistic_authentication_state.total_authentication_instances +=
+            source_chunks.size();
+
+    size_t communication_before = P.total_comm().sent;
+    if (not compute_and_deliver_batch_tags(
+            *batch, source_chunks, false))
+    {
+        fail_optimistic_authentication(batch,
+                OptimisticAuthenticationFailureClass::tag_generation);
+        return false;
+    }
+    optimistic_authentication_state.tag_generation_communication +=
+            P.total_comm().sent - communication_before;
+
+    communication_before = P.total_comm().sent;
+    vector<typename T::open_type> dealer_mask_values;
+    if (P.my_num() == batch->dealer)
+    {
+        dealer_mask_values.resize(
+                OptimisticAuthenticationState::batch_width);
+        for (auto& value : dealer_mask_values)
+            value.randomize(optimistic_authentication_prng);
+    }
+    vector<T> check_mask_shares = deal_optimistic_source_values(
+            batch->dealer, dealer_mask_values,
+            OptimisticAuthenticationState::batch_width);
+    vector<vector<T>> check_mask_chunks(1, check_mask_shares);
+    if (not compute_and_deliver_batch_tags(
+            *batch, check_mask_chunks, true))
+    {
+        fail_optimistic_authentication(batch,
+                OptimisticAuthenticationFailureClass::tag_generation);
+        return false;
+    }
+    if (not check_batch_tags(*batch, source_chunks,
+            check_mask_shares, inject_bad_presentation))
+    {
+        optimistic_authentication_state.tag_checking_communication +=
+                P.total_comm().sent - communication_before;
+        return false;
+    }
+    optimistic_authentication_state.tag_checking_communication +=
+            P.total_comm().sent - communication_before;
+
+    batch->authenticated_handles.clear();
+    batch->authenticated_handles.reserve(batch->source_ordinals.size());
+    for (auto ordinal : batch->source_ordinals)
+    {
+        AuthenticatedSourceHandle handle{};
+        handle.batch_id = batch->batch_id;
+        handle.dealer = batch->dealer;
+        handle.source_ordinal = ordinal;
+        batch->authenticated_handles.push_back(handle);
+    }
+    batch->authentication_state =
+            DealerBatchAuthenticationState::authenticated;
+    batch->failure_class =
+            OptimisticAuthenticationFailureClass::none;
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::authenticated_handle_exists(
+        const AuthenticatedSourceHandle& handle) const
+{
+    const auto* batch = find_dealer_source_batch(handle.batch_id);
+    if (batch == 0
+            || batch->dealer != handle.dealer
+            || batch->authentication_state
+                    != DealerBatchAuthenticationState::authenticated)
+        return false;
+    return find(batch->authenticated_handles.begin(),
+            batch->authenticated_handles.end(), handle)
+            != batch->authenticated_handles.end();
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::create_optimistic_checkpoint(
+        const vector<LinearDerivation>& output_derivations)
+{
+    assert(not output_derivations.empty());
+    OptimisticCheckpointRecord checkpoint{};
+    checkpoint.checkpoint_id =
+            optimistic_authentication_state.next_checkpoint_id++;
+    checkpoint.output_derivations = output_derivations;
+    optimistic_authentication_state.checkpoints.push_back(checkpoint);
+    return checkpoint.checkpoint_id;
+}
+
+template<class T>
+bool AtlasGsz<T>::promote_optimistic_checkpoint(uint64_t checkpoint_id)
+{
+    for (auto& checkpoint : optimistic_authentication_state.checkpoints)
+        if (checkpoint.checkpoint_id == checkpoint_id)
+        {
+            if (checkpoint.promoted)
+                return true;
+            if (optimistic_authentication_state.status
+                            != OptimisticAuthenticationStatus::ready)
+                return false;
+            for (const auto& derivation : checkpoint.output_derivations)
+            {
+                if (derivation.terms.empty())
+                    return false;
+                for (const auto& term : derivation.terms)
+                    if (not authenticated_handle_exists(term.handle))
+                        return false;
+            }
+            checkpoint.sealed = true;
+            checkpoint.promoted = true;
+            return true;
+        }
+    return false;
+}
+
+template<class T>
+bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
+        const string& mode)
+{
+    auto& state = optimistic_authentication_state;
+    assert(not state.test_hook_ran);
+    state.test_hook_ran = true;
+    assert(P.num_players() >= 3);
+    assert(ShamirMachine::s().threshold * 2 < P.num_players());
+
+    if (not establish_optimistic_authentication_keys())
+        return false;
+    assert(state.keys_established && state.keys_checked);
+    assert(state.key_epoch == 1);
+    assert(state.key_establishment_runs == 1);
+    assert(state.check_key_masking_equation_checks
+            == size_t(P.num_players() - 1));
+    const size_t key_communication = state.key_establishment_communication;
+    assert(key_communication > 0);
+
+    vector<typename T::open_type> first_values;
+    if (P.my_num() == 0)
+        for (int i = 0; i < 9; i++)
+            first_values.push_back(typename T::open_type(100 + i));
+    auto first_local_shares = deal_optimistic_source_values(
+            0, first_values, 9);
+    uint64_t first_batch_id = register_dealer_source_batch(
+            0, first_local_shares);
+
+    LinearDerivation first_derivation{};
+    for (size_t ordinal = 0; ordinal < first_local_shares.size(); ordinal++)
+    {
+        LinearDerivationTerm term{};
+        term.handle.batch_id = first_batch_id;
+        term.handle.dealer = 0;
+        term.handle.source_ordinal = ordinal;
+        term.coefficient = typename T::open_type(int(ordinal + 1));
+        first_derivation.terms.push_back(term);
+    }
+    uint64_t first_checkpoint_id = create_optimistic_checkpoint(
+            vector<LinearDerivation>(1, first_derivation));
+    assert(not state.checkpoints.at(0).sealed);
+    assert(not promote_optimistic_checkpoint(first_checkpoint_id));
+    assert(not state.checkpoints.at(0).sealed);
+
+    bool failure_mode = mode == "failure";
+    bool first_authenticated = authenticate_dealer_source_batch(
+            first_batch_id, failure_mode);
+    auto* first_batch = find_dealer_source_batch(first_batch_id);
+    assert(first_batch != 0);
+
+    if (failure_mode)
+    {
+        assert(not first_authenticated);
+        assert(first_batch->authentication_state
+                == DealerBatchAuthenticationState::rejected);
+        assert(first_batch->authenticated_handles.empty());
+        assert(not promote_optimistic_checkpoint(first_checkpoint_id));
+        assert(not state.checkpoints.at(0).sealed);
+        assert(not state.checkpoints.at(0).promoted);
+        assert(state.status
+                == OptimisticAuthenticationStatus::
+                    RecoveryNotImplemented);
+        assert(state.failure_class
+                == OptimisticAuthenticationFailureClass::tag_check);
+        assert(state.failed_verifier == 0);
+        assert(state.failed_holder == 1);
+        assert(dispute_control_state.corr.empty());
+        assert(dispute_control_state.disp.empty());
+        assert(pending_analyze_sharing_state.requests.empty());
+        if (P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST failure PASS "
+                 << "status=RecoveryNotImplemented handles=0 sealed=0 "
+                 << "promoted=0 checker=per-dealer-restricted"
+                 << endl;
+        return false;
+    }
+
+    assert(first_authenticated);
+    assert(first_batch->authentication_state
+            == DealerBatchAuthenticationState::authenticated);
+    assert(first_batch->authenticated_handles.size()
+            == first_local_shares.size());
+    assert(first_batch->authentication_instances == 3);
+    assert(promote_optimistic_checkpoint(first_checkpoint_id));
+    assert(state.checkpoints.at(0).sealed);
+    assert(state.checkpoints.at(0).promoted);
+
+    vector<typename T::open_type> first_mu;
+    if (P.my_num() == 0)
+    {
+        const auto* key = find_long_term_mu_key(0, 1);
+        assert(key != 0 && key->owns_clear_mu);
+        first_mu = key->clear_mu;
+    }
+    size_t communication_before_reuse = P.total_comm().sent;
+    assert(establish_optimistic_authentication_keys());
+    assert(P.total_comm().sent == communication_before_reuse);
+    assert(state.key_establishment_runs == 1);
+    assert(state.key_establishment_communication == key_communication);
+
+    vector<typename T::open_type> second_values;
+    if (P.my_num() == 1)
+        for (int i = 0; i < 6; i++)
+            second_values.push_back(typename T::open_type(200 + i));
+    auto second_local_shares = deal_optimistic_source_values(
+            1, second_values, 6);
+    uint64_t second_batch_id = register_dealer_source_batch(
+            1, second_local_shares);
+
+    LinearDerivation second_derivation{};
+    for (size_t ordinal = 0; ordinal < second_local_shares.size(); ordinal++)
+    {
+        LinearDerivationTerm term{};
+        term.handle.batch_id = second_batch_id;
+        term.handle.dealer = 1;
+        term.handle.source_ordinal = ordinal;
+        term.coefficient = typename T::open_type(1);
+        second_derivation.terms.push_back(term);
+    }
+    uint64_t second_checkpoint_id = create_optimistic_checkpoint(
+            vector<LinearDerivation>(1, second_derivation));
+    assert(not state.checkpoints.at(1).sealed);
+    assert(not promote_optimistic_checkpoint(second_checkpoint_id));
+    assert(not state.checkpoints.at(1).sealed);
+    assert(authenticate_dealer_source_batch(second_batch_id));
+    auto* second_batch = find_dealer_source_batch(second_batch_id);
+    assert(second_batch != 0);
+    assert(second_batch->authentication_instances == 2);
+    assert(second_batch->authenticated_handles.size()
+            == second_local_shares.size());
+    assert(promote_optimistic_checkpoint(second_checkpoint_id));
+    assert(state.checkpoints.at(1).sealed);
+    assert(state.checkpoints.at(1).promoted);
+
+    if (P.my_num() == 0)
+    {
+        const auto* reused_key = find_long_term_mu_key(0, 1);
+        assert(reused_key != 0 && reused_key->owns_clear_mu);
+        assert(reused_key->epoch == 1);
+        assert(reused_key->clear_mu == first_mu);
+        const auto* first_nu = find_batch_nu_material(
+                first_batch_id, 0, false, 0, 1);
+        const auto* second_nu = find_batch_nu_material(
+                second_batch_id, 0, false, 0, 1);
+        assert(first_nu != 0 && first_nu->owns_nu);
+        assert(second_nu != 0 && second_nu->owns_nu);
+        assert(first_nu->key_epoch == second_nu->key_epoch);
+        assert(first_nu->nu != second_nu->nu);
+    }
+
+    assert(state.total_authentication_instances == 5);
+    assert(state.tag_generation_communication > 0);
+    assert(state.tag_checking_communication > 0);
+    assert(state.status == OptimisticAuthenticationStatus::ready);
+    assert(state.checkpoints.size() == 2);
+    assert(state.checkpoints.at(0).promoted);
+    assert(state.checkpoints.at(1).promoted);
+    if (P.my_num() == 0)
+        cout << "ATLAS_GSZ_AUTH_TEST honest PASS batches=2 "
+             << "width=" << OptimisticAuthenticationState::batch_width
+             << " instances=5 key_epoch=1 key_runs=1 key_comm="
+             << state.key_establishment_communication
+             << " check_key_equations="
+             << state.check_key_masking_equation_checks
+             << " tag_comm=" << state.tag_generation_communication
+             << " restricted_check_comm="
+             << state.tag_checking_communication
+             << " checkpoints=2 sealed=2 "
+             << "checker=per-dealer-restricted" << endl;
+    return true;
 }
 
 template<class T>
@@ -9571,6 +10729,32 @@ AtlasGsz<T>::apply_fault_localization_outcome(
 template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
+
+    if constexpr (not T::characteristic_two)
+    {
+        const char* auth_test = getenv("ATLAS_GSZ_AUTH_TEST");
+        if (auth_test != 0
+                && not optimistic_authentication_state.test_hook_ran)
+        {
+            string mode(auth_test);
+            if (mode == "honest")
+            {
+                if (not run_optimistic_authentication_test_hook(mode))
+                    throw mac_fail(
+                            "AtlasGsz: optimistic authentication test failed");
+            }
+            else if (mode == "failure")
+            {
+                bool accepted = run_optimistic_authentication_test_hook(mode);
+                assert(not accepted);
+                throw mac_fail(
+                        "AtlasGsz: RecoveryNotImplemented after authentication failure");
+            }
+            else
+                throw invalid_argument(
+                        "ATLAS_GSZ_AUTH_TEST must be honest or failure");
+        }
+    }
 }
 
 template<class T>

@@ -10,6 +10,7 @@
 #include "MaliciousShamirMC.h"
 
 #include <cstdint>
+#include <string>
 #include <utility>
 
 /**
@@ -357,6 +358,161 @@ private:
 
         vector<uint64_t> current_segment_input_sharings;
         vector<uint64_t> current_segment_output_sharings;
+    };
+
+    // Authoritative optimistic-path authentication state.  This is kept
+    // separate from the legacy metadata-only authentication plan below: the
+    // object authenticated here is a dealer-generated source batch, never a
+    // derived checkpoint output.
+    enum class OptimisticAuthenticationStatus
+    {
+        ready,
+        RecoveryNotImplemented,
+    };
+
+    enum class DealerBatchAuthenticationState
+    {
+        pending,
+        authenticated,
+        rejected,
+    };
+
+    enum class OptimisticAuthenticationFailureClass
+    {
+        none,
+        key_distribution,
+        key_check,
+        tag_generation,
+        tag_check,
+    };
+
+    struct AuthenticatedSourceHandle
+    {
+        uint64_t batch_id = 0;
+        int dealer = -1;
+        uint64_t source_ordinal = 0;
+
+        bool operator==(const AuthenticatedSourceHandle& other) const
+        {
+            return batch_id == other.batch_id
+                    && dealer == other.dealer
+                    && source_ordinal == other.source_ordinal;
+        }
+    };
+
+    struct DealerSourceBatchRecord
+    {
+        uint64_t batch_id = 0;
+        int dealer = -1;
+        vector<uint64_t> source_ordinals;
+
+        // This process owns only its local shares of the dealer's ordered
+        // degree-t source sharings.
+        vector<T> local_source_shares;
+
+        DealerBatchAuthenticationState authentication_state =
+                DealerBatchAuthenticationState::pending;
+        OptimisticAuthenticationFailureClass failure_class =
+                OptimisticAuthenticationFailureClass::none;
+        size_t authentication_instances = 0;
+        vector<AuthenticatedSourceHandle> authenticated_handles;
+    };
+
+    struct LongTermMuKeyRecord
+    {
+        uint64_t key_id = 0;
+        uint64_t epoch = 0;
+        int verifier = -1;
+        int holder = -1;
+
+        // Only the verifier process sets owns_clear_mu.  A non-holder process
+        // has at most its local share of the twisted key sharing; the holder
+        // receives neither representation.
+        bool owns_clear_mu = false;
+        vector<typename T::open_type> clear_mu;
+        bool has_local_twisted_share = false;
+        vector<typename T::open_type> local_twisted_share;
+        bool checked = false;
+    };
+
+    struct BatchNuMaterialRecord
+    {
+        uint64_t batch_id = 0;
+        size_t chunk_ordinal = 0;
+        bool check_mask = false;
+        uint64_t key_epoch = 0;
+        int verifier = -1;
+        int holder = -1;
+
+        // nu is present only on the verifier process.
+        bool owns_nu = false;
+        typename T::open_type nu{};
+    };
+
+    struct HolderTagRecord
+    {
+        uint64_t batch_id = 0;
+        size_t chunk_ordinal = 0;
+        bool check_mask = false;
+        int verifier = -1;
+        int holder = -1;
+
+        // The reconstructed tag is present only on the holder process.
+        bool owns_tag = false;
+        typename T::open_type tag{};
+    };
+
+    struct LinearDerivationTerm
+    {
+        AuthenticatedSourceHandle handle;
+        typename T::open_type coefficient{};
+    };
+
+    struct LinearDerivation
+    {
+        vector<LinearDerivationTerm> terms;
+    };
+
+    struct OptimisticCheckpointRecord
+    {
+        uint64_t checkpoint_id = 0;
+        vector<LinearDerivation> output_derivations;
+        bool sealed = false;
+        bool promoted = false;
+    };
+
+    struct OptimisticAuthenticationState
+    {
+        static const size_t batch_width = 4;
+
+        uint64_t key_epoch = 1;
+        uint64_t next_key_id = 1;
+        uint64_t next_batch_id = 1;
+        uint64_t next_checkpoint_id = 1;
+
+        bool keys_established = false;
+        bool keys_checked = false;
+        size_t key_establishment_runs = 0;
+        size_t key_establishment_communication = 0;
+        size_t check_key_masking_equation_checks = 0;
+        size_t tag_generation_communication = 0;
+        size_t tag_checking_communication = 0;
+        size_t total_authentication_instances = 0;
+        bool test_hook_ran = false;
+
+        OptimisticAuthenticationStatus status =
+                OptimisticAuthenticationStatus::ready;
+        OptimisticAuthenticationFailureClass failure_class =
+                OptimisticAuthenticationFailureClass::none;
+        uint64_t failed_batch_id = 0;
+        int failed_verifier = -1;
+        int failed_holder = -1;
+
+        vector<LongTermMuKeyRecord> keys;
+        vector<DealerSourceBatchRecord> dealer_batches;
+        vector<BatchNuMaterialRecord> nu_material;
+        vector<HolderTagRecord> holder_tags;
+        vector<OptimisticCheckpointRecord> checkpoints;
     };
 
     enum class AuthenticationPlanStatus
@@ -1335,6 +1491,10 @@ private:
     AuthenticationMaterialState authentication_material_state;
     PendingAnalyzeSharingState pending_analyze_sharing_state;
 
+    OptimisticAuthenticationState optimistic_authentication_state;
+    SeededPRNG optimistic_authentication_prng;
+    ShamirInput<T> optimistic_authentication_input;
+
     UltimateFailureContext ultimate_failure_context;
     bool have_ultimate_failure_context = false;
 
@@ -1347,8 +1507,84 @@ private:
     void validate_partial_mult_transcript_coverage() const;
     void validate_current_virtual_transcript() const;
     typename T::open_type sample_agreed_challenge();
+    typename T::open_type sample_nonzero_agreed_challenge();
     vector<vector<typename T::open_type>>
         broadcast_local_shares(const vector<T>& local_shares);
+    vector<typename T::open_type> make_twisted_sharing(
+            const typename T::open_type& value,
+            int degree,
+            int holder);
+    typename T::open_type reconstruct_twisted_at_holder(
+            const vector<typename T::open_type>& shares,
+            int holder) const;
+    bool twisted_sharing_is_degree_at_most(
+            const vector<typename T::open_type>& shares,
+            int holder,
+            int degree) const;
+    LongTermMuKeyRecord* find_long_term_mu_key(int verifier, int holder);
+    const LongTermMuKeyRecord* find_long_term_mu_key(
+            int verifier, int holder) const;
+    BatchNuMaterialRecord* find_batch_nu_material(
+            uint64_t batch_id,
+            size_t chunk_ordinal,
+            bool check_mask,
+            int verifier,
+            int holder);
+    const BatchNuMaterialRecord* find_batch_nu_material(
+            uint64_t batch_id,
+            size_t chunk_ordinal,
+            bool check_mask,
+            int verifier,
+            int holder) const;
+    HolderTagRecord* find_holder_tag(
+            uint64_t batch_id,
+            size_t chunk_ordinal,
+            bool check_mask,
+            int verifier,
+            int holder);
+    const HolderTagRecord* find_holder_tag(
+            uint64_t batch_id,
+            size_t chunk_ordinal,
+            bool check_mask,
+            int verifier,
+            int holder) const;
+    DealerSourceBatchRecord* find_dealer_source_batch(uint64_t batch_id);
+    const DealerSourceBatchRecord* find_dealer_source_batch(
+            uint64_t batch_id) const;
+    bool establish_optimistic_authentication_keys();
+    bool check_optimistic_authentication_keys();
+    vector<T> deal_optimistic_source_values(
+            int dealer,
+            const vector<typename T::open_type>& dealer_values,
+            size_t count);
+    uint64_t register_dealer_source_batch(
+            int dealer,
+            const vector<T>& local_source_shares);
+    vector<vector<T>> source_chunks_for_batch(
+            const DealerSourceBatchRecord& batch) const;
+    bool compute_and_deliver_batch_tags(
+            DealerSourceBatchRecord& batch,
+            const vector<vector<T>>& source_chunks,
+            bool check_mask);
+    bool check_batch_tags(
+            DealerSourceBatchRecord& batch,
+            const vector<vector<T>>& source_chunks,
+            const vector<T>& check_mask_shares,
+            bool inject_bad_presentation);
+    bool authenticate_dealer_source_batch(
+            uint64_t batch_id,
+            bool inject_bad_presentation = false);
+    void fail_optimistic_authentication(
+            DealerSourceBatchRecord* batch,
+            OptimisticAuthenticationFailureClass failure_class,
+            int verifier = -1,
+            int holder = -1);
+    uint64_t create_optimistic_checkpoint(
+            const vector<LinearDerivation>& output_derivations);
+    bool promote_optimistic_checkpoint(uint64_t checkpoint_id);
+    bool authenticated_handle_exists(
+            const AuthenticatedSourceHandle& handle) const;
+    bool run_optimistic_authentication_test_hook(const string& mode);
     PublishedDegreeTSharing classify_degree_t_sharing(
             const vector<typename T::open_type>& shares);
     PublishedDegree2TVector collect_degree_2t_vector(
