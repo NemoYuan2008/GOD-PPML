@@ -110,6 +110,759 @@ size_t AtlasGsz<T>::checked_size_sum(
 }
 
 template<class T>
+bool AtlasGsz<T>::begin_tentative_double_rand_capture()
+{
+    auto& state = tentative_double_rand_capture_state;
+    if (state.active || state.finalized_candidate
+            || not state.producer_records.empty()
+            || not state.consumptions.empty())
+        return false;
+    state.active = true;
+    return true;
+}
+
+template<class T>
+void AtlasGsz<T>::discard_tentative_double_rand_capture()
+{
+    tentative_double_rand_capture_state =
+            TentativeDoubleRandCaptureState{};
+}
+
+template<class T>
+const typename AtlasGsz<T>::TentativeDoubleRandCaptureCandidate*
+AtlasGsz<T>::inspect_tentative_double_rand_capture() const
+{
+    return tentative_double_rand_capture_state.finalized_candidate.get();
+}
+
+template<class T>
+bool AtlasGsz<T>::validate_tentative_paired_producer_record(
+        const typename Atlas<T>::DoubleSharingProducerProvenance&
+            producer) const
+{
+    const size_t n = P.num_players();
+    const auto& degree_t = producer.degree_t;
+    const auto& degree_2t = producer.degree_2t;
+    if (n == 0 || degree_t.output_derivations.empty()
+            || degree_t.output_derivations.size() % n != 0
+            || degree_t.source_groups.size()
+                    != degree_t.output_derivations.size() / n
+            || degree_t.source_groups.size()
+                    != degree_2t.source_groups.size()
+            || degree_t.output_derivations.size()
+                    != degree_2t.output_derivations.size())
+        return false;
+
+    for (size_t group_ordinal = 0;
+            group_ordinal < degree_t.source_groups.size(); group_ordinal++)
+    {
+        const auto& t_group = degree_t.source_groups.at(group_ordinal);
+        const auto& two_t_group =
+                degree_2t.source_groups.at(group_ordinal);
+        if (t_group.input_batch_ordinal != group_ordinal
+                || two_t_group.input_batch_ordinal != group_ordinal
+                || t_group.sources.size() != n
+                || two_t_group.sources.size() != n)
+            return false;
+        for (size_t dealer = 0; dealer < n; dealer++)
+        {
+            const auto& t_source = t_group.sources.at(dealer);
+            const auto& two_t_source = two_t_group.sources.at(dealer);
+            if (t_source.dealer != int(dealer)
+                    || two_t_source.dealer != int(dealer)
+                    || t_source.input_batch_ordinal != group_ordinal
+                    || two_t_source.input_batch_ordinal != group_ordinal)
+                return false;
+        }
+    }
+
+    for (size_t output_ordinal = 0;
+            output_ordinal < degree_t.output_derivations.size();
+            output_ordinal++)
+    {
+        const auto& t_derivation =
+                degree_t.output_derivations.at(output_ordinal);
+        const auto& two_t_derivation =
+                degree_2t.output_derivations.at(output_ordinal);
+        const size_t expected_group = output_ordinal / n;
+        if (t_derivation.output_ordinal != output_ordinal
+                || two_t_derivation.output_ordinal != output_ordinal
+                || t_derivation.input_batch_ordinal != expected_group
+                || two_t_derivation.input_batch_ordinal != expected_group
+                || t_derivation.terms.size() != n
+                || two_t_derivation.terms.size() != n)
+            return false;
+        for (size_t dealer = 0; dealer < n; dealer++)
+        {
+            const auto& t_term = t_derivation.terms.at(dealer);
+            const auto& two_t_term = two_t_derivation.terms.at(dealer);
+            if (t_term.source_index != dealer
+                    || two_t_term.source_index != dealer
+                    || t_term.coefficient != two_t_term.coefficient)
+                return false;
+        }
+    }
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::capture_completed_ordinary_double_rand(
+        const PartialMultTranscriptRecord& record,
+        OrdinaryDoubleRandOperationKind operation_kind)
+{
+    auto& state = tentative_double_rand_capture_state;
+    if (not state.active || state.finalized_candidate)
+        return false;
+
+    const auto& reference = record.producer_reference;
+    if (not reference.producer_provenance)
+    {
+        discard_tentative_double_rand_capture();
+        return false;
+    }
+
+    auto same_producer_record = [] (const auto& left, const auto& right) {
+        return left == right && not left.owner_before(right)
+                && not right.owner_before(left);
+    };
+    size_t producer_record_ordinal = state.producer_records.size();
+    for (size_t ordinal = 0; ordinal < state.producer_records.size();
+            ordinal++)
+        if (same_producer_record(state.producer_records.at(ordinal),
+                reference.producer_provenance))
+        {
+            producer_record_ordinal = ordinal;
+            break;
+        }
+    if (producer_record_ordinal == state.producer_records.size())
+        state.producer_records.push_back(reference.producer_provenance);
+
+    for (const auto& existing : state.consumptions)
+        if (existing.producer_record_ordinal == producer_record_ordinal
+                && existing.producer_reference.producer_output_ordinal
+                        == reference.producer_output_ordinal)
+        {
+            // A repeated exact material key is a failed round, never a
+            // second source or an idempotent capture.
+            discard_tentative_double_rand_capture();
+            return false;
+        }
+
+    TentativeCapturedConsumption consumption{};
+    consumption.capture_order_ordinal = state.consumptions.size();
+    consumption.producer_record_ordinal = producer_record_ordinal;
+    consumption.producer_reference = reference;
+    consumption.operation_kind = operation_kind;
+    consumption.actual_r_t = record.transcript.r_t;
+    consumption.actual_r_2t = record.transcript.r_2t;
+    consumption.decomposition = record.transcript.r_decomposition;
+    state.consumptions.push_back(std::move(consumption));
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
+        const TentativeDoubleRandCaptureCandidate& candidate) const
+{
+    const size_t n = P.num_players();
+    if (n == 0 || candidate.consumed_outputs.empty()
+            || candidate.producer_records.empty()
+            || candidate.source_groups.empty()
+            || candidate.source_count != candidate.source_groups.size()
+            || candidate.dealer_sources.size() != n)
+        return false;
+
+    auto same_producer_record = [] (const auto& left, const auto& right) {
+        return left == right && not left.owner_before(right)
+                && not right.owner_before(left);
+    };
+    for (size_t i = 0; i < candidate.producer_records.size(); i++)
+    {
+        if (not candidate.producer_records.at(i)
+                || not validate_tentative_paired_producer_record(
+                        *candidate.producer_records.at(i)))
+            return false;
+        for (size_t j = 0; j < i; j++)
+            if (same_producer_record(candidate.producer_records.at(i),
+                    candidate.producer_records.at(j)))
+                return false;
+    }
+
+    auto group_less = [] (const TentativeSourceGroupReference& left,
+            const TentativeSourceGroupReference& right) {
+        if (left.producer_record_ordinal
+                != right.producer_record_ordinal)
+            return left.producer_record_ordinal
+                    < right.producer_record_ordinal;
+        return left.input_generation_group_ordinal
+                < right.input_generation_group_ordinal;
+    };
+    for (size_t i = 0; i < candidate.source_groups.size(); i++)
+    {
+        const auto& group = candidate.source_groups.at(i);
+        if (group.producer_record_ordinal
+                    >= candidate.producer_records.size()
+                || group.input_generation_group_ordinal
+                    >= candidate.producer_records.at(
+                            group.producer_record_ordinal)
+                            ->degree_t.source_groups.size()
+                || (i > 0 && not group_less(
+                        candidate.source_groups.at(i - 1), group)))
+            return false;
+    }
+
+    // Validate the complete per-dealer table before resolving any temporary
+    // derivation through it, so malformed candidates are rejected without
+    // partial access or mutation.
+    for (size_t dealer = 0; dealer < n; dealer++)
+    {
+        const auto& sequence = candidate.dealer_sources.at(dealer);
+        if (sequence.dealer != int(dealer)
+                || sequence.sources.size() != candidate.source_count)
+            return false;
+        for (size_t source_ordinal = 0;
+                source_ordinal < candidate.source_count; source_ordinal++)
+        {
+            const auto& expected_group =
+                    candidate.source_groups.at(source_ordinal);
+            TentativeSourceReference expected_reference{};
+            expected_reference.producer_record_ordinal =
+                    expected_group.producer_record_ordinal;
+            expected_reference.input_generation_group_ordinal =
+                    expected_group.input_generation_group_ordinal;
+            expected_reference.dealer = dealer;
+            const auto& source = sequence.sources.at(source_ordinal);
+            const auto& original = candidate.producer_records.at(
+                    expected_group.producer_record_ordinal)
+                    ->degree_t.source_groups.at(
+                            expected_group.input_generation_group_ordinal)
+                    .sources.at(dealer);
+            if (source.tentative_source_ordinal != source_ordinal
+                    || not (source.reference == expected_reference)
+                    || original.dealer != int(dealer)
+                    || original.input_batch_ordinal
+                            != expected_group.input_generation_group_ordinal
+                    || source.local_share != original.local_share)
+                return false;
+        }
+    }
+
+    vector<bool> seen_producer_records(candidate.producer_records.size(),
+            false);
+    size_t next_producer_record_ordinal = 0;
+    vector<TentativeSourceGroupReference> expected_groups;
+    vector<pair<size_t, size_t>> exact_output_keys;
+    for (size_t consumption_ordinal = 0;
+            consumption_ordinal < candidate.consumed_outputs.size();
+            consumption_ordinal++)
+    {
+        const auto& consumption =
+                candidate.consumed_outputs.at(consumption_ordinal);
+        if (consumption.capture_order_ordinal != consumption_ordinal
+                || consumption.producer_record_ordinal
+                        >= candidate.producer_records.size()
+                || (consumption.operation_kind
+                            != OrdinaryDoubleRandOperationKind::
+                                    scalar_multiplication
+                        && consumption.operation_kind
+                            != OrdinaryDoubleRandOperationKind::dot_product))
+            return false;
+        if (not seen_producer_records.at(
+                consumption.producer_record_ordinal))
+        {
+            if (consumption.producer_record_ordinal
+                    != next_producer_record_ordinal)
+                return false;
+            seen_producer_records.at(consumption.producer_record_ordinal) =
+                    true;
+            next_producer_record_ordinal++;
+        }
+
+        pair<size_t, size_t> exact_key(
+                consumption.producer_record_ordinal,
+                consumption.producer_output_ordinal);
+        if (find(exact_output_keys.begin(), exact_output_keys.end(),
+                exact_key) != exact_output_keys.end())
+            return false;
+        exact_output_keys.push_back(exact_key);
+
+        const auto& producer = *candidate.producer_records.at(
+                consumption.producer_record_ordinal);
+        if (consumption.producer_output_ordinal
+                    >= producer.degree_t.output_derivations.size()
+                || consumption.producer_output_ordinal
+                    >= producer.degree_2t.output_derivations.size())
+            return false;
+        const auto& t_derivation = producer.degree_t.output_derivations.at(
+                consumption.producer_output_ordinal);
+        const auto& two_t_derivation =
+                producer.degree_2t.output_derivations.at(
+                        consumption.producer_output_ordinal);
+        if (consumption.input_generation_group_ordinal
+                    != t_derivation.input_batch_ordinal
+                || consumption.input_generation_group_ordinal
+                    != two_t_derivation.input_batch_ordinal
+                || consumption.input_generation_group_ordinal
+                    >= producer.degree_t.source_groups.size()
+                || consumption.input_generation_group_ordinal
+                    >= producer.degree_2t.source_groups.size()
+                || consumption.degree_t_derivation.terms.size() != n)
+            return false;
+
+        TentativeSourceGroupReference group_reference{};
+        group_reference.producer_record_ordinal =
+                consumption.producer_record_ordinal;
+        group_reference.input_generation_group_ordinal =
+                consumption.input_generation_group_ordinal;
+        if (find(expected_groups.begin(), expected_groups.end(),
+                group_reference) == expected_groups.end())
+            expected_groups.push_back(group_reference);
+
+        const auto& t_sources = producer.degree_t.source_groups.at(
+                consumption.input_generation_group_ordinal).sources;
+        const auto& two_t_sources =
+                producer.degree_2t.source_groups.at(
+                        consumption.input_generation_group_ordinal).sources;
+        const auto& decomposition = consumption.decomposition;
+        if (t_derivation.terms.size() != n
+                || two_t_derivation.terms.size() != n
+                || t_sources.size() != n || two_t_sources.size() != n
+                || decomposition.dealer_components.size() != n
+                || decomposition.own_dealer_evidence.r_t_shares.size() != n
+                || decomposition.own_dealer_evidence.r_2t_shares.size() != n
+                || decomposition.validated_residual.r_t != T{0}
+                || decomposition.validated_residual.r_2t != T{0})
+            return false;
+
+        auto group_position = find(candidate.source_groups.begin(),
+                candidate.source_groups.end(), group_reference);
+        if (group_position == candidate.source_groups.end())
+            return false;
+        const size_t tentative_source_ordinal =
+                group_position - candidate.source_groups.begin();
+        T evaluated_t{};
+        T evaluated_2t{};
+        for (size_t dealer = 0; dealer < n; dealer++)
+        {
+            const auto& t_term = t_derivation.terms.at(dealer);
+            const auto& two_t_term = two_t_derivation.terms.at(dealer);
+            const auto& temporary_term =
+                    consumption.degree_t_derivation.terms.at(dealer);
+            TentativeSourceReference expected_source{};
+            expected_source.producer_record_ordinal =
+                    consumption.producer_record_ordinal;
+            expected_source.input_generation_group_ordinal =
+                    consumption.input_generation_group_ordinal;
+            expected_source.dealer = dealer;
+            if (t_term.source_index != dealer
+                    || two_t_term.source_index != dealer
+                    || t_term.coefficient != two_t_term.coefficient
+                    || not (temporary_term.source == expected_source)
+                    || temporary_term.coefficient != t_term.coefficient)
+                return false;
+            const auto& tentative_source =
+                    candidate.dealer_sources.at(dealer).sources.at(
+                            tentative_source_ordinal);
+            if (not (tentative_source.reference == expected_source))
+                return false;
+            T t_contribution = temporary_term.coefficient
+                    * tentative_source.local_share;
+            T two_t_contribution = two_t_term.coefficient
+                    * two_t_sources.at(dealer).local_share;
+            const auto& existing =
+                    decomposition.dealer_components.at(dealer);
+            if (t_contribution != existing.r_t
+                    || two_t_contribution != existing.r_2t)
+                return false;
+            evaluated_t += t_contribution;
+            evaluated_2t += two_t_contribution;
+        }
+        if (decomposition.own_dealer_evidence.r_t_shares.at(P.my_num())
+                    != decomposition.dealer_components.at(P.my_num()).r_t
+                || decomposition.own_dealer_evidence.r_2t_shares.at(
+                        P.my_num())
+                    != decomposition.dealer_components.at(P.my_num()).r_2t
+                || evaluated_t != consumption.actual_r_t
+                || evaluated_2t != consumption.actual_r_2t)
+            return false;
+    }
+    if (next_producer_record_ordinal != candidate.producer_records.size())
+        return false;
+
+    sort(expected_groups.begin(), expected_groups.end(), group_less);
+    expected_groups.erase(unique(expected_groups.begin(),
+            expected_groups.end()), expected_groups.end());
+    if (expected_groups != candidate.source_groups)
+        return false;
+
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::finalize_tentative_double_rand_capture()
+{
+    auto& state = tentative_double_rand_capture_state;
+    if (not state.active || state.finalized_candidate
+            || state.consumptions.empty())
+    {
+        discard_tentative_double_rand_capture();
+        return false;
+    }
+
+    TentativeDoubleRandCaptureCandidate candidate{};
+    candidate.producer_records = state.producer_records;
+    for (const auto& producer : candidate.producer_records)
+        if (not producer
+                || not validate_tentative_paired_producer_record(*producer))
+        {
+            discard_tentative_double_rand_capture();
+            return false;
+        }
+
+    for (const auto& captured : state.consumptions)
+    {
+        if (captured.producer_record_ordinal
+                    >= candidate.producer_records.size()
+                || captured.producer_reference.producer_provenance
+                    != candidate.producer_records.at(
+                            captured.producer_record_ordinal))
+        {
+            discard_tentative_double_rand_capture();
+            return false;
+        }
+        const auto& producer = *candidate.producer_records.at(
+                captured.producer_record_ordinal);
+        const size_t output_ordinal =
+                captured.producer_reference.producer_output_ordinal;
+        if (output_ordinal >= producer.degree_t.output_derivations.size()
+                || output_ordinal
+                    >= producer.degree_2t.output_derivations.size())
+        {
+            discard_tentative_double_rand_capture();
+            return false;
+        }
+        const auto& t_derivation =
+                producer.degree_t.output_derivations.at(output_ordinal);
+        const auto& two_t_derivation =
+                producer.degree_2t.output_derivations.at(output_ordinal);
+        if (t_derivation.input_batch_ordinal
+                    != two_t_derivation.input_batch_ordinal
+                || t_derivation.input_batch_ordinal
+                    >= producer.degree_t.source_groups.size()
+                || t_derivation.input_batch_ordinal
+                    >= producer.degree_2t.source_groups.size())
+        {
+            discard_tentative_double_rand_capture();
+            return false;
+        }
+
+        TentativeSourceGroupReference group_reference{};
+        group_reference.producer_record_ordinal =
+                captured.producer_record_ordinal;
+        group_reference.input_generation_group_ordinal =
+                t_derivation.input_batch_ordinal;
+        if (find(candidate.source_groups.begin(),
+                candidate.source_groups.end(), group_reference)
+                == candidate.source_groups.end())
+            candidate.source_groups.push_back(group_reference);
+
+        TentativeConsumedOutputEvidence output{};
+        output.capture_order_ordinal = captured.capture_order_ordinal;
+        output.producer_record_ordinal = captured.producer_record_ordinal;
+        output.producer_output_ordinal = output_ordinal;
+        output.input_generation_group_ordinal =
+                t_derivation.input_batch_ordinal;
+        output.operation_kind = captured.operation_kind;
+        output.actual_r_t = captured.actual_r_t;
+        output.actual_r_2t = captured.actual_r_2t;
+        output.decomposition = captured.decomposition;
+        output.degree_t_derivation.terms.reserve(t_derivation.terms.size());
+        for (size_t dealer = 0; dealer < t_derivation.terms.size(); dealer++)
+        {
+            TentativeLinearDerivationTerm term{};
+            term.source.producer_record_ordinal =
+                    captured.producer_record_ordinal;
+            term.source.input_generation_group_ordinal =
+                    t_derivation.input_batch_ordinal;
+            term.source.dealer = dealer;
+            term.coefficient = t_derivation.terms.at(dealer).coefficient;
+            output.degree_t_derivation.terms.push_back(term);
+        }
+        candidate.consumed_outputs.push_back(std::move(output));
+    }
+
+    sort(candidate.source_groups.begin(), candidate.source_groups.end(),
+            [] (const TentativeSourceGroupReference& left,
+                    const TentativeSourceGroupReference& right) {
+                if (left.producer_record_ordinal
+                        != right.producer_record_ordinal)
+                    return left.producer_record_ordinal
+                            < right.producer_record_ordinal;
+                return left.input_generation_group_ordinal
+                        < right.input_generation_group_ordinal;
+            });
+    candidate.source_count = candidate.source_groups.size();
+    candidate.dealer_sources.reserve(P.num_players());
+    for (int dealer = 0; dealer < P.num_players(); dealer++)
+    {
+        TentativeDealerSourceSequence sequence{};
+        sequence.dealer = dealer;
+        sequence.sources.reserve(candidate.source_count);
+        for (size_t source_ordinal = 0;
+                source_ordinal < candidate.source_groups.size();
+                source_ordinal++)
+        {
+            const auto& group = candidate.source_groups.at(source_ordinal);
+            const auto& original = candidate.producer_records.at(
+                    group.producer_record_ordinal)
+                    ->degree_t.source_groups.at(
+                            group.input_generation_group_ordinal)
+                    .sources.at(dealer);
+            TentativeDealerSource source{};
+            source.reference.producer_record_ordinal =
+                    group.producer_record_ordinal;
+            source.reference.input_generation_group_ordinal =
+                    group.input_generation_group_ordinal;
+            source.reference.dealer = dealer;
+            source.tentative_source_ordinal = source_ordinal;
+            source.local_share = original.local_share;
+            sequence.sources.push_back(source);
+        }
+        candidate.dealer_sources.push_back(std::move(sequence));
+    }
+
+    if (not validate_tentative_double_rand_candidate(candidate))
+    {
+        discard_tentative_double_rand_capture();
+        return false;
+    }
+
+    state.finalized_candidate =
+            make_unique<TentativeDoubleRandCaptureCandidate>(
+                    std::move(candidate));
+    state.active = false;
+    state.producer_records.clear();
+    state.consumptions.clear();
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::no_authentication_or_checkpoint_artifacts() const
+{
+    const auto& state = optimistic_authentication_state;
+    if (not state.keys.empty() || not state.dealer_batches.empty()
+            || not state.nu_material.empty()
+            || not state.holder_tags.empty()
+            || not state.checkpoints.empty()
+            || not state.global_invocations.empty()
+            || state.key_establishment_runs != 0
+            || state.total_ftag_chunks != 0
+            || state.global_check_tag_challenges != 0
+            || state.next_batch_id != 1
+            || state.next_checkpoint_id != 1
+            || state.next_global_invocation_id != 1
+            || not verifiable_registry.sharings.empty()
+            || not verifiable_registry.checkpoints.empty()
+            || not authentication_plan_state.records.empty()
+            || not authentication_material_state.records.empty()
+            || not pending_analyze_sharing_state.requests.empty()
+            || not segment_lifecycle.current_segment_input_sharings.empty()
+            || not segment_lifecycle.current_segment_output_sharings.empty())
+        return false;
+    for (const auto& batch : state.dealer_batches)
+        if (not batch.authenticated_handles.empty())
+            return false;
+    return true;
+}
+
+template<class T>
+void AtlasGsz<T>::maybe_complete_tentative_double_rand_capture_test()
+{
+    if (not tentative_double_rand_capture_test_enabled
+            || tentative_double_rand_capture_test_hook_ran)
+        return;
+
+    auto fail = [&] (const string& reason) {
+        discard_tentative_double_rand_capture();
+        throw logic_error(
+                "AtlasGsz: tentative-double-rand-capture test failed: "
+                + reason);
+    };
+    auto& state = tentative_double_rand_capture_state;
+    if (not state.active || state.consumptions.empty())
+        fail("completed ordinary output was not retained in the active round");
+    if (not no_authentication_or_checkpoint_artifacts())
+        fail("capture created an authentication or checkpoint artifact");
+
+    if (not tentative_double_rand_capture_test_checked_first_output)
+    {
+        if (state.consumptions.size() != 1
+                || state.producer_records.size() != 1)
+            fail("first completed output was not the sole consumption");
+        const auto& first = state.consumptions.front();
+        const auto& producer = first.producer_reference.producer_provenance;
+        if (not producer
+                || not validate_tentative_paired_producer_record(*producer)
+                || first.producer_reference.producer_output_ordinal
+                    >= producer->degree_t.output_derivations.size())
+            fail("first completed output has malformed producer evidence");
+        const size_t group_ordinal =
+                producer->degree_t.output_derivations.at(
+                        first.producer_reference.producer_output_ordinal)
+                        .input_batch_ordinal;
+        if (group_ordinal >= producer->degree_t.source_groups.size()
+                || producer->degree_t.source_groups.at(group_ordinal)
+                        .sources.size() != size_t(P.num_players()))
+            fail("first output does not represent one whole dealer group");
+        tentative_double_rand_capture_test_checked_first_output = true;
+    }
+
+    vector<TentativeSourceGroupReference> observed_groups;
+    bool observed_two_outputs_from_one_group = false;
+    bool observed_scalar_multiplication = false;
+    bool observed_dot_product = false;
+    for (size_t i = 0; i < state.consumptions.size(); i++)
+    {
+        const auto& left = state.consumptions.at(i);
+        observed_scalar_multiplication |= left.operation_kind
+                == OrdinaryDoubleRandOperationKind::scalar_multiplication;
+        observed_dot_product |= left.operation_kind
+                == OrdinaryDoubleRandOperationKind::dot_product;
+        const auto& left_producer =
+                left.producer_reference.producer_provenance;
+        if (not left_producer
+                || not validate_tentative_paired_producer_record(
+                        *left_producer)
+                || left.producer_reference.producer_output_ordinal
+                    >= left_producer->degree_t.output_derivations.size())
+            fail("captured producer evidence became malformed");
+        TentativeSourceGroupReference left_group{};
+        left_group.producer_record_ordinal = left.producer_record_ordinal;
+        left_group.input_generation_group_ordinal =
+                left_producer->degree_t.output_derivations.at(
+                        left.producer_reference.producer_output_ordinal)
+                        .input_batch_ordinal;
+        if (find(observed_groups.begin(), observed_groups.end(), left_group)
+                == observed_groups.end())
+            observed_groups.push_back(left_group);
+        for (size_t j = 0; j < i; j++)
+        {
+            const auto& right = state.consumptions.at(j);
+            const auto& right_producer =
+                    right.producer_reference.producer_provenance;
+            TentativeSourceGroupReference right_group{};
+            right_group.producer_record_ordinal =
+                    right.producer_record_ordinal;
+            right_group.input_generation_group_ordinal =
+                    right_producer->degree_t.output_derivations.at(
+                            right.producer_reference.producer_output_ordinal)
+                            .input_batch_ordinal;
+            if (left_group == right_group
+                    && left.producer_reference.producer_output_ordinal
+                        != right.producer_reference.producer_output_ordinal)
+                observed_two_outputs_from_one_group = true;
+        }
+    }
+    if (not observed_two_outputs_from_one_group
+            || observed_groups.size() < 2
+            || not observed_scalar_multiplication
+            || not observed_dot_product)
+        return;
+
+    const size_t expected_consumption_count = state.consumptions.size();
+    if (expected_consumption_count != size_t(P.num_players() + 1)
+            || observed_groups.size() != 2)
+        fail("dedicated workload crossed the source-group boundary at an unexpected position");
+    if (not finalize_tentative_double_rand_capture())
+        fail("complete positive candidate was rejected");
+    const auto* candidate = inspect_tentative_double_rand_capture();
+    if (candidate == 0
+            || candidate->consumed_outputs.size()
+                    != expected_consumption_count
+            || candidate->source_count != observed_groups.size()
+            || candidate->source_count != 2
+            || candidate->dealer_sources.size()
+                    != size_t(P.num_players())
+            || not validate_tentative_double_rand_candidate(*candidate)
+            || not no_authentication_or_checkpoint_artifacts())
+        fail("finalized positive candidate failed focused inspection");
+    if (begin_tentative_double_rand_capture())
+        fail("begin accepted while a finalized candidate was retained");
+
+    const size_t finalized_source_count = candidate->source_count;
+    const size_t finalized_consumption_count =
+            candidate->consumed_outputs.size();
+    const size_t finalized_producer_count = candidate->producer_records.size();
+    const auto& replay_output = candidate->consumed_outputs.front();
+    PartialMultTranscriptRecord replay{};
+    replay.producer_reference.producer_provenance =
+            candidate->producer_records.at(
+                    replay_output.producer_record_ordinal);
+    replay.producer_reference.producer_output_ordinal =
+            replay_output.producer_output_ordinal;
+    replay.transcript.r_t = replay_output.actual_r_t;
+    replay.transcript.r_2t = replay_output.actual_r_2t;
+    replay.transcript.r_decomposition = replay_output.decomposition;
+    const auto replay_kind = replay_output.operation_kind;
+
+    // Test-only isolation: temporarily retain the valid finalized state on
+    // this call's stack while the sole member state executes a fresh failed
+    // duplicate round. No second live AtlasGsz capture state is published.
+    TentativeDoubleRandCaptureState retained_valid_state =
+            std::move(tentative_double_rand_capture_state);
+    tentative_double_rand_capture_state =
+            TentativeDoubleRandCaptureState{};
+    if (not begin_tentative_double_rand_capture()
+            || not capture_completed_ordinary_double_rand(
+                    replay, replay_kind)
+            || capture_completed_ordinary_double_rand(replay, replay_kind))
+        fail("duplicate exact-output replay was not rejected");
+    if (tentative_double_rand_capture_state.active
+            || tentative_double_rand_capture_state.finalized_candidate
+            || not tentative_double_rand_capture_state.producer_records.empty()
+            || not tentative_double_rand_capture_state.consumptions.empty())
+        fail("failed duplicate round retained tentative state");
+    tentative_double_rand_capture_state = std::move(retained_valid_state);
+    candidate = inspect_tentative_double_rand_capture();
+    if (candidate == 0
+            || not validate_tentative_double_rand_candidate(*candidate))
+        fail("duplicate negative test altered the valid candidate");
+
+    TentativeDoubleRandCaptureCandidate malformed = *candidate;
+    malformed.dealer_sources.front().sources.pop_back();
+    if (validate_tentative_double_rand_candidate(malformed)
+            || not validate_tentative_double_rand_candidate(*candidate))
+        fail("malformed candidate validation was not isolated and atomic");
+
+    discard_tentative_double_rand_capture();
+    if (tentative_double_rand_capture_state.active
+            || tentative_double_rand_capture_state.finalized_candidate
+            || not tentative_double_rand_capture_state.producer_records.empty()
+            || not tentative_double_rand_capture_state.consumptions.empty()
+            || not no_authentication_or_checkpoint_artifacts())
+        fail("discard did not leave all tentative state empty");
+
+    tentative_double_rand_capture_test_hook_ran = true;
+    if (P.my_num() == 0)
+        cout << "ATLAS_GSZ_AUTH_TEST tentative-double-rand-capture"
+             << " PASS consumptions=" << finalized_consumption_count
+             << " producer_records=" << finalized_producer_count
+             << " unique_source_groups=" << finalized_source_count
+             << " dealers=" << P.num_players()
+             << " source_order=producer-then-group"
+             << " dealer_order=ascending"
+             << " exact_output_dedup=rejected"
+             << " source_group_dedup=exact"
+             << " operation_kinds=scalar-and-dot"
+             << " degree_t_derivations=exact"
+             << " degree_2t=evidence-only"
+             << " malformed_candidate=atomically-rejected"
+             << " dealer_batches=0 handles=0 ftag_chunks=0"
+             << " checkpoints=0 authentication_invocations=0"
+             << endl;
+}
+
+template<class T>
 bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
 {
     static_assert(sizeof(uint64_t) == 8,
@@ -12221,6 +12974,40 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 // This focused check runs only after a normal wrapper record
                 // has finalized and pulled the exact Atlas reference.
             }
+            else if (mode == "tentative-double-rand-capture")
+            {
+                if (not tentative_double_rand_capture_test_enabled)
+                {
+                    if (not no_authentication_or_checkpoint_artifacts()
+                            || tentative_double_rand_capture_state.active
+                            || tentative_double_rand_capture_state
+                                    .finalized_candidate
+                            || not tentative_double_rand_capture_state
+                                    .producer_records.empty()
+                            || not tentative_double_rand_capture_state
+                                    .consumptions.empty())
+                        throw logic_error(
+                                "AtlasGsz: tentative capture test did not start from empty state");
+
+                    if (not begin_tentative_double_rand_capture())
+                        throw logic_error(
+                                "AtlasGsz: tentative capture test could not begin empty negative round");
+                    if (finalize_tentative_double_rand_capture()
+                            || tentative_double_rand_capture_state.active
+                            || tentative_double_rand_capture_state
+                                    .finalized_candidate
+                            || not tentative_double_rand_capture_state
+                                    .producer_records.empty()
+                            || not tentative_double_rand_capture_state
+                                    .consumptions.empty())
+                        throw logic_error(
+                                "AtlasGsz: empty tentative capture was not rejected cleanly");
+                    if (not begin_tentative_double_rand_capture())
+                        throw logic_error(
+                                "AtlasGsz: tentative capture test could not begin real round");
+                    tentative_double_rand_capture_test_enabled = true;
+                }
+            }
             else if (not optimistic_authentication_state.test_hook_ran
                     && (mode == "honest" || mode == "singleton-honest"))
             {
@@ -12297,6 +13084,15 @@ T AtlasGsz<T>::finalize_mul(int)
     z_verify.push_back(res);
     maybe_run_consumed_provenance_transfer_test(
             partial_mult_transcripts.back());
+    if (tentative_double_rand_capture_state.active)
+    {
+        if (not capture_completed_ordinary_double_rand(
+                partial_mult_transcripts.back(),
+                OrdinaryDoubleRandOperationKind::scalar_multiplication))
+            throw logic_error(
+                    "AtlasGsz: completed ordinary scalar capture failed");
+        maybe_complete_tentative_double_rand_capture_test();
+    }
     return res;
 }
 
@@ -12363,6 +13159,15 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     z_verify.insert(z_verify.end(), length - 1, T{0});
     maybe_run_consumed_provenance_transfer_test(
             partial_mult_transcripts.back());
+    if (tentative_double_rand_capture_state.active)
+    {
+        if (not capture_completed_ordinary_double_rand(
+                partial_mult_transcripts.back(),
+                OrdinaryDoubleRandOperationKind::dot_product))
+            throw logic_error(
+                    "AtlasGsz: completed ordinary dot-product capture failed");
+        maybe_complete_tentative_double_rand_capture_test();
+    }
     return res;
 }
 

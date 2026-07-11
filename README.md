@@ -102,6 +102,16 @@ Implemented:
 - private-process transfer of the exact shared producer record and producer
   output ordinal from each successfully completed concrete Atlas operation to
   the corresponding real AtlasGsz wrapper record;
+- one opt-in AtlasGsz-owned tentative DoubleRand capture round for completed
+  ordinary scalar and dot-product wrapper records, with duplicate exact-output
+  rejection, whole-source-group deduplication, and deterministic per-dealer
+  aggregation of original degree-`t` local source shares;
+- candidate-local temporary derivations from tentative source references to
+  each consumed `r_t`, validated against the completed transcript and dealer
+  contribution decomposition, while paired degree-`2t` provenance remains
+  validation/evidence only;
+- atomic tentative candidate finalization, inspection, malformed-copy
+  validation, and discard;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -112,15 +122,17 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- AtlasGsz-owned tentative capture and per-dealer aggregation of the
-  transferred producer provenance;
+- an independently reviewed adapter/integration decision from the finalized
+  tentative candidate to real authentication and Check-Tag;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
 
-The producer-reference transfer alone creates no tentative capture round,
-dealer batch, authentication invocation, authenticated handle, FTag chunk, or
-checkpoint. The next provenance milestone remains AtlasGsz-owned tentative
-capture and per-dealer aggregation.
+The tentative candidate creates no dealer batch or batch ID, authentication
+invocation, authenticated handle, FTag chunk, checkpoint, or scheduler state.
+It is not converted to the existing handle-based `LinearDerivation` and is not
+passed to the global authentication hook. The next provenance step is a
+separately reviewed adapter/integration decision, not automatic production
+Check-Tag wiring.
 
 Therefore, this is currently an implementation of the optimistic execution
 path and supporting vertical slices, not a complete GOD implementation.
@@ -143,6 +155,15 @@ conda run -n pytorch ./compile.py 0-dot
 
 Focused optimistic authentication tests use `ATLAS_GSZ_AUTH_TEST` as described
 in `AGENTS.md`.
+
+Focused tentative capture uses
+`Programs/Source/0-tentative-double-rand-capture.py`, which alternates three
+ordinary scalar multiplications with three ordinary dot products over distinct
+private inputs. The dedicated workload is necessary because each DoubleRand
+source group contains `n` outputs, while current `0-dot` has only four eligible
+ordinary operations and therefore cannot cross a source-group boundary with
+five parties. Its ordinary and focused communication counts must match at the
+same party count.
 
 ## Archive scope
 

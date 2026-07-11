@@ -50,6 +50,113 @@ private:
 
     vector<PartialMultTranscriptRecord> partial_mult_transcripts;
 
+    enum class OrdinaryDoubleRandOperationKind
+    {
+        scalar_multiplication,
+        dot_product,
+    };
+
+    struct TentativeSourceGroupReference
+    {
+        size_t producer_record_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+
+        bool operator==(const TentativeSourceGroupReference& other) const
+        {
+            return producer_record_ordinal == other.producer_record_ordinal
+                    && input_generation_group_ordinal
+                            == other.input_generation_group_ordinal;
+        }
+    };
+
+    struct TentativeSourceReference
+    {
+        size_t producer_record_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        int dealer = -1;
+
+        bool operator==(const TentativeSourceReference& other) const
+        {
+            return producer_record_ordinal == other.producer_record_ordinal
+                    && input_generation_group_ordinal
+                            == other.input_generation_group_ordinal
+                    && dealer == other.dealer;
+        }
+    };
+
+    struct TentativeDealerSource
+    {
+        TentativeSourceReference reference;
+        size_t tentative_source_ordinal = 0;
+        T local_share;
+    };
+
+    struct TentativeDealerSourceSequence
+    {
+        int dealer = -1;
+        vector<TentativeDealerSource> sources;
+    };
+
+    struct TentativeLinearDerivationTerm
+    {
+        TentativeSourceReference source;
+        typename T::open_type coefficient{};
+    };
+
+    struct TentativeLinearDerivation
+    {
+        vector<TentativeLinearDerivationTerm> terms;
+    };
+
+    struct TentativeConsumedOutputEvidence
+    {
+        size_t capture_order_ordinal = 0;
+        size_t producer_record_ordinal = 0;
+        size_t producer_output_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        OrdinaryDoubleRandOperationKind operation_kind =
+                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+        T actual_r_t;
+        T actual_r_2t;
+        typename Atlas<T>::DoubleSharingDecomposition decomposition;
+        TentativeLinearDerivation degree_t_derivation;
+    };
+
+    struct TentativeDoubleRandCaptureCandidate
+    {
+        // These immutable records are candidate-local evidence. Their local
+        // ordinals are assigned by completed-operation encounter order.
+        vector<shared_ptr<const typename Atlas<T>::
+                DoubleSharingProducerProvenance>> producer_records;
+        vector<TentativeSourceGroupReference> source_groups;
+        vector<TentativeDealerSourceSequence> dealer_sources;
+        vector<TentativeConsumedOutputEvidence> consumed_outputs;
+        size_t source_count = 0;
+    };
+
+    struct TentativeCapturedConsumption
+    {
+        size_t capture_order_ordinal = 0;
+        size_t producer_record_ordinal = 0;
+        typename Atlas<T>::DoubleSharingProducerReference producer_reference;
+        OrdinaryDoubleRandOperationKind operation_kind =
+                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+        T actual_r_t;
+        T actual_r_2t;
+        typename Atlas<T>::DoubleSharingDecomposition decomposition;
+    };
+
+    struct TentativeDoubleRandCaptureState
+    {
+        bool active = false;
+        vector<shared_ptr<const typename Atlas<T>::
+                DoubleSharingProducerProvenance>> producer_records;
+        vector<TentativeCapturedConsumption> consumptions;
+        unique_ptr<TentativeDoubleRandCaptureCandidate> finalized_candidate;
+    };
+
+    TentativeDoubleRandCaptureState tentative_double_rand_capture_state;
+
     enum class UltimateFailureKind
     {
         none,
@@ -1587,6 +1694,9 @@ private:
     OptimisticAuthenticationState optimistic_authentication_state;
     bool producer_provenance_test_hook_ran = false;
     bool consumed_provenance_transfer_test_hook_ran = false;
+    bool tentative_double_rand_capture_test_enabled = false;
+    bool tentative_double_rand_capture_test_checked_first_output = false;
+    bool tentative_double_rand_capture_test_hook_ran = false;
     SeededPRNG optimistic_authentication_prng;
     ShamirInput<T> optimistic_authentication_input;
 
@@ -1610,6 +1720,22 @@ private:
     static size_t checked_size_sum(
             size_t left, size_t right, const char* description);
     bool agree_base_field_ftag_chunk_width();
+
+    bool begin_tentative_double_rand_capture();
+    bool capture_completed_ordinary_double_rand(
+            const PartialMultTranscriptRecord& record,
+            OrdinaryDoubleRandOperationKind operation_kind);
+    bool finalize_tentative_double_rand_capture();
+    const TentativeDoubleRandCaptureCandidate*
+        inspect_tentative_double_rand_capture() const;
+    void discard_tentative_double_rand_capture();
+    bool validate_tentative_paired_producer_record(
+            const typename Atlas<T>::DoubleSharingProducerProvenance&
+                producer) const;
+    bool validate_tentative_double_rand_candidate(
+            const TentativeDoubleRandCaptureCandidate& candidate) const;
+    void maybe_complete_tentative_double_rand_capture_test();
+    bool no_authentication_or_checkpoint_artifacts() const;
 
     void validate_partial_mult_transcript_coverage() const;
     void validate_current_virtual_transcript() const;

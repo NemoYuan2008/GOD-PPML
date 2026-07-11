@@ -180,13 +180,29 @@ record. This transfer does not create tentative capture state, dealer batches,
 authentication, handles, derivations over handles, FTag chunks, checkpoints,
 or scheduler state.
 
+AtlasGsz also contains an opt-in tentative DoubleRand source-capture vertical
+slice for completed ordinary scalar multiplication and ordinary dot-product
+wrapper records. One focused round assigns producer-record ordinals by
+completed-operation encounter order, rejects duplicate exact consumed outputs,
+deduplicates whole degree-`t` dealer source groups, aggregates one original
+local source share per real dealer in deterministic producer/group order, and
+forms temporary derivations over candidate-local source references for each
+consumed `r_t`. Paired degree-`2t` provenance remains validation/evidence only.
+The tentative candidate can be finalized atomically, inspected, and discarded.
+
+This capture creates no dealer batch or batch ID, authenticated source handle,
+FTag chunk, authentication invocation, checkpoint, or scheduler state. It is
+not passed to the global authentication hook. A future milestone must
+separately review the adapter/integration decision before any production
+Check-Tag wiring.
+
 This vertical slice is not yet integrated into the normal segment scheduler.
 It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. AtlasGsz-owned tentative capture and per-dealer aggregation from the
-   transferred producer provenance;
+1. a separately reviewed adapter/integration decision from the finalized
+   tentative candidate to real authentication;
 2. normal segment/checkpoint scheduler integration;
 3. final production output gating through that scheduler.
 
@@ -390,6 +406,12 @@ ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=3 \
 ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=5 \
     ./Scripts/atlas-gsz.sh 0-dot
 
+conda run -n pytorch ./compile.py 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
@@ -421,6 +443,13 @@ ATLAS_GSZ_AUTH_TEST=duplicate-chunk PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=epoch-mismatch PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ```
 
+The dedicated tentative-capture workload has six genuine ordinary operations:
+three scalar multiplications alternating with three dot products. It is used
+instead of `0-dot` for the focused 3- and 5-party capture checks because one
+DoubleRand source group contains `n` outputs while current `0-dot` has only
+four eligible ordinary operations. Ordinary and focused communication for the
+dedicated workload must match exactly at the same party count.
+
 The failure-mode families are expected to terminate nonzero after
 reporting their focused PASS state and the fail-stop
 `RecoveryNotImplemented` boundary. They must create no authenticated handles
@@ -437,8 +466,8 @@ always uses the sampled zero-permitted challenge without an override.
 
 Unless the user changes priorities, the expected sequence is:
 
-1. AtlasGsz-owned tentative capture and per-dealer aggregation from real
-   segment-consumed producer provenance;
+1. separately reviewed adaptation/integration of the finalized tentative
+   candidate with the real authentication path;
 2. normal segment verification → authentication → promotion integration;
 3. final output gating.
 
