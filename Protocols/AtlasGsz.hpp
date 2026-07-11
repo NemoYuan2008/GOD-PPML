@@ -12003,6 +12003,166 @@ AtlasGsz<T>::apply_fault_localization_outcome(
 }
 
 template<class T>
+void AtlasGsz<T>::maybe_run_consumed_provenance_transfer_test(
+        const PartialMultTranscriptRecord& record)
+{
+    const char* auth_test = getenv("ATLAS_GSZ_AUTH_TEST");
+    if (auth_test == 0
+            || string(auth_test) != "consumed-provenance-transfer"
+            || consumed_provenance_transfer_test_hook_ran)
+        return;
+
+    auto fail = [] (const string& reason) {
+        throw logic_error(
+                "AtlasGsz: consumed-provenance-transfer test failed: "
+                + reason);
+    };
+    const auto& state = optimistic_authentication_state;
+    auto assert_no_authentication_artifacts = [&] {
+        if (not state.keys.empty() || not state.dealer_batches.empty()
+                || not state.nu_material.empty()
+                || not state.holder_tags.empty()
+                || not state.checkpoints.empty()
+                || not state.global_invocations.empty()
+                || state.key_establishment_runs != 0
+                || state.total_ftag_chunks != 0
+                || state.global_check_tag_challenges != 0
+                || state.next_batch_id != 1
+                || state.next_checkpoint_id != 1
+                || state.next_global_invocation_id != 1
+                || not verifiable_registry.sharings.empty()
+                || not verifiable_registry.checkpoints.empty())
+            fail("unexpected authentication or checkpoint artifact");
+        for (const auto& batch : state.dealer_batches)
+            if (not batch.authenticated_handles.empty())
+                fail("unexpected authenticated source handle");
+    };
+    assert_no_authentication_artifacts();
+
+    const auto& atlas_reference =
+            honest.get_last_double_sharing_producer_reference();
+    const auto& reference = record.producer_reference;
+    if (reference.producer_provenance
+                != atlas_reference.producer_provenance
+            || reference.producer_output_ordinal
+                != atlas_reference.producer_output_ordinal)
+        fail("AtlasGsz did not retain Atlas's exact producer reference");
+    if (not reference.producer_provenance)
+        fail("completed operation has null producer provenance");
+
+    const auto& paired = *reference.producer_provenance;
+    const auto& degree_t = paired.degree_t;
+    const auto& degree_2t = paired.degree_2t;
+    if (degree_t.source_groups.size() != degree_2t.source_groups.size())
+        fail("degree source-group counts differ");
+    if (degree_t.output_derivations.size()
+            != degree_2t.output_derivations.size())
+        fail("degree output-derivation counts differ");
+    if (reference.producer_output_ordinal
+            >= degree_t.output_derivations.size())
+        fail("producer output ordinal is out of range");
+
+    for (size_t group_index = 0;
+            group_index < degree_t.source_groups.size(); group_index++)
+    {
+        const auto& t_group = degree_t.source_groups.at(group_index);
+        const auto& two_t_group = degree_2t.source_groups.at(group_index);
+        if (t_group.input_batch_ordinal != group_index
+                || two_t_group.input_batch_ordinal != group_index
+                || t_group.sources.size() != size_t(P.num_players())
+                || two_t_group.sources.size() != t_group.sources.size())
+            fail("producer source-group layout mismatch");
+        for (size_t dealer = 0; dealer < t_group.sources.size(); dealer++)
+        {
+            const auto& t_source = t_group.sources.at(dealer);
+            const auto& two_t_source = two_t_group.sources.at(dealer);
+            if (t_source.dealer != int(dealer)
+                    || two_t_source.dealer != int(dealer)
+                    || t_source.input_batch_ordinal != group_index
+                    || two_t_source.input_batch_ordinal != group_index)
+                fail("producer dealer ordering is not canonical ascending");
+        }
+    }
+
+    for (size_t output_index = 0;
+            output_index < degree_t.output_derivations.size(); output_index++)
+    {
+        const auto& t_derivation =
+                degree_t.output_derivations.at(output_index);
+        const auto& two_t_derivation =
+                degree_2t.output_derivations.at(output_index);
+        if (t_derivation.output_ordinal != output_index
+                || two_t_derivation.output_ordinal != output_index
+                || t_derivation.input_batch_ordinal
+                    != two_t_derivation.input_batch_ordinal
+                || t_derivation.terms.size() != size_t(P.num_players())
+                || two_t_derivation.terms.size()
+                    != t_derivation.terms.size())
+            fail("paired producer derivation layout mismatch");
+        for (size_t term_index = 0;
+                term_index < t_derivation.terms.size(); term_index++)
+        {
+            const auto& t_term = t_derivation.terms.at(term_index);
+            const auto& two_t_term =
+                    two_t_derivation.terms.at(term_index);
+            if (t_term.source_index != term_index
+                    || two_t_term.source_index != term_index
+                    || t_term.coefficient != two_t_term.coefficient)
+                fail("paired producer coefficient layout mismatch");
+        }
+    }
+
+    const auto ordinal = reference.producer_output_ordinal;
+    const auto& t_derivation = degree_t.output_derivations.at(ordinal);
+    const auto& two_t_derivation =
+            degree_2t.output_derivations.at(ordinal);
+    if (t_derivation.input_batch_ordinal >= degree_t.source_groups.size())
+        fail("selected producer source-group ordinal is out of range");
+    const auto& t_sources = degree_t.source_groups.at(
+            t_derivation.input_batch_ordinal).sources;
+    const auto& two_t_sources = degree_2t.source_groups.at(
+            two_t_derivation.input_batch_ordinal).sources;
+    const auto& decomposition = record.transcript.r_decomposition;
+    if (decomposition.dealer_components.size() != size_t(P.num_players()))
+        fail("transcript dealer decomposition has wrong width");
+
+    T evaluated_t{};
+    T evaluated_2t{};
+    for (size_t dealer = 0; dealer < size_t(P.num_players()); dealer++)
+    {
+        const auto& t_term = t_derivation.terms.at(dealer);
+        const auto& two_t_term = two_t_derivation.terms.at(dealer);
+        T contribution_t = t_term.coefficient
+                * t_sources.at(t_term.source_index).local_share;
+        T contribution_2t = two_t_term.coefficient
+                * two_t_sources.at(two_t_term.source_index).local_share;
+        const auto& existing = decomposition.dealer_components.at(dealer);
+        if (contribution_t != existing.r_t
+                || contribution_2t != existing.r_2t)
+            fail("producer evaluation disagrees with dealer decomposition");
+        evaluated_t += contribution_t;
+        evaluated_2t += contribution_2t;
+    }
+    if (evaluated_t != record.transcript.r_t)
+        fail("degree-t producer evaluation disagrees with transcript r_t");
+    if (evaluated_2t != record.transcript.r_2t)
+        fail("degree-2t producer evaluation disagrees with transcript r_2t");
+
+    consumed_provenance_transfer_test_hook_ran = true;
+    assert_no_authentication_artifacts();
+    if (P.my_num() == 0)
+        cout << "ATLAS_GSZ_AUTH_TEST consumed-provenance-transfer"
+             << " PASS operation=ordinary-scalar-or-dot"
+             << " producer_record=shared producer_output_ordinal="
+             << ordinal
+             << " dealer_order=ascending degree_layouts=paired"
+             << " evaluations=exact decomposition=exact"
+             << " dealer_batches=0 handles=0 ftag_chunks=0"
+             << " checkpoints=0 authentication_invocations=0"
+             << endl;
+}
+
+template<class T>
 void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     honest.init(prep, MC);
 
@@ -12055,6 +12215,11 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                              << " checkpoints=0 authentication_invocations=0"
                              << endl;
                 }
+            }
+            else if (mode == "consumed-provenance-transfer")
+            {
+                // This focused check runs only after a normal wrapper record
+                // has finalized and pulled the exact Atlas reference.
             }
             else if (not optimistic_authentication_state.test_hook_ran
                     && (mode == "honest" || mode == "singleton-honest"))
@@ -12119,6 +12284,8 @@ T AtlasGsz<T>::finalize_mul(int)
     record.offset = offset;
     record.length = 1;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.producer_reference =
+            honest.get_last_double_sharing_producer_reference();
     record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
     if (record.has_king_evidence)
         record.king_evidence = honest.get_last_king_partial_mult_evidence();
@@ -12128,6 +12295,8 @@ T AtlasGsz<T>::finalize_mul(int)
     partial_mult_transcripts.push_back(record);
     assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(res);
+    maybe_run_consumed_provenance_transfer_test(
+            partial_mult_transcripts.back());
     return res;
 }
 
@@ -12176,6 +12345,8 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     record.offset = offset;
     record.length = length;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.producer_reference =
+            honest.get_last_double_sharing_producer_reference();
     record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
     if (record.has_king_evidence)
         record.king_evidence = honest.get_last_king_partial_mult_evidence();
@@ -12190,6 +12361,8 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     // the rest are padded with zeros to maintain 
     // z_verify is of the same length as x_verify and y_verify
     z_verify.insert(z_verify.end(), length - 1, T{0});
+    maybe_run_consumed_provenance_transfer_test(
+            partial_mult_transcripts.back());
     return res;
 }
 
@@ -12224,6 +12397,8 @@ T AtlasGsz<T>::finalize_mul_pub()
     record.offset = z_verify.size();
     record.length = 1;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.producer_reference =
+            honest.get_last_double_sharing_producer_reference();
     record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
     if (record.has_king_evidence)
         record.king_evidence = honest.get_last_king_partial_mult_evidence();
@@ -12351,6 +12526,8 @@ T AtlasGsz<T>::finalize_mul_trunc()
     record.offset = z_verify.size();
     record.length = 1;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.producer_reference =
+            honest.get_last_double_sharing_producer_reference();
     record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
     if (record.has_king_evidence)
         record.king_evidence = honest.get_last_king_partial_mult_evidence();
@@ -12413,6 +12590,8 @@ T AtlasGsz<T>::finalize_dotprod_trunc(int length)
     record.offset = offset;
     record.length = length;
     record.transcript = honest.get_last_partial_mult_transcript();
+    record.producer_reference =
+            honest.get_last_double_sharing_producer_reference();
     record.has_king_evidence = honest.has_last_king_partial_mult_evidence();
     if (record.has_king_evidence)
         record.king_evidence = honest.get_last_king_partial_mult_evidence();

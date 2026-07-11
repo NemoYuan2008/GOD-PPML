@@ -50,6 +50,14 @@ public:
         typename Shamir<T>::RandomsProvenance degree_2t;
     };
 
+    struct DoubleSharingProducerReference
+    {
+        // Private-process transfer token, never a public protocol identity.
+        shared_ptr<const DoubleSharingProducerProvenance>
+            producer_provenance;
+        size_t producer_output_ordinal = 0;
+    };
+
     struct DoubleSharingProvenanceTestSummary
     {
         size_t input_generation_groups = 0;
@@ -85,9 +93,13 @@ private:
         T r_t;
         T r_2t;
         DoubleSharingDecomposition decomposition;
-        shared_ptr<const DoubleSharingProducerProvenance>
-            producer_provenance;
-        size_t producer_output_ordinal = 0;
+        DoubleSharingProducerReference producer_reference;
+    };
+
+    struct PendingPartialMultOperation
+    {
+        PartialMultTranscript transcript;
+        DoubleSharingProducerReference producer_reference;
     };
 
     vector<DoubleSharingMaterial> double_sharings;
@@ -105,9 +117,9 @@ private:
 
     Preprocessing<T>* prep = nullptr;
 
-    vector<PartialMultTranscript> pending_partial_mult_transcripts;
+    vector<PendingPartialMultOperation> pending_partial_mult_operations;
     size_t next_partial_mult_transcript = 0;
-    PartialMultTranscript last_partial_mult_transcript;
+    PendingPartialMultOperation last_completed_partial_mult_operation;
     bool have_last_partial_mult_transcript = false;
 
     vector<KingPartialMultEvidence> pending_king_partial_mult_evidence;
@@ -176,6 +188,8 @@ public:
     T finalize_mul(int n = -1);
     void set_fixed_king(int king);
     const PartialMultTranscript& get_last_partial_mult_transcript() const;
+    const DoubleSharingProducerReference&
+        get_last_double_sharing_producer_reference() const;
     bool has_last_king_partial_mult_evidence() const;
     const KingPartialMultEvidence& get_last_king_partial_mult_evidence() const;
     DoubleSharingProvenanceTestSummary

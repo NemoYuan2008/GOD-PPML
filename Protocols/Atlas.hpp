@@ -229,11 +229,11 @@ template<class T>
 void Atlas<T>::validate_double_sharing_material_provenance(
         const DoubleSharingMaterial& material) const
 {
-    if (not material.producer_provenance)
+    if (not material.producer_reference.producer_provenance)
         throw invalid_argument(
                 "Atlas: DoubleRand material lacks producer provenance");
-    const auto& paired = *material.producer_provenance;
-    if (material.producer_output_ordinal
+    const auto& paired = *material.producer_reference.producer_provenance;
+    if (material.producer_reference.producer_output_ordinal
             >= paired.degree_t.output_derivations.size())
         throw invalid_argument(
                 "Atlas: DoubleRand producer output ordinal is out of range");
@@ -242,8 +242,9 @@ void Atlas<T>::validate_double_sharing_material_provenance(
             const typename Shamir<T>::RandomsProvenance& provenance,
             bool degree_two_t) {
         const auto& derivation = provenance.output_derivations.at(
-                material.producer_output_ordinal);
-        if (derivation.output_ordinal != material.producer_output_ordinal)
+                material.producer_reference.producer_output_ordinal);
+        if (derivation.output_ordinal
+                != material.producer_reference.producer_output_ordinal)
             throw invalid_argument(
                     "Atlas: DoubleRand material/output provenance mismatch");
         const auto& sources = provenance.source_groups.at(
@@ -317,8 +318,9 @@ typename Atlas<T>::DoubleSharingMaterial Atlas<T>::get_double_sharing()
             material.r_t = random.at(i);
             material.r_2t = random2.at(i);
             material.decomposition = zero_double_sharing_decomposition();
-            material.producer_provenance = paired_provenance;
-            material.producer_output_ordinal = i;
+            material.producer_reference.producer_provenance =
+                    paired_provenance;
+            material.producer_reference.producer_output_ordinal = i;
             assert(random_dealer_contributions.at(i).size()
                     == size_t(P.num_players()));
             assert(random2_dealer_contributions.at(i).size()
@@ -366,7 +368,8 @@ Atlas<T>::run_double_sharing_provenance_test()
                 "Atlas: producer-provenance test requires an empty DoubleRand buffer");
 
     auto sampled_material = get_double_sharing();
-    const auto provenance = sampled_material.producer_provenance;
+    const auto provenance =
+            sampled_material.producer_reference.producer_provenance;
     if (not provenance || provenance->degree_t.source_groups.size() < 2)
         throw logic_error(
                 "Atlas: producer-provenance test requires several input generations");
@@ -374,16 +377,16 @@ Atlas<T>::run_double_sharing_provenance_test()
 
     vector<bool> seen(provenance->degree_t.output_derivations.size(), false);
     auto validate_once = [&] (const DoubleSharingMaterial& material) {
-        if (material.producer_provenance != provenance)
+        if (material.producer_reference.producer_provenance != provenance)
             throw logic_error(
                     "Atlas: buffered outputs do not share producer provenance");
         validate_double_sharing_decomposition(
                 material.decomposition, material.r_t, material.r_2t);
         validate_double_sharing_material_provenance(material);
-        if (seen.at(material.producer_output_ordinal))
+        if (seen.at(material.producer_reference.producer_output_ordinal))
             throw logic_error(
                     "Atlas: duplicate producer output ordinal");
-        seen.at(material.producer_output_ordinal) = true;
+        seen.at(material.producer_reference.producer_output_ordinal) = true;
     };
     validate_once(sampled_material);
     for (const auto& material : double_sharings)
@@ -398,10 +401,11 @@ Atlas<T>::run_double_sharing_provenance_test()
     retained_output_ordinals.reserve(retained_buffer_size);
     for (const auto& material : double_sharings)
     {
-        if (material.producer_provenance != provenance)
+        if (material.producer_reference.producer_provenance != provenance)
             throw logic_error(
                     "Atlas: unexpected producer provenance before rejection test");
-        retained_output_ordinals.push_back(material.producer_output_ordinal);
+        retained_output_ordinals.push_back(
+                material.producer_reference.producer_output_ordinal);
     }
     DoubleSharingProducerProvenance malformed = *provenance;
     malformed.degree_2t.output_derivations.at(0).terms.at(0).coefficient +=
@@ -419,14 +423,16 @@ Atlas<T>::run_double_sharing_provenance_test()
         throw logic_error(
                 "Atlas: malformed producer provenance was not rejected atomically");
     for (size_t i = 0; i < double_sharings.size(); i++)
-        if (double_sharings.at(i).producer_provenance != provenance
-                || double_sharings.at(i).producer_output_ordinal
+        if (double_sharings.at(i).producer_reference.producer_provenance
+                    != provenance
+                || double_sharings.at(i).producer_reference
+                        .producer_output_ordinal
                         != retained_output_ordinals.at(i))
             throw logic_error(
                     "Atlas: rejected provenance changed the DoubleRand buffer");
 
     const size_t sampled_output_ordinal =
-            sampled_material.producer_output_ordinal;
+            sampled_material.producer_reference.producer_output_ordinal;
     const size_t original_buffer_size = retained_buffer_size + 1;
     if (original_buffer_size
             != provenance->degree_t.output_derivations.size()
@@ -442,19 +448,23 @@ Atlas<T>::run_double_sharing_provenance_test()
     for (size_t i = 0; i < double_sharings.size(); i++)
     {
         const auto& material = double_sharings.at(i);
-        if (material.producer_provenance != provenance
-                || material.producer_output_ordinal != i
-                || restored_outputs.at(material.producer_output_ordinal))
+        if (material.producer_reference.producer_provenance != provenance
+                || material.producer_reference.producer_output_ordinal != i
+                || restored_outputs.at(
+                        material.producer_reference.producer_output_ordinal))
             throw logic_error(
                     "Atlas: failed to restore the original DoubleRand buffer order");
-        restored_outputs.at(material.producer_output_ordinal) = true;
+        restored_outputs.at(
+                material.producer_reference.producer_output_ordinal) = true;
     }
     for (bool output_restored : restored_outputs)
         if (not output_restored)
             throw logic_error(
                     "Atlas: restored DoubleRand buffer is missing a producer output");
-    if (double_sharings.back().producer_provenance != provenance
-            || double_sharings.back().producer_output_ordinal
+    if (double_sharings.back().producer_reference.producer_provenance
+                != provenance
+            || double_sharings.back().producer_reference
+                    .producer_output_ordinal
                     != sampled_output_ordinal)
         throw logic_error(
                 "Atlas: sampled material was not restored to the LIFO tail");
@@ -516,12 +526,12 @@ void Atlas<T>::build_public_opening_king_evidence(
 {
     assert(P.my_num() == 0);
     initialize_reconstruction_factors();
-    assert(transcript_index < pending_partial_mult_transcripts.size());
+    assert(transcript_index < pending_partial_mult_operations.size());
     if (pending_king_partial_mult_evidence.empty())
         pending_king_partial_mult_evidence.resize(
-                pending_partial_mult_transcripts.size());
+                pending_partial_mult_operations.size());
     assert(pending_king_partial_mult_evidence.size()
-            == pending_partial_mult_transcripts.size());
+            == pending_partial_mult_operations.size());
 
     auto& evidence = pending_king_partial_mult_evidence.at(transcript_index);
     evidence.received_e_2t =
@@ -538,7 +548,7 @@ void Atlas<T>::build_public_opening_king_evidence(
             == opened_value);
 
     const auto& transcript =
-            pending_partial_mult_transcripts.at(transcript_index);
+            pending_partial_mult_operations.at(transcript_index).transcript;
     share_value_type local_e_2t = transcript.e_2t;
     share_value_type local_e_t = transcript.e_t;
     assert(evidence.received_e_2t.at(0) == local_e_2t);
@@ -555,7 +565,7 @@ void Atlas<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC)
 template<class T>
 void Atlas<T>::init_mul()
 {
-    assert(next_partial_mult_transcript == pending_partial_mult_transcripts.size());
+    assert(next_partial_mult_transcript == pending_partial_mult_operations.size());
     assert(pending_king_partial_mult_evidence.empty()
             || pending_king_partial_mult_evidence.size()
                     == next_partial_mult_transcript);
@@ -563,7 +573,7 @@ void Atlas<T>::init_mul()
     oss2.reset();
     masks.clear();
     base_king = next_king;
-    pending_partial_mult_transcripts.clear();
+    pending_partial_mult_operations.clear();
     pending_king_partial_mult_evidence.clear();
     next_partial_mult_transcript = 0;
     have_last_partial_mult_transcript = false;
@@ -595,7 +605,10 @@ void Atlas<T>::prepare(const typename T::open_type& product)
     transcript.r_decomposition = r.decomposition;
     validate_double_sharing_decomposition(
             transcript.r_decomposition, transcript.r_t, transcript.r_2t);
-    pending_partial_mult_transcripts.push_back(transcript);
+    PendingPartialMultOperation operation{};
+    operation.transcript = transcript;
+    operation.producer_reference = r.producer_reference;
+    pending_partial_mult_operations.push_back(std::move(operation));
 }
 
 template<class T>
@@ -603,7 +616,7 @@ void Atlas<T>::exchange()
 {
     P.send_receive_all(oss2, oss);
     oss.mine = oss2.mine;
-    assert(pending_partial_mult_transcripts.size() == masks.size());
+    assert(pending_partial_mult_operations.size() == masks.size());
 
     int t = ShamirMachine::s().threshold;
     initialize_reconstruction_factors();
@@ -695,14 +708,13 @@ T Atlas<T>::finalize_mul(int)
     T r_t = masks.next();
     T res = e_t - r_t;
     size_t transcript_index = next_partial_mult_transcript;
-    assert(transcript_index < pending_partial_mult_transcripts.size());
-    auto& transcript = pending_partial_mult_transcripts.at(transcript_index);
+    assert(transcript_index < pending_partial_mult_operations.size());
+    auto& operation = pending_partial_mult_operations.at(transcript_index);
+    auto& transcript = operation.transcript;
     next_partial_mult_transcript++;
     assert(transcript.king == king);
     assert(transcript.r_t == r_t);
     transcript.e_t = e_t;
-    last_partial_mult_transcript = transcript;
-    have_last_partial_mult_transcript = true;
     if (fixed_king_enabled && P.my_num() == fixed_king)
     {
         assert(transcript_index < pending_king_partial_mult_evidence.size());
@@ -727,6 +739,8 @@ T Atlas<T>::finalize_mul(int)
     }
     if (not fixed_king_enabled)
         base_king = (base_king + 1) % P.num_players();
+    last_completed_partial_mult_operation = operation;
+    have_last_partial_mult_transcript = true;
     return res;
 }
 
@@ -735,7 +749,7 @@ void Atlas<T>::set_fixed_king(int king)
 {
     if (king < 0 || king >= P.num_players())
         throw std::out_of_range("invalid Atlas fixed king");
-    assert(next_partial_mult_transcript == pending_partial_mult_transcripts.size());
+    assert(next_partial_mult_transcript == pending_partial_mult_operations.size());
     fixed_king_enabled = true;
     fixed_king = king;
 }
@@ -745,7 +759,15 @@ const typename Atlas<T>::PartialMultTranscript&
 Atlas<T>::get_last_partial_mult_transcript() const
 {
     assert(have_last_partial_mult_transcript);
-    return last_partial_mult_transcript;
+    return last_completed_partial_mult_operation.transcript;
+}
+
+template<class T>
+const typename Atlas<T>::DoubleSharingProducerReference&
+Atlas<T>::get_last_double_sharing_producer_reference() const
+{
+    assert(have_last_partial_mult_transcript);
+    return last_completed_partial_mult_operation.producer_reference;
 }
 
 template<class T>
@@ -842,7 +864,10 @@ inline void Atlas<T>::prepare_mul_pub(T x, T y)
     assert(transcript.e_2t == product + transcript.r_2t);
     validate_double_sharing_decomposition(
             transcript.r_decomposition, transcript.r_t, transcript.r_2t);
-    pending_partial_mult_transcripts.push_back(transcript);
+    PendingPartialMultOperation operation{};
+    operation.transcript = transcript;
+    operation.producer_reference = rho.producer_reference;
+    pending_partial_mult_operations.push_back(std::move(operation));
 }
 
 template <class T>
@@ -853,7 +878,7 @@ inline void Atlas<T>::exchange_mul_pub()
     local_mc_2t.end_received_sharing_recording();
     if (P.my_num() == 0)
         assert(local_mc_2t.num_recorded_received_sharings()
-                == pending_partial_mult_transcripts.size());
+                == pending_partial_mult_operations.size());
     else
         assert(local_mc_2t.num_recorded_received_sharings() == 0);
 }
@@ -865,14 +890,13 @@ inline T Atlas<T>::finalize_mul_pub()
     T alpha_t = alpha;
 
     size_t transcript_index = next_partial_mult_transcript;
-    assert(transcript_index < pending_partial_mult_transcripts.size());
-    auto& transcript = pending_partial_mult_transcripts.at(transcript_index);
+    assert(transcript_index < pending_partial_mult_operations.size());
+    auto& operation = pending_partial_mult_operations.at(transcript_index);
+    auto& transcript = operation.transcript;
     next_partial_mult_transcript++;
     assert(transcript.king == 0);
     assert(transcript.r_t == T{0});
     transcript.e_t = alpha_t;
-    last_partial_mult_transcript = transcript;
-    have_last_partial_mult_transcript = true;
     if (P.my_num() == 0)
     {
         build_public_opening_king_evidence(transcript_index, alpha);
@@ -897,9 +921,11 @@ inline T Atlas<T>::finalize_mul_pub()
     assert(transcript.e_t - transcript.r_t == alpha_t);
 
     if (next_partial_mult_transcript
-            == pending_partial_mult_transcripts.size())
+            == pending_partial_mult_operations.size())
         local_mc_2t.clear_recorded_received_sharings();
 
+    last_completed_partial_mult_operation = operation;
+    have_last_partial_mult_transcript = true;
     return alpha_t;
 }
 
@@ -1071,7 +1097,10 @@ void Atlas<T>::prepare_with_solved_bits(const typename T::open_type& product)
     assert(transcript.e_2t == product + transcript.r_2t);
     validate_double_sharing_decomposition(
             transcript.r_decomposition, transcript.r_t, transcript.r_2t);
-    pending_partial_mult_transcripts.push_back(transcript);
+    PendingPartialMultOperation operation{};
+    operation.transcript = transcript;
+    operation.producer_reference = s.producer_reference;
+    pending_partial_mult_operations.push_back(std::move(operation));
 
 #ifdef DEBUG_MUL_TRUNC
     // Open r, r_bits, r_msb, r_prime for debugging
@@ -1117,7 +1146,7 @@ void Atlas<T>::exchange_mul_trunc()
     local_mc_2t.end_received_sharing_recording();
     if (P.my_num() == 0)
         assert(local_mc_2t.num_recorded_received_sharings()
-                == pending_partial_mult_transcripts.size());
+                == pending_partial_mult_operations.size());
     else
         assert(local_mc_2t.num_recorded_received_sharings() == 0);
 }
@@ -1143,15 +1172,14 @@ T Atlas<T>::finalize_mul_trunc(T* pre_trunc)
     T r = masks.next();
 
     size_t transcript_index = next_partial_mult_transcript;
-    assert(transcript_index < pending_partial_mult_transcripts.size());
-    auto& transcript = pending_partial_mult_transcripts.at(transcript_index);
+    assert(transcript_index < pending_partial_mult_operations.size());
+    auto& operation = pending_partial_mult_operations.at(transcript_index);
+    auto& transcript = operation.transcript;
     next_partial_mult_transcript++;
     assert(transcript.king == 0);
     assert(transcript.r_t == r);
     T e_t = c;
     transcript.e_t = e_t;
-    last_partial_mult_transcript = transcript;
-    have_last_partial_mult_transcript = true;
     if (P.my_num() == 0)
     {
         build_public_opening_king_evidence(transcript_index, c);
@@ -1181,7 +1209,7 @@ T Atlas<T>::finalize_mul_trunc(T* pre_trunc)
     assert(transcript.e_t - transcript.r_t == a);
 
     if (next_partial_mult_transcript
-            == pending_partial_mult_transcripts.size())
+            == pending_partial_mult_operations.size())
         local_mc_2t.clear_recorded_received_sharings();
 
     c += two_power_k_minus_two;
@@ -1211,7 +1239,11 @@ T Atlas<T>::finalize_mul_trunc(T* pre_trunc)
          << "res_open = " << res_open << '\n';
 #endif
 
-    return c_trunc - r_prime + e * (two_power_k_minus_f - 1) - two_power_k_minus_f_minus_two;
+    T res = c_trunc - r_prime + e * (two_power_k_minus_f - 1)
+            - two_power_k_minus_f_minus_two;
+    last_completed_partial_mult_operation = operation;
+    have_last_partial_mult_transcript = true;
+    return res;
 }
 
 template<class T>

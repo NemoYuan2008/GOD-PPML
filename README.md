@@ -99,6 +99,9 @@ Implemented:
 - atomic producer-neutral `Shamir::get_randoms()` provenance for original
   unscaled dealer sources and exact public output derivations, paired across
   the degree-`t` and degree-`2t` sides of buffered Atlas DoubleRand material;
+- private-process transfer of the exact shared producer record and producer
+  output ordinal from each successfully completed concrete Atlas operation to
+  the corresponding real AtlasGsz wrapper record;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -109,10 +112,15 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- AtlasGsz capture/registration of the exposed producer provenance from normal
-  segment-produced dealer sharings;
+- AtlasGsz-owned tentative capture and per-dealer aggregation of the
+  transferred producer provenance;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
+
+The producer-reference transfer alone creates no tentative capture round,
+dealer batch, authentication invocation, authenticated handle, FTag chunk, or
+checkpoint. The next provenance milestone remains AtlasGsz-owned tentative
+capture and per-dealer aggregation.
 
 Therefore, this is currently an implementation of the optimistic execution
 path and supporting vertical slices, not a complete GOD implementation.

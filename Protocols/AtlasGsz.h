@@ -43,6 +43,7 @@ private:
         size_t offset;
         int length;
         typename Atlas<T>::PartialMultTranscript transcript;
+        typename Atlas<T>::DoubleSharingProducerReference producer_reference;
         bool has_king_evidence;
         typename Atlas<T>::KingPartialMultEvidence king_evidence;
     };
@@ -1585,6 +1586,7 @@ private:
 
     OptimisticAuthenticationState optimistic_authentication_state;
     bool producer_provenance_test_hook_ran = false;
+    bool consumed_provenance_transfer_test_hook_ran = false;
     SeededPRNG optimistic_authentication_prng;
     ShamirInput<T> optimistic_authentication_input;
 
@@ -1732,6 +1734,8 @@ private:
     bool authenticated_handle_exists(
             const AuthenticatedSourceHandle& handle) const;
     bool run_optimistic_authentication_test_hook(const string& mode);
+    void maybe_run_consumed_provenance_transfer_test(
+            const PartialMultTranscriptRecord& record);
     PublishedDegreeTSharing classify_degree_t_sharing(
             const vector<typename T::open_type>& shares);
     PublishedDegree2TVector collect_degree_2t_vector(

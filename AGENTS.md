@@ -172,16 +172,21 @@ The slice includes:
 The producer side also exposes neutral, atomic provenance for each completed
 `Shamir::get_randoms()` call and pairs the degree-`t`/degree-`2t` records for
 buffered Atlas DoubleRand materials. This records original unscaled dealer
-sources and exact public hyper-matrix derivations only; it does not register
-dealer batches, authenticate sources, or integrate provenance into the normal
-segment scheduler.
+sources and exact public hyper-matrix derivations. Each completed concrete
+Atlas multiplication or dot-product-family operation now exposes the exact
+consumed material's shared producer record and producer output ordinal to
+AtlasGsz, which retains that private-process reference in its real wrapper
+record. This transfer does not create tentative capture state, dealer batches,
+authentication, handles, derivations over handles, FTag chunks, checkpoints,
+or scheduler state.
 
 This vertical slice is not yet integrated into the normal segment scheduler.
 It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. propagation of real source provenance through the normal PPML execution;
+1. AtlasGsz-owned tentative capture and per-dealer aggregation from the
+   transferred producer provenance;
 2. normal segment/checkpoint scheduler integration;
 3. final production output gating through that scheduler.
 
@@ -380,6 +385,11 @@ ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=3 \
 ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=5 \
     ./Scripts/atlas-gsz.sh 0-dot
 
+ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-mul-input
+ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-dot
+
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
@@ -427,7 +437,8 @@ always uses the sampled zero-permitted challenge without an override.
 
 Unless the user changes priorities, the expected sequence is:
 
-1. provenance capture from real segment-produced dealer sharings;
+1. AtlasGsz-owned tentative capture and per-dealer aggregation from real
+   segment-consumed producer provenance;
 2. normal segment verification → authentication → promotion integration;
 3. final output gating.
 
