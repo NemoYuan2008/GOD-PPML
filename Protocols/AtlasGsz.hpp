@@ -12009,17 +12009,62 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
     if constexpr (not T::characteristic_two)
     {
         const char* auth_test = getenv("ATLAS_GSZ_AUTH_TEST");
-        if (auth_test != 0
-                && not optimistic_authentication_state.test_hook_ran)
+        if (auth_test != 0)
         {
             string mode(auth_test);
-            if (mode == "honest" || mode == "singleton-honest")
+            if (mode == "producer-provenance")
+            {
+                if (not producer_provenance_test_hook_ran)
+                {
+                    const auto& state = optimistic_authentication_state;
+                    auto assert_no_authentication_artifacts = [&] {
+                        assert(state.keys.empty());
+                        assert(state.dealer_batches.empty());
+                        assert(state.nu_material.empty());
+                        assert(state.holder_tags.empty());
+                        assert(state.checkpoints.empty());
+                        assert(state.global_invocations.empty());
+                        assert(state.key_establishment_runs == 0);
+                        assert(state.total_ftag_chunks == 0);
+                        assert(state.global_check_tag_challenges == 0);
+                        assert(verifiable_registry.sharings.empty());
+                        assert(verifiable_registry.checkpoints.empty());
+                    };
+                    assert_no_authentication_artifacts();
+
+                    auto summary =
+                            honest.run_double_sharing_provenance_test();
+                    producer_provenance_test_hook_ran = true;
+
+                    assert_no_authentication_artifacts();
+                    if (P.my_num() == 0)
+                        cout << "ATLAS_GSZ_AUTH_TEST producer-provenance"
+                             << " PASS input_generation_groups="
+                             << summary.input_generation_groups
+                             << " output_derivations="
+                             << summary.output_derivations
+                             << " sources_per_group="
+                             << summary.sources_per_group
+                             << " dealer_order=ascending"
+                             << " output_order=generation-then-hyper-row"
+                             << " degree_layouts=paired"
+                             << " decomposition=exact"
+                             << " padding_sources=0"
+                             << " malformed_candidate=atomically-rejected"
+                             << " dealer_batches=0 handles=0 ftag_chunks=0"
+                             << " checkpoints=0 authentication_invocations=0"
+                             << endl;
+                }
+            }
+            else if (not optimistic_authentication_state.test_hook_ran
+                    && (mode == "honest" || mode == "singleton-honest"))
             {
                 if (not run_optimistic_authentication_test_hook(mode))
                     throw mac_fail(
                             "AtlasGsz: optimistic authentication test failed");
             }
-            else if (mode == "failure" || mode == "ordinary-failure"
+            else if (not optimistic_authentication_state.test_hook_ran
+                    && (mode == "failure" || mode == "ordinary-failure"
                     || mode == "base-contribution-failure"
                     || mode == "verify-failure"
                     || mode == "base-failure"
@@ -12028,16 +12073,16 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                     || mode == "omission"
                     || mode == "missing-chunk"
                     || mode == "duplicate-chunk"
-                    || mode == "epoch-mismatch")
+                    || mode == "epoch-mismatch"))
             {
                 bool accepted = run_optimistic_authentication_test_hook(mode);
                 assert(not accepted);
                 throw mac_fail(
                         "AtlasGsz: RecoveryNotImplemented after authentication failure");
             }
-            else
+            else if (not optimistic_authentication_state.test_hook_ran)
                 throw invalid_argument(
-                        "ATLAS_GSZ_AUTH_TEST selected an unknown focused global authentication mode");
+                        "ATLAS_GSZ_AUTH_TEST selected an unknown focused test mode");
         }
     }
 }

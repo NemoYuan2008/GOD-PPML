@@ -169,6 +169,13 @@ The slice includes:
 - unsealed checkpoint candidates that seal and promote only after validation;
 - fail-stop `RecoveryNotImplemented` behavior on authentication failure.
 
+The producer side also exposes neutral, atomic provenance for each completed
+`Shamir::get_randoms()` call and pairs the degree-`t`/degree-`2t` records for
+buffered Atlas DoubleRand materials. This records original unscaled dealer
+sources and exact public hyper-matrix derivations only; it does not register
+dealer batches, authenticate sources, or integrate provenance into the normal
+segment scheduler.
+
 This vertical slice is not yet integrated into the normal segment scheduler.
 It must not be described as the complete GSZ20 authentication path.
 
@@ -365,9 +372,14 @@ Expected output for `0-dot` and `0-dot-input`, allowing tiny fixed-point drift:
 [1, 4, 9]
 ```
 
-Focused optimistic-authentication hook:
+Focused producer-provenance and optimistic-authentication hooks:
 
 ```sh
+ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-dot
+
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 

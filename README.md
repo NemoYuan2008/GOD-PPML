@@ -96,6 +96,9 @@ Implemented:
   sealing/promotion after every global equation passes;
 - authenticated dealer-source handles;
 - derivation-based checkpoint sealing and promotion;
+- atomic producer-neutral `Shamir::get_randoms()` provenance for original
+  unscaled dealer sources and exact public output derivations, paired across
+  the degree-`t` and degree-`2t` sides of buffered Atlas DoubleRand material;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -106,7 +109,8 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- provenance capture from real segment-produced dealer sharings;
+- AtlasGsz capture/registration of the exposed producer provenance from normal
+  segment-produced dealer sharings;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
 

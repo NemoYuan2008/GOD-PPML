@@ -1584,6 +1584,7 @@ private:
     PendingAnalyzeSharingState pending_analyze_sharing_state;
 
     OptimisticAuthenticationState optimistic_authentication_state;
+    bool producer_provenance_test_hook_ran = false;
     SeededPRNG optimistic_authentication_prng;
     ShamirInput<T> optimistic_authentication_input;
 

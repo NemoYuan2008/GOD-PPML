@@ -252,7 +252,8 @@ template<class T>
 vector<T> Shamir<T>::get_randoms(PRNG& G, int t,
         vector<vector<T>>* local_dealer_contributions,
         vector<vector<typename T::open_type>>*
-            own_dealer_full_contributions)
+            own_dealer_full_contributions,
+        RandomsProvenance* provenance)
 {
     auto& hyper = get_hyper(t);
     if (random_input == 0)
@@ -279,6 +280,13 @@ vector<T> Shamir<T>::get_randoms(PRNG& G, int t,
     vector<U> inputs;
     vector<T> random;
     random.reserve(buffer_size + hyper.size());
+    RandomsProvenance provenance_candidate;
+    if (provenance)
+    {
+        provenance_candidate.source_groups.reserve(n_input_batches);
+        provenance_candidate.output_derivations.reserve(
+                buffer_size + hyper.size());
+    }
     if (local_dealer_contributions)
     {
         local_dealer_contributions->clear();
@@ -295,6 +303,17 @@ vector<T> Shamir<T>::get_randoms(PRNG& G, int t,
         inputs.clear();
         for (int j = 0; j < P.num_players(); j++)
             inputs.push_back(input.finalize(j));
+        if (provenance)
+        {
+            RandomSourceGroup source_group;
+            source_group.input_batch_ordinal = input_batch;
+            source_group.sources.reserve(P.num_players());
+            for (int dealer = 0; dealer < P.num_players(); dealer++)
+                source_group.sources.push_back(
+                        {inputs.at(dealer), dealer, size_t(input_batch)});
+            provenance_candidate.source_groups.push_back(
+                    std::move(source_group));
+        }
         const vector<typename T::open_type>* recorded_mine_sharing = 0;
         if (own_dealer_full_contributions)
         {
@@ -306,6 +325,18 @@ vector<T> Shamir<T>::get_randoms(PRNG& G, int t,
         for (size_t j = 0; j < hyper.size(); j++)
         {
             random.push_back({});
+            if (provenance)
+            {
+                PublicRandomDerivation derivation;
+                derivation.output_ordinal = random.size() - 1;
+                derivation.input_batch_ordinal = input_batch;
+                derivation.terms.reserve(P.num_players());
+                for (int dealer = 0; dealer < P.num_players(); dealer++)
+                    derivation.terms.push_back(
+                            {size_t(dealer), hyper.at(j).at(dealer)});
+                provenance_candidate.output_derivations.push_back(
+                        std::move(derivation));
+            }
             if (local_dealer_contributions)
                 local_dealer_contributions->push_back(
                         vector<T>(P.num_players()));
@@ -338,6 +369,8 @@ vector<T> Shamir<T>::get_randoms(PRNG& G, int t,
     }
     if (own_dealer_full_contributions)
         input.clear_recorded_mine_sharings();
+    if (provenance)
+        *provenance = std::move(provenance_candidate);
     return random;
 }
 

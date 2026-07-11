@@ -10,6 +10,7 @@
 
 #include "Tools/Bundle.h"
 
+#include <memory>
 #include <stdexcept>
 
 
@@ -43,6 +44,19 @@ public:
         DealerDoubleSharingContribution validated_residual;
     };
 
+    struct DoubleSharingProducerProvenance
+    {
+        typename Shamir<T>::RandomsProvenance degree_t;
+        typename Shamir<T>::RandomsProvenance degree_2t;
+    };
+
+    struct DoubleSharingProvenanceTestSummary
+    {
+        size_t input_generation_groups = 0;
+        size_t output_derivations = 0;
+        size_t sources_per_group = 0;
+    };
+
     struct PartialMultTranscript
     {
         T r_t;
@@ -71,6 +85,9 @@ private:
         T r_t;
         T r_2t;
         DoubleSharingDecomposition decomposition;
+        shared_ptr<const DoubleSharingProducerProvenance>
+            producer_provenance;
+        size_t producer_output_ordinal = 0;
     };
 
     vector<DoubleSharingMaterial> double_sharings;
@@ -105,6 +122,14 @@ private:
             const DoubleSharingDecomposition& decomposition,
             const T& r_t,
             const T& r_2t) const;
+    void validate_randoms_provenance(
+            const typename Shamir<T>::RandomsProvenance& provenance,
+            const vector<T>& outputs,
+            const vector<vector<T>>& dealer_contributions) const;
+    void validate_paired_double_sharing_provenance(
+            const DoubleSharingProducerProvenance& provenance) const;
+    void validate_double_sharing_material_provenance(
+            const DoubleSharingMaterial& material) const;
     void initialize_reconstruction_factors();
     share_value_type reconstruct_received_e_2t(
             const vector<share_value_type>& sharing) const;
@@ -153,6 +178,8 @@ public:
     const PartialMultTranscript& get_last_partial_mult_transcript() const;
     bool has_last_king_partial_mult_evidence() const;
     const KingPartialMultEvidence& get_last_king_partial_mult_evidence() const;
+    DoubleSharingProvenanceTestSummary
+        run_double_sharing_provenance_test();
 
     void init_dotprod();
     void prepare_dotprod(const T& x, const T& y);

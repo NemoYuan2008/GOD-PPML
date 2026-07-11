@@ -46,6 +46,38 @@ class Shamir : public ProtocolBase<T>
 public:
     static const bool uses_triples = false;
 
+    struct OriginalDealerSource
+    {
+        T local_share;
+        int dealer;
+        size_t input_batch_ordinal;
+    };
+
+    struct RandomSourceGroup
+    {
+        size_t input_batch_ordinal;
+        vector<OriginalDealerSource> sources;
+    };
+
+    struct PublicRandomSourceTerm
+    {
+        size_t source_index;
+        typename T::open_type coefficient;
+    };
+
+    struct PublicRandomDerivation
+    {
+        size_t output_ordinal;
+        size_t input_batch_ordinal;
+        vector<PublicRandomSourceTerm> terms;
+    };
+
+    struct RandomsProvenance
+    {
+        vector<RandomSourceGroup> source_groups;
+        vector<PublicRandomDerivation> output_derivations;
+    };
+
     Player& P;
 
     static U get_rec_factor(int i, int n);
@@ -81,7 +113,8 @@ public:
     vector<T> get_randoms(PRNG& G, int t,
             vector<vector<T>>* local_dealer_contributions = 0,
             vector<vector<typename T::open_type>>*
-                own_dealer_full_contributions = 0);
+                own_dealer_full_contributions = 0,
+            RandomsProvenance* provenance = 0);
 
     vector<vector<typename T::open_type>>& get_hyper(int t);
     static void get_hyper(vector<vector<typename T::open_type>>& hyper, int t, int n);

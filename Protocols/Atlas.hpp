@@ -84,6 +84,195 @@ void Atlas<T>::validate_double_sharing_decomposition(
 }
 
 template<class T>
+void Atlas<T>::validate_randoms_provenance(
+        const typename Shamir<T>::RandomsProvenance& provenance,
+        const vector<T>& outputs,
+        const vector<vector<T>>& dealer_contributions) const
+{
+    auto malformed = [] (const char* reason) {
+        throw invalid_argument(
+                string("Atlas: malformed Shamir random provenance: ")
+                + reason);
+    };
+    const size_t n = P.num_players();
+    if (n == 0 || outputs.empty() || outputs.size() % n != 0)
+        malformed("invalid output count");
+    if (dealer_contributions.size() != outputs.size())
+        malformed("dealer contribution count mismatch");
+    if (provenance.source_groups.size() != outputs.size() / n)
+        malformed("input generation group count mismatch");
+    if (provenance.output_derivations.size() != outputs.size())
+        malformed("output derivation count mismatch");
+
+    for (size_t group_index = 0;
+            group_index < provenance.source_groups.size(); group_index++)
+    {
+        const auto& group = provenance.source_groups.at(group_index);
+        if (group.input_batch_ordinal != group_index)
+            malformed("non-canonical input generation ordinal");
+        if (group.sources.size() != n)
+            malformed("source group is not an exact all-dealer group");
+        for (size_t dealer = 0; dealer < n; dealer++)
+        {
+            const auto& source = group.sources.at(dealer);
+            if (source.dealer != int(dealer))
+                malformed("non-canonical dealer ordering");
+            if (source.input_batch_ordinal != group_index)
+                malformed("source input generation ordinal mismatch");
+        }
+    }
+
+    for (size_t output_index = 0; output_index < outputs.size();
+            output_index++)
+    {
+        const auto& derivation =
+                provenance.output_derivations.at(output_index);
+        const size_t expected_group = output_index / n;
+        if (derivation.output_ordinal != output_index)
+            malformed("non-canonical output ordinal");
+        if (derivation.input_batch_ordinal != expected_group)
+            malformed("output input generation ordinal mismatch");
+        if (derivation.terms.size() != n)
+            malformed("output derivation is not an exact all-dealer sum");
+        if (dealer_contributions.at(output_index).size() != n)
+            malformed("dealer contribution width mismatch");
+
+        const auto& sources =
+                provenance.source_groups.at(expected_group).sources;
+        T evaluated{};
+        for (size_t term_index = 0; term_index < n; term_index++)
+        {
+            const auto& term = derivation.terms.at(term_index);
+            if (term.source_index != term_index)
+                malformed("non-canonical source-term ordering");
+            T contribution = term.coefficient
+                    * sources.at(term.source_index).local_share;
+            if (contribution
+                    != dealer_contributions.at(output_index).at(term_index))
+                malformed("source term disagrees with dealer contribution");
+            evaluated += contribution;
+        }
+        if (evaluated != outputs.at(output_index))
+            malformed("derivation does not evaluate to output");
+    }
+}
+
+template<class T>
+void Atlas<T>::validate_paired_double_sharing_provenance(
+        const DoubleSharingProducerProvenance& provenance) const
+{
+    auto malformed = [] (const char* reason) {
+        throw invalid_argument(
+                string("Atlas: unpaired DoubleRand provenance: ") + reason);
+    };
+    const auto& degree_t = provenance.degree_t;
+    const auto& degree_2t = provenance.degree_2t;
+    if (degree_t.source_groups.size() != degree_2t.source_groups.size())
+        malformed("input generation group count mismatch");
+    if (degree_t.output_derivations.size()
+            != degree_2t.output_derivations.size())
+        malformed("output derivation count mismatch");
+
+    for (size_t group_index = 0;
+            group_index < degree_t.source_groups.size(); group_index++)
+    {
+        const auto& t_group = degree_t.source_groups.at(group_index);
+        const auto& two_t_group = degree_2t.source_groups.at(group_index);
+        if (t_group.input_batch_ordinal
+                != two_t_group.input_batch_ordinal)
+            malformed("input generation ordinal mismatch");
+        if (t_group.sources.size() != two_t_group.sources.size())
+            malformed("source count mismatch");
+        for (size_t source_index = 0;
+                source_index < t_group.sources.size(); source_index++)
+        {
+            const auto& t_source = t_group.sources.at(source_index);
+            const auto& two_t_source =
+                    two_t_group.sources.at(source_index);
+            if (t_source.dealer != two_t_source.dealer)
+                malformed("dealer ordering mismatch");
+            if (t_source.input_batch_ordinal
+                    != two_t_source.input_batch_ordinal)
+                malformed("source input generation ordinal mismatch");
+        }
+    }
+
+    for (size_t output_index = 0;
+            output_index < degree_t.output_derivations.size(); output_index++)
+    {
+        const auto& t_derivation =
+                degree_t.output_derivations.at(output_index);
+        const auto& two_t_derivation =
+                degree_2t.output_derivations.at(output_index);
+        if (t_derivation.output_ordinal != two_t_derivation.output_ordinal)
+            malformed("output ordinal mismatch");
+        if (t_derivation.input_batch_ordinal
+                != two_t_derivation.input_batch_ordinal)
+            malformed("output input generation ordinal mismatch");
+        if (t_derivation.terms.size() != two_t_derivation.terms.size())
+            malformed("public coefficient layout width mismatch");
+        for (size_t term_index = 0;
+                term_index < t_derivation.terms.size(); term_index++)
+        {
+            const auto& t_term = t_derivation.terms.at(term_index);
+            const auto& two_t_term =
+                    two_t_derivation.terms.at(term_index);
+            if (t_term.source_index != two_t_term.source_index)
+                malformed("source-term ordering mismatch");
+            if (t_term.coefficient != two_t_term.coefficient)
+                malformed("public coefficient mismatch");
+        }
+    }
+}
+
+template<class T>
+void Atlas<T>::validate_double_sharing_material_provenance(
+        const DoubleSharingMaterial& material) const
+{
+    if (not material.producer_provenance)
+        throw invalid_argument(
+                "Atlas: DoubleRand material lacks producer provenance");
+    const auto& paired = *material.producer_provenance;
+    if (material.producer_output_ordinal
+            >= paired.degree_t.output_derivations.size())
+        throw invalid_argument(
+                "Atlas: DoubleRand producer output ordinal is out of range");
+
+    auto evaluate = [&] (
+            const typename Shamir<T>::RandomsProvenance& provenance,
+            bool degree_two_t) {
+        const auto& derivation = provenance.output_derivations.at(
+                material.producer_output_ordinal);
+        if (derivation.output_ordinal != material.producer_output_ordinal)
+            throw invalid_argument(
+                    "Atlas: DoubleRand material/output provenance mismatch");
+        const auto& sources = provenance.source_groups.at(
+                derivation.input_batch_ordinal).sources;
+        T result{};
+        for (size_t dealer = 0; dealer < derivation.terms.size(); dealer++)
+        {
+            const auto& term = derivation.terms.at(dealer);
+            T contribution = term.coefficient
+                    * sources.at(term.source_index).local_share;
+            const auto& existing =
+                    material.decomposition.dealer_components.at(dealer);
+            if (contribution != (degree_two_t ? existing.r_2t : existing.r_t))
+                throw invalid_argument(
+                        "Atlas: DoubleRand source term/decomposition mismatch");
+            result += contribution;
+        }
+        return result;
+    };
+
+    if (evaluate(paired.degree_t, false) != material.r_t)
+        throw invalid_argument(
+                "Atlas: degree-t DoubleRand derivation mismatch");
+    if (evaluate(paired.degree_2t, true) != material.r_2t)
+        throw invalid_argument(
+                "Atlas: degree-2t DoubleRand derivation mismatch");
+}
+
+template<class T>
 typename Atlas<T>::DoubleSharingMaterial Atlas<T>::get_double_sharing()
 {
     if (double_sharings.empty())
@@ -94,25 +283,42 @@ typename Atlas<T>::DoubleSharingMaterial Atlas<T>::get_double_sharing()
         vector<vector<T>> random2_dealer_contributions;
         vector<vector<share_value_type>> random_own_dealer_contributions;
         vector<vector<share_value_type>> random2_own_dealer_contributions;
+        typename Shamir<T>::RandomsProvenance random_provenance;
+        typename Shamir<T>::RandomsProvenance random2_provenance;
         auto random = shamir.get_randoms(G, 0,
                 &random_dealer_contributions,
-                &random_own_dealer_contributions);
+                &random_own_dealer_contributions,
+                &random_provenance);
         auto random2 =
                 shamir2.get_randoms(G2, 0,
                         &random2_dealer_contributions,
-                        &random2_own_dealer_contributions);
+                        &random2_own_dealer_contributions,
+                        &random2_provenance);
         assert(random.size() == random2.size());
         assert(random.size() == random_dealer_contributions.size());
         assert(random2.size() == random2_dealer_contributions.size());
         assert(random.size() == random_own_dealer_contributions.size());
         assert(random2.size() == random2_own_dealer_contributions.size());
         assert(random.size() % P.num_players() == 0);
+        validate_randoms_provenance(random_provenance, random,
+                random_dealer_contributions);
+        validate_randoms_provenance(random2_provenance, random2,
+                random2_dealer_contributions);
+        auto paired_provenance =
+                make_shared<DoubleSharingProducerProvenance>();
+        paired_provenance->degree_t = std::move(random_provenance);
+        paired_provenance->degree_2t = std::move(random2_provenance);
+        validate_paired_double_sharing_provenance(*paired_provenance);
+        vector<DoubleSharingMaterial> candidate_materials;
+        candidate_materials.reserve(random.size());
         for (size_t i = 0; i < random.size(); i++)
         {
             DoubleSharingMaterial material{};
             material.r_t = random.at(i);
             material.r_2t = random2.at(i);
             material.decomposition = zero_double_sharing_decomposition();
+            material.producer_provenance = paired_provenance;
+            material.producer_output_ordinal = i;
             assert(random_dealer_contributions.at(i).size()
                     == size_t(P.num_players()));
             assert(random2_dealer_contributions.at(i).size()
@@ -140,13 +346,127 @@ typename Atlas<T>::DoubleSharingMaterial Atlas<T>::get_double_sharing()
             }
             validate_double_sharing_decomposition(
                     material.decomposition, material.r_t, material.r_2t);
-            double_sharings.push_back(material);
+            validate_double_sharing_material_provenance(material);
+            candidate_materials.push_back(std::move(material));
         }
+        double_sharings = std::move(candidate_materials);
     }
 
     auto res = double_sharings.back();
     double_sharings.pop_back();
     return res;
+}
+
+template<class T>
+typename Atlas<T>::DoubleSharingProvenanceTestSummary
+Atlas<T>::run_double_sharing_provenance_test()
+{
+    if (not double_sharings.empty())
+        throw logic_error(
+                "Atlas: producer-provenance test requires an empty DoubleRand buffer");
+
+    auto sampled_material = get_double_sharing();
+    const auto provenance = sampled_material.producer_provenance;
+    if (not provenance || provenance->degree_t.source_groups.size() < 2)
+        throw logic_error(
+                "Atlas: producer-provenance test requires several input generations");
+    validate_paired_double_sharing_provenance(*provenance);
+
+    vector<bool> seen(provenance->degree_t.output_derivations.size(), false);
+    auto validate_once = [&] (const DoubleSharingMaterial& material) {
+        if (material.producer_provenance != provenance)
+            throw logic_error(
+                    "Atlas: buffered outputs do not share producer provenance");
+        validate_double_sharing_decomposition(
+                material.decomposition, material.r_t, material.r_2t);
+        validate_double_sharing_material_provenance(material);
+        if (seen.at(material.producer_output_ordinal))
+            throw logic_error(
+                    "Atlas: duplicate producer output ordinal");
+        seen.at(material.producer_output_ordinal) = true;
+    };
+    validate_once(sampled_material);
+    for (const auto& material : double_sharings)
+        validate_once(material);
+    for (bool output_seen : seen)
+        if (not output_seen)
+            throw logic_error(
+                    "Atlas: missing buffered producer output ordinal");
+
+    const size_t retained_buffer_size = double_sharings.size();
+    vector<size_t> retained_output_ordinals;
+    retained_output_ordinals.reserve(retained_buffer_size);
+    for (const auto& material : double_sharings)
+    {
+        if (material.producer_provenance != provenance)
+            throw logic_error(
+                    "Atlas: unexpected producer provenance before rejection test");
+        retained_output_ordinals.push_back(material.producer_output_ordinal);
+    }
+    DoubleSharingProducerProvenance malformed = *provenance;
+    malformed.degree_2t.output_derivations.at(0).terms.at(0).coefficient +=
+            share_value_type(1);
+    bool rejected = false;
+    try
+    {
+        validate_paired_double_sharing_provenance(malformed);
+    }
+    catch (const invalid_argument&)
+    {
+        rejected = true;
+    }
+    if (not rejected || double_sharings.size() != retained_buffer_size)
+        throw logic_error(
+                "Atlas: malformed producer provenance was not rejected atomically");
+    for (size_t i = 0; i < double_sharings.size(); i++)
+        if (double_sharings.at(i).producer_provenance != provenance
+                || double_sharings.at(i).producer_output_ordinal
+                        != retained_output_ordinals.at(i))
+            throw logic_error(
+                    "Atlas: rejected provenance changed the DoubleRand buffer");
+
+    const size_t sampled_output_ordinal =
+            sampled_material.producer_output_ordinal;
+    const size_t original_buffer_size = retained_buffer_size + 1;
+    if (original_buffer_size
+            != provenance->degree_t.output_derivations.size()
+            || sampled_output_ordinal != original_buffer_size - 1)
+        throw logic_error(
+                "Atlas: sampled material was not the original LIFO tail");
+    double_sharings.push_back(std::move(sampled_material));
+    if (double_sharings.size() != original_buffer_size)
+        throw logic_error(
+                "Atlas: failed to restore the original DoubleRand buffer size");
+
+    vector<bool> restored_outputs(original_buffer_size, false);
+    for (size_t i = 0; i < double_sharings.size(); i++)
+    {
+        const auto& material = double_sharings.at(i);
+        if (material.producer_provenance != provenance
+                || material.producer_output_ordinal != i
+                || restored_outputs.at(material.producer_output_ordinal))
+            throw logic_error(
+                    "Atlas: failed to restore the original DoubleRand buffer order");
+        restored_outputs.at(material.producer_output_ordinal) = true;
+    }
+    for (bool output_restored : restored_outputs)
+        if (not output_restored)
+            throw logic_error(
+                    "Atlas: restored DoubleRand buffer is missing a producer output");
+    if (double_sharings.back().producer_provenance != provenance
+            || double_sharings.back().producer_output_ordinal
+                    != sampled_output_ordinal)
+        throw logic_error(
+                "Atlas: sampled material was not restored to the LIFO tail");
+
+    DoubleSharingProvenanceTestSummary summary;
+    summary.input_generation_groups =
+            provenance->degree_t.source_groups.size();
+    summary.output_derivations =
+            provenance->degree_t.output_derivations.size();
+    summary.sources_per_group =
+            provenance->degree_t.source_groups.front().sources.size();
+    return summary;
 }
 
 template<class T>
