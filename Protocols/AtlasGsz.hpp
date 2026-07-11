@@ -10,20 +10,140 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <numeric>
+#include <stdexcept>
 #include "BufferScope.h"
 #include "AtlasConfig.h"
 
 
 template<class T>
-AtlasGsz<T>::AtlasGsz(Player& P) : honest(P),
+AtlasGsz<T>::AtlasGsz(Player& P) : AtlasGsz(P,
+        parse_base_field_ftag_chunk_width(),
+        PreserveBaseFieldFTagChunkWidth{})
+{
+}
+
+template<class T>
+AtlasGsz<T>::AtlasGsz(Player& P, uint64_t base_field_ftag_chunk_width,
+        PreserveBaseFieldFTagChunkWidth) :
+        base_field_ftag_chunk_width_(base_field_ftag_chunk_width), honest(P),
         optimistic_authentication_input(0, P), P(P)
 {
+    if (base_field_ftag_chunk_width_ == 0
+            || base_field_ftag_chunk_width_
+                    > uint64_t(numeric_limits<size_t>::max()))
+        throw invalid_argument(
+                "AtlasGsz: base-field FTag chunk width is out of range");
     honest.set_fixed_king(0);
     x_verify.reserve(AtlasConfig::max_before_check);
     y_verify.reserve(AtlasConfig::max_before_check);
     z_verify.reserve(AtlasConfig::max_before_check);
     partial_mult_transcripts.reserve(AtlasConfig::max_before_check);
+}
+
+template<class T>
+uint64_t AtlasGsz<T>::parse_base_field_ftag_chunk_width()
+{
+    const char* input = getenv("ATLAS_GSZ_FTAG_CHUNK_WIDTH");
+    if (input == 0)
+        return 4;
+    if (*input == '\0')
+        throw invalid_argument(
+                "ATLAS_GSZ_FTAG_CHUNK_WIDTH must be a non-empty unsigned integer greater than zero");
+
+    uint64_t result = 0;
+    for (const char* cursor = input; *cursor != '\0'; cursor++)
+    {
+        if (*cursor < '0' || *cursor > '9')
+            throw invalid_argument(
+                    "ATLAS_GSZ_FTAG_CHUNK_WIDTH must contain only unsigned decimal digits");
+        uint64_t digit = uint64_t(*cursor - '0');
+        if (result > (numeric_limits<uint64_t>::max() - digit) / 10)
+            throw invalid_argument(
+                    "ATLAS_GSZ_FTAG_CHUNK_WIDTH overflows uint64_t");
+        result = result * 10 + digit;
+    }
+    if (result == 0)
+        throw invalid_argument(
+                "ATLAS_GSZ_FTAG_CHUNK_WIDTH must be greater than zero");
+    if (result > uint64_t(numeric_limits<size_t>::max()))
+        throw invalid_argument(
+                "ATLAS_GSZ_FTAG_CHUNK_WIDTH exceeds the local addressable size");
+    return result;
+}
+
+template<class T>
+size_t AtlasGsz<T>::base_field_ftag_chunk_width() const
+{
+    assert(base_field_ftag_chunk_width_ > 0);
+    assert(base_field_ftag_chunk_width_
+            <= uint64_t(numeric_limits<size_t>::max()));
+    return size_t(base_field_ftag_chunk_width_);
+}
+
+template<class T>
+size_t AtlasGsz<T>::base_field_ftag_chunk_count(
+        size_t original_source_count) const
+{
+    const size_t width = base_field_ftag_chunk_width();
+    return original_source_count / width
+            + (original_source_count % width != 0);
+}
+
+template<class T>
+size_t AtlasGsz<T>::checked_size_product(
+        size_t left, size_t right, const char* description)
+{
+    if (left != 0 && right > numeric_limits<size_t>::max() / left)
+        throw overflow_error(description);
+    return left * right;
+}
+
+template<class T>
+size_t AtlasGsz<T>::checked_size_sum(
+        size_t left, size_t right, const char* description)
+{
+    if (right > numeric_limits<size_t>::max() - left)
+        throw overflow_error(description);
+    return left + right;
+}
+
+template<class T>
+bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
+{
+    static_assert(sizeof(uint64_t) == 8,
+            "AtlasGsz requires an eight-byte uint64_t");
+    auto& state = optimistic_authentication_state;
+    if (state.base_field_ftag_chunk_width_agreed)
+        return true;
+
+    const size_t communication_before = P.total_comm().sent;
+    vector<octetStream> width_streams(P.num_players());
+    const uint64_t selected_width = base_field_ftag_chunk_width_;
+    width_streams.at(P.my_num()).store(selected_width);
+    P.Broadcast_Receive(width_streams);
+    P.Check_Broadcast();
+
+    bool agreed = true;
+    for (int player = 0; player < P.num_players(); player++)
+    {
+        uint64_t received_width = 0;
+        width_streams.at(player).get(received_width);
+        if (not width_streams.at(player).done())
+            throw invalid_argument(
+                    "AtlasGsz: malformed base-field FTag chunk-width agreement message");
+        if (received_width != base_field_ftag_chunk_width_)
+            agreed = false;
+    }
+    state.base_field_ftag_chunk_width_agreement_communication +=
+            P.total_comm().sent - communication_before;
+    if (not agreed)
+        throw invalid_argument(
+                "AtlasGsz: parties selected different base-field FTag chunk widths");
+
+    state.base_field_ftag_chunk_width_agreed = true;
+    return true;
 }
 
 template<class T>
@@ -396,12 +516,21 @@ template<class T>
 bool AtlasGsz<T>::establish_optimistic_authentication_keys()
 {
     auto& state = optimistic_authentication_state;
+    agree_base_field_ftag_chunk_width();
     if (state.keys_established)
         return state.keys_checked;
 
     const size_t communication_before = P.total_comm().sent;
-    const size_t width = OptimisticAuthenticationState::batch_width;
+    const size_t width = base_field_ftag_chunk_width();
     state.keys.clear();
+    const size_t player_count = size_t(P.num_players());
+    const size_t key_count = checked_size_product(player_count,
+            player_count - 1,
+            "AtlasGsz: verifier-holder key count overflow");
+    if (key_count > state.keys.max_size())
+        throw length_error(
+                "AtlasGsz: verifier-holder key count exceeds vector capacity");
+    state.keys.reserve(key_count);
     for (int verifier = 0; verifier < P.num_players(); verifier++)
         for (int holder = 0; holder < P.num_players(); holder++)
             if (verifier != holder)
@@ -414,11 +543,22 @@ bool AtlasGsz<T>::establish_optimistic_authentication_keys()
                 key.owns_clear_mu = P.my_num() == verifier;
                 key.has_local_twisted_share = P.my_num() != holder;
                 if (key.owns_clear_mu)
+                {
+                    if (width > key.clear_mu.max_size())
+                        throw length_error(
+                                "AtlasGsz: base-field FTag mu width exceeds vector capacity");
                     key.clear_mu.resize(width);
+                }
                 if (key.has_local_twisted_share)
+                {
+                    if (width > key.local_twisted_share.max_size())
+                        throw length_error(
+                                "AtlasGsz: twisted mu width exceeds vector capacity");
                     key.local_twisted_share.resize(width);
+                }
                 state.keys.push_back(key);
             }
+    assert(state.keys.size() == key_count);
 
     vector<octetStream> outgoing(P.num_players());
     for (auto& key : state.keys)
@@ -453,6 +593,12 @@ bool AtlasGsz<T>::establish_optimistic_authentication_keys()
     for (int sender = 0; sender < P.num_players(); sender++)
         if (sender != P.my_num())
             assert(not incoming.at(sender).left());
+    for (const auto& key : state.keys)
+    {
+        assert(not key.owns_clear_mu || key.clear_mu.size() == width);
+        assert(not key.has_local_twisted_share
+                || key.local_twisted_share.size() == width);
+    }
 
     state.keys_established = true;
     state.key_establishment_runs++;
@@ -477,8 +623,9 @@ bool AtlasGsz<T>::check_optimistic_authentication_keys()
 {
     auto& state = optimistic_authentication_state;
     assert(state.keys_established);
+    assert(state.base_field_ftag_chunk_width_agreed);
     const int t = ShamirMachine::s().threshold;
-    const size_t width = OptimisticAuthenticationState::batch_width;
+    const size_t width = base_field_ftag_chunk_width();
 
     // Restricted e=1 Check-Key: a fresh twisted sharing of random rho masks
     // every public reusable-key combination. The clear rho values exist only
@@ -489,6 +636,9 @@ bool AtlasGsz<T>::check_optimistic_authentication_keys()
     for (size_t index = 0; index < state.keys.size(); index++)
     {
         const auto& key = state.keys.at(index);
+        assert(not key.has_local_twisted_share
+                || key.local_twisted_share.size() == width);
+        assert(not key.owns_clear_mu || key.clear_mu.size() == width);
         if (P.my_num() == key.verifier)
         {
             verifier_mask_values.at(index).randomize(
@@ -643,6 +793,8 @@ uint64_t AtlasGsz<T>::register_dealer_source_batch(
     batch.source_ordinals.reserve(local_source_shares.size());
     for (size_t ordinal = 0; ordinal < local_source_shares.size(); ordinal++)
         batch.source_ordinals.push_back(ordinal);
+    assert(batch.source_ordinals.size()
+            == batch.local_source_shares.size());
     state.dealer_batches.push_back(batch);
     return batch.batch_id;
 }
@@ -724,16 +876,22 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
     assert(base_sharing.empty());
 
     const size_t communication_before = P.total_comm().sent;
+    const size_t width = base_field_ftag_chunk_width();
     vector<typename T::open_type> dealer_values;
     if (P.my_num() == batch.dealer)
     {
-        dealer_values.resize(OptimisticAuthenticationState::batch_width);
+        if (width > dealer_values.max_size())
+            throw length_error(
+                    "AtlasGsz: BaseSharing width exceeds vector capacity");
+        dealer_values.resize(width);
         for (auto& value : dealer_values)
             value.randomize(optimistic_authentication_prng);
     }
     base_sharing = deal_optimistic_source_values(
-            batch.dealer, dealer_values,
-            OptimisticAuthenticationState::batch_width);
+            batch.dealer, dealer_values, width);
+    if (base_sharing.size() != width)
+        throw logic_error(
+                "AtlasGsz: BaseSharing does not have the configured base-field FTag chunk width");
 
     typename T::open_type challenge{};
     vector<typename T::open_type> published_shares;
@@ -758,21 +916,55 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
 }
 
 template<class T>
-vector<vector<T>> AtlasGsz<T>::source_chunks_for_batch(
+vector<typename AtlasGsz<T>::BaseFieldFTagSourceChunk>
+AtlasGsz<T>::source_chunks_for_batch(
         const DealerSourceBatchRecord& batch) const
 {
-    const size_t width = OptimisticAuthenticationState::batch_width;
-    vector<vector<T>> chunks;
-    for (size_t offset = 0;
-            offset < batch.local_source_shares.size(); offset += width)
+    if (batch.source_ordinals.size()
+            != batch.local_source_shares.size())
+        throw logic_error(
+                "AtlasGsz: dealer source ordinals and local shares have different dimensions");
+
+    const size_t width = base_field_ftag_chunk_width();
+    const size_t original_source_count =
+            batch.local_source_shares.size();
+    const size_t chunk_count =
+            base_field_ftag_chunk_count(original_source_count);
+    vector<BaseFieldFTagSourceChunk> chunks;
+    if (chunk_count > chunks.max_size())
+        throw length_error(
+                "AtlasGsz: FTag chunk count exceeds vector capacity");
+    chunks.reserve(chunk_count);
+    for (size_t chunk_ordinal = 0;
+            chunk_ordinal < chunk_count; chunk_ordinal++)
     {
-        vector<T> chunk(width, T{});
-        size_t count = min(width,
-                batch.local_source_shares.size() - offset);
+        const size_t offset = checked_size_product(chunk_ordinal, width,
+                "AtlasGsz: FTag source-chunk offset overflow");
+        if (offset >= original_source_count)
+            throw logic_error(
+                    "AtlasGsz: invalid FTag source-chunk offset");
+        const size_t count = min(width,
+                original_source_count - offset);
+        const size_t end = checked_size_sum(offset, count,
+                "AtlasGsz: FTag source-chunk end overflow");
+        if (count == 0 || count > width || end > original_source_count)
+            throw logic_error(
+                    "AtlasGsz: invalid FTag source-chunk source range");
+
+        BaseFieldFTagSourceChunk chunk{};
+        chunk.chunk_ordinal = chunk_ordinal;
+        chunk.original_source_offset = offset;
+        chunk.original_source_count = count;
+        if (width > chunk.components.max_size())
+            throw length_error(
+                    "AtlasGsz: FTag chunk width exceeds vector capacity");
+        chunk.components.assign(width, T{});
         for (size_t k = 0; k < count; k++)
-            chunk.at(k) = batch.local_source_shares.at(offset + k);
+            chunk.components.at(k) =
+                    batch.local_source_shares.at(offset + k);
         chunks.push_back(chunk);
     }
+    assert(chunks.size() == chunk_count);
     return chunks;
 }
 
@@ -802,16 +994,28 @@ void AtlasGsz<T>::fail_optimistic_authentication(
 template<class T>
 bool AtlasGsz<T>::compute_and_deliver_batch_tags(
         DealerSourceBatchRecord& batch,
-        const vector<vector<T>>& source_chunks,
+        const vector<BaseFieldFTagSourceChunk>& source_chunks,
         bool check_mask)
 {
     auto& state = optimistic_authentication_state;
     const int degree_2t = 2 * ShamirMachine::s().threshold;
-    const size_t width = OptimisticAuthenticationState::batch_width;
+    const size_t width = base_field_ftag_chunk_width();
     if (not state.keys_checked || source_chunks.empty())
         return false;
-    for (const auto& chunk : source_chunks)
-        if (chunk.size() != width)
+    for (size_t chunk_index = 0;
+            chunk_index < source_chunks.size(); chunk_index++)
+    {
+        const auto& chunk = source_chunks.at(chunk_index);
+        if (chunk.chunk_ordinal != chunk_index
+                || chunk.components.size() != width
+                || chunk.original_source_count == 0
+                || chunk.original_source_count > width)
+            return false;
+    }
+    for (const auto& key : state.keys)
+        if ((key.owns_clear_mu && key.clear_mu.size() != width)
+                || (key.has_local_twisted_share
+                        && key.local_twisted_share.size() != width))
             return false;
 
     struct LocalTagMaterial
@@ -821,8 +1025,26 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
         bool has_nu_share = false;
         bool has_zero_share = false;
     };
-    const size_t n_instances = state.keys.size() * source_chunks.size();
-    vector<LocalTagMaterial> local_material(n_instances);
+    const size_t n_instances = checked_size_product(
+            state.keys.size(), source_chunks.size(),
+            "AtlasGsz: FTag key/chunk record count overflow");
+    vector<LocalTagMaterial> local_material;
+    if (n_instances > local_material.max_size())
+        throw length_error(
+                "AtlasGsz: transient FTag material count exceeds vector capacity");
+    local_material.resize(n_instances);
+    const size_t expected_nu_records = checked_size_sum(
+            state.nu_material.size(), n_instances,
+            "AtlasGsz: FTag nu record count overflow");
+    const size_t expected_tag_records = checked_size_sum(
+            state.holder_tags.size(), n_instances,
+            "AtlasGsz: FTag holder-tag record count overflow");
+    if (expected_nu_records > state.nu_material.max_size()
+            || expected_tag_records > state.holder_tags.max_size())
+        throw length_error(
+                "AtlasGsz: FTag record count exceeds vector capacity");
+    state.nu_material.reserve(expected_nu_records);
+    state.holder_tags.reserve(expected_tag_records);
     vector<octetStream> outgoing(P.num_players());
 
     for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
@@ -831,8 +1053,11 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
         assert(key.checked);
         for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
         {
-            const size_t index =
-                    key_index * source_chunks.size() + chunk;
+            const size_t index = checked_size_sum(
+                    checked_size_product(key_index,
+                            source_chunks.size(),
+                            "AtlasGsz: FTag record index overflow"),
+                    chunk, "AtlasGsz: FTag record index overflow");
             assert(find_batch_nu_material(batch.batch_id, chunk,
                     check_mask, key.verifier, key.holder) == 0);
             assert(find_holder_tag(batch.batch_id, chunk,
@@ -849,21 +1074,8 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
 
             if (nu_record.owns_nu)
             {
-                bool reused;
-                do
-                {
-                    reused = false;
-                    nu_record.nu.randomize(
-                            optimistic_authentication_prng);
-                    for (const auto& existing : state.nu_material)
-                        if (existing.owns_nu
-                                && existing.verifier == key.verifier
-                                && existing.holder == key.holder
-                                && existing.key_epoch == state.key_epoch
-                                && existing.nu == nu_record.nu)
-                            reused = true;
-                }
-                while (reused);
+                nu_record.nu.randomize(
+                        optimistic_authentication_prng);
 
                 auto nu_sharing = make_twisted_sharing(
                         nu_record.nu, degree_2t, key.holder);
@@ -908,6 +1120,8 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
             }
         }
     }
+    assert(state.nu_material.size() == expected_nu_records);
+    assert(state.holder_tags.size() == expected_tag_records);
 
     vector<octetStream> incoming;
     P.send_receive_all(outgoing, incoming);
@@ -916,8 +1130,11 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
         const auto& key = state.keys.at(key_index);
         for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
         {
-            const size_t index =
-                    key_index * source_chunks.size() + chunk;
+            const size_t index = checked_size_sum(
+                    checked_size_product(key_index,
+                            source_chunks.size(),
+                            "AtlasGsz: FTag record index overflow"),
+                    chunk, "AtlasGsz: FTag record index overflow");
             if (P.my_num() == key.holder)
                 continue;
             if (P.my_num() != key.verifier)
@@ -947,8 +1164,11 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
         assert(key.has_local_twisted_share);
         for (size_t chunk = 0; chunk < source_chunks.size(); chunk++)
         {
-            const size_t index =
-                    key_index * source_chunks.size() + chunk;
+            const size_t index = checked_size_sum(
+                    checked_size_product(key_index,
+                            source_chunks.size(),
+                            "AtlasGsz: FTag record index overflow"),
+                    chunk, "AtlasGsz: FTag record index overflow");
             assert(local_material.at(index).has_nu_share);
             assert(local_material.at(index).has_zero_share);
             typename T::open_type tag_share =
@@ -957,7 +1177,7 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
             for (size_t k = 0; k < width; k++)
             {
                 typename T::open_type source_share =
-                        source_chunks.at(chunk).at(k);
+                        source_chunks.at(chunk).components.at(k);
                 tag_share += key.local_twisted_share.at(k)
                         * source_share;
             }
@@ -995,14 +1215,23 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
 template<class T>
 bool AtlasGsz<T>::check_batch_tags(
         DealerSourceBatchRecord& batch,
-        const vector<vector<T>>& source_chunks,
+        const vector<BaseFieldFTagSourceChunk>& source_chunks,
         const vector<T>& check_mask_shares,
         bool inject_bad_presentation)
 {
     auto& state = optimistic_authentication_state;
-    const size_t width = OptimisticAuthenticationState::batch_width;
+    const size_t width = base_field_ftag_chunk_width();
     assert(check_mask_shares.size() == width);
     assert(not source_chunks.empty());
+    for (size_t chunk_index = 0;
+            chunk_index < source_chunks.size(); chunk_index++)
+    {
+        const auto& chunk = source_chunks.at(chunk_index);
+        assert(chunk.chunk_ordinal == chunk_index);
+        assert(chunk.components.size() == width);
+        assert(chunk.original_source_count > 0);
+        assert(chunk.original_source_count <= width);
+    }
 
     // Per-dealer restricted Check-Tag vertical slice: the challenge is sampled
     // only after this dealer's base-sharing tags exist. The base sharing
@@ -1014,7 +1243,9 @@ bool AtlasGsz<T>::check_batch_tags(
     for (const auto& key : state.keys)
         if (P.my_num() == key.holder)
         {
+            assert(key.has_local_twisted_share == false);
             vector<typename T::open_type> sigma(width);
+            assert(sigma.size() == width);
             for (size_t k = 0; k < width; k++)
                 sigma.at(k) = check_mask_shares.at(k);
 
@@ -1029,7 +1260,7 @@ bool AtlasGsz<T>::check_batch_tags(
                 for (size_t k = 0; k < width; k++)
                 {
                     typename T::open_type source_share =
-                            source_chunks.at(chunk).at(k);
+                            source_chunks.at(chunk).components.at(k);
                     sigma.at(k) += power * source_share;
                 }
                 const auto* tag = find_holder_tag(
@@ -1058,7 +1289,9 @@ bool AtlasGsz<T>::check_batch_tags(
         if (P.my_num() != key.verifier)
             continue;
         assert(key.owns_clear_mu);
+        assert(key.clear_mu.size() == width);
         vector<typename T::open_type> sigma(width);
+        assert(sigma.size() == width);
         for (auto& component : sigma)
             component.unpack(received_presentations.at(key.holder));
         typename T::open_type presented_tag;
@@ -1153,9 +1386,11 @@ bool AtlasGsz<T>::authenticate_dealer_source_batch(
     }
 
     auto source_chunks = source_chunks_for_batch(*batch);
-    batch->authentication_instances = source_chunks.size();
-    optimistic_authentication_state.total_authentication_instances +=
-            source_chunks.size();
+    batch->ftag_chunk_count = source_chunks.size();
+    optimistic_authentication_state.total_ftag_chunks = checked_size_sum(
+            optimistic_authentication_state.total_ftag_chunks,
+            source_chunks.size(),
+            "AtlasGsz: total FTag chunk count overflow");
 
     size_t communication_before = P.total_comm().sent;
     if (not compute_and_deliver_batch_tags(
@@ -1174,7 +1409,17 @@ bool AtlasGsz<T>::authenticate_dealer_source_batch(
         return false;
 
     communication_before = P.total_comm().sent;
-    vector<vector<T>> check_mask_chunks(1, check_mask_shares);
+    const size_t width = base_field_ftag_chunk_width();
+    if (check_mask_shares.size() != width)
+        throw logic_error(
+                "AtlasGsz: BaseSharing does not have the configured base-field FTag chunk width");
+    BaseFieldFTagSourceChunk check_mask_chunk{};
+    check_mask_chunk.chunk_ordinal = 0;
+    check_mask_chunk.original_source_offset = 0;
+    check_mask_chunk.original_source_count = width;
+    check_mask_chunk.components = check_mask_shares;
+    vector<BaseFieldFTagSourceChunk> check_mask_chunks(
+            1, check_mask_chunk);
     if (not compute_and_deliver_batch_tags(
             *batch, check_mask_chunks, true))
     {
@@ -1193,15 +1438,28 @@ bool AtlasGsz<T>::authenticate_dealer_source_batch(
             P.total_comm().sent - communication_before;
 
     batch->authenticated_handles.clear();
+    if (batch->source_ordinals.size()
+            != batch->local_source_shares.size())
+        throw logic_error(
+                "AtlasGsz: dealer source ordinals and local shares have different dimensions");
+    if (batch->source_ordinals.size()
+            > batch->authenticated_handles.max_size())
+        throw length_error(
+                "AtlasGsz: authenticated handle count exceeds vector capacity");
     batch->authenticated_handles.reserve(batch->source_ordinals.size());
     for (auto ordinal : batch->source_ordinals)
     {
+        if (ordinal >= batch->local_source_shares.size())
+            throw logic_error(
+                    "AtlasGsz: source ordinal refers to structural FTag padding");
         AuthenticatedSourceHandle handle{};
         handle.batch_id = batch->batch_id;
         handle.dealer = batch->dealer;
         handle.source_ordinal = ordinal;
         batch->authenticated_handles.push_back(handle);
     }
+    assert(batch->authenticated_handles.size()
+            == batch->local_source_shares.size());
     batch->authentication_state =
             DealerBatchAuthenticationState::authenticated;
     batch->failure_class =
@@ -1272,13 +1530,55 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
     state.test_hook_ran = true;
     assert(P.num_players() >= 3);
     assert(ShamirMachine::s().threshold * 2 < P.num_players());
+    const size_t width = base_field_ftag_chunk_width();
+    const size_t first_original_source_count = 9;
+    const size_t second_original_source_count = 6;
+    const size_t expected_first_ftag_chunks =
+            base_field_ftag_chunk_count(first_original_source_count);
+    const size_t expected_second_ftag_chunks =
+            base_field_ftag_chunk_count(second_original_source_count);
+    const size_t expected_total_ftag_chunks = checked_size_sum(
+            expected_first_ftag_chunks, expected_second_ftag_chunks,
+            "AtlasGsz test: total FTag chunk count overflow");
+
+    auto validate_source_chunks = [&](const DealerSourceBatchRecord& batch,
+            size_t expected_original_source_count,
+            size_t expected_chunk_count)
+    {
+        assert(batch.source_ordinals.size()
+                == batch.local_source_shares.size());
+        assert(batch.local_source_shares.size()
+                == expected_original_source_count);
+        auto chunks = source_chunks_for_batch(batch);
+        assert(chunks.size() == expected_chunk_count);
+        for (size_t ordinal = 0; ordinal < chunks.size(); ordinal++)
+        {
+            const auto& chunk = chunks.at(ordinal);
+            const size_t expected_offset = checked_size_product(
+                    ordinal, width,
+                    "AtlasGsz test: source-chunk offset overflow");
+            const size_t expected_count = min(width,
+                    expected_original_source_count - expected_offset);
+            assert(chunk.chunk_ordinal == ordinal);
+            assert(chunk.original_source_offset == expected_offset);
+            assert(chunk.original_source_count == expected_count);
+            assert(chunk.components.size() == width);
+            for (size_t k = 0; k < expected_count; k++)
+                assert(chunk.components.at(k)
+                        == batch.local_source_shares.at(
+                                expected_offset + k));
+            for (size_t k = expected_count; k < width; k++)
+                assert(chunk.components.at(k) == T{});
+        }
+    };
 
     vector<typename T::open_type> first_values;
     if (P.my_num() == 0)
-        for (int i = 0; i < 9; i++)
-            first_values.push_back(typename T::open_type(100 + i));
+        for (size_t i = 0; i < first_original_source_count; i++)
+            first_values.push_back(
+                    typename T::open_type(100 + int(i)));
     auto first_local_shares = deal_optimistic_source_values(
-            0, first_values, 9);
+            0, first_values, first_original_source_count);
     uint64_t first_batch_id = register_dealer_source_batch(
             0, first_local_shares);
 
@@ -1332,9 +1632,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         assert(state.failed_batch_id == first_batch_id);
         assert(state.failed_verifier == -1);
         assert(state.failed_holder == -1);
-        assert(first_batch->authentication_instances == 0);
+        assert(first_batch->ftag_chunk_count == 0);
         assert(not state.keys_established);
         assert(not state.keys_checked);
+        assert(not state.base_field_ftag_chunk_width_agreed);
+        assert(state.base_field_ftag_chunk_width_agreement_communication == 0);
         assert(state.keys.empty());
         assert(state.key_establishment_runs == 0);
         assert(state.key_establishment_communication == 0);
@@ -1346,7 +1648,7 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         assert(state.base_sharing_communication == 0);
         assert(state.nu_material.empty());
         assert(state.holder_tags.empty());
-        assert(state.total_authentication_instances == 0);
+        assert(state.total_ftag_chunks == 0);
         assert(state.tag_generation_communication == 0);
         assert(state.tag_checking_communication == 0);
         assert(dispute_control_state.corr.empty());
@@ -1355,7 +1657,16 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         if (P.my_num() == 0)
             cout << "ATLAS_GSZ_AUTH_TEST verify-failure PASS "
                  << "status=RecoveryNotImplemented handles=0 sealed=0 "
-                 << "promoted=0 key_runs=0 tag_instances=0" << endl;
+                 << "promoted=0 checker=per-dealer-restricted "
+                 << "base_field_ftag_chunk_width=" << width
+                 << " first_original_source_count="
+                 << first_original_source_count
+                 << " first_ftag_chunks=0 total_ftag_chunks=0 "
+                 << "width_agreement_comm=0 key_runs=0 key_comm=0 "
+                 << "verify_sharing_comm="
+                 << state.verify_sharing_communication
+                 << " base_sharing_comm=0 tag_comm=0 "
+                 << "restricted_check_comm=0" << endl;
         return false;
     }
 
@@ -1365,18 +1676,30 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
     assert(first_batch->verify_sharing_failure_published_shares.empty());
     assert(state.verify_sharing_communication > 0);
     assert(state.keys_established && state.keys_checked);
+    assert(state.base_field_ftag_chunk_width_agreed);
+    assert(state.base_field_ftag_chunk_width_agreement_communication > 0);
     assert(state.key_epoch == 1);
     assert(state.key_establishment_runs == 1);
     assert(state.check_key_masking_equation_checks
             == size_t(P.num_players() - 1));
+    for (const auto& key : state.keys)
+    {
+        assert(not key.owns_clear_mu || key.clear_mu.size() == width);
+        assert(not key.has_local_twisted_share
+                || key.local_twisted_share.size() == width);
+    }
     const size_t key_communication = state.key_establishment_communication;
     assert(key_communication > 0);
 
     if (base_failure_mode)
     {
         assert(not first_authenticated);
-        assert(first_batch->authentication_instances == 3);
-        assert(state.total_authentication_instances == 3);
+        assert(first_batch->ftag_chunk_count
+                == expected_first_ftag_chunks);
+        assert(state.total_ftag_chunks == expected_first_ftag_chunks);
+        validate_source_chunks(*first_batch,
+                first_original_source_count,
+                expected_first_ftag_chunks);
         assert(state.tag_generation_communication > 0);
 
         size_t ordinary_nu_records = 0;
@@ -1393,8 +1716,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             assert(not tag.check_mask);
             ordinary_tag_records++;
         }
-        assert(ordinary_nu_records == state.keys.size() * 3);
-        assert(ordinary_tag_records == state.keys.size() * 3);
+        const size_t expected_ordinary_records = checked_size_product(
+                state.keys.size(), expected_first_ftag_chunks,
+                "AtlasGsz test: ordinary FTag record count overflow");
+        assert(ordinary_nu_records == expected_ordinary_records);
+        assert(ordinary_tag_records == expected_ordinary_records);
 
         assert(first_batch->base_sharing_check_completed);
         assert(not first_batch->base_sharing_check_passed);
@@ -1426,7 +1752,22 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             cout << "ATLAS_GSZ_AUTH_TEST base-failure PASS "
                  << "status=RecoveryNotImplemented handles=0 sealed=0 "
                  << "promoted=0 checker=per-dealer-restricted "
-                 << "base_sharing=checked-rejected" << endl;
+                 << "base_sharing=checked-rejected "
+                 << "base_field_ftag_chunk_width=" << width
+                 << " first_original_source_count="
+                 << first_original_source_count
+                 << " first_ftag_chunks="
+                 << expected_first_ftag_chunks
+                 << " total_ftag_chunks=" << state.total_ftag_chunks
+                 << " width_agreement_comm="
+                 << state.base_field_ftag_chunk_width_agreement_communication
+                 << " key_comm=" << state.key_establishment_communication
+                 << " verify_sharing_comm="
+                 << state.verify_sharing_communication
+                 << " base_sharing_comm="
+                 << state.base_sharing_communication
+                 << " tag_comm=" << state.tag_generation_communication
+                 << " restricted_check_comm=0" << endl;
         return false;
     }
 
@@ -1439,6 +1780,12 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
     if (failure_mode)
     {
         assert(not first_authenticated);
+        assert(first_batch->ftag_chunk_count
+                == expected_first_ftag_chunks);
+        assert(state.total_ftag_chunks == expected_first_ftag_chunks);
+        validate_source_chunks(*first_batch,
+                first_original_source_count,
+                expected_first_ftag_chunks);
         assert(first_batch->authentication_state
                 == DealerBatchAuthenticationState::rejected);
         assert(first_batch->authenticated_handles.empty());
@@ -1452,13 +1799,52 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                 == OptimisticAuthenticationFailureClass::tag_check);
         assert(state.failed_verifier == 0);
         assert(state.failed_holder == 1);
+        const size_t expected_ordinary_records = checked_size_product(
+                state.keys.size(), expected_first_ftag_chunks,
+                "AtlasGsz test: ordinary FTag record count overflow");
+        const size_t expected_mask_records = state.keys.size();
+        size_t ordinary_nu_records = 0;
+        size_t ordinary_tag_records = 0;
+        size_t mask_nu_records = 0;
+        size_t mask_tag_records = 0;
+        for (const auto& material : state.nu_material)
+            if (material.check_mask)
+                mask_nu_records++;
+            else
+                ordinary_nu_records++;
+        for (const auto& tag : state.holder_tags)
+            if (tag.check_mask)
+                mask_tag_records++;
+            else
+                ordinary_tag_records++;
+        assert(ordinary_nu_records == expected_ordinary_records);
+        assert(ordinary_tag_records == expected_ordinary_records);
+        assert(mask_nu_records == expected_mask_records);
+        assert(mask_tag_records == expected_mask_records);
+        assert(state.tag_checking_communication > 0);
         assert(dispute_control_state.corr.empty());
         assert(dispute_control_state.disp.empty());
         assert(pending_analyze_sharing_state.requests.empty());
         if (P.my_num() == 0)
             cout << "ATLAS_GSZ_AUTH_TEST failure PASS "
                  << "status=RecoveryNotImplemented handles=0 sealed=0 "
-                 << "promoted=0 checker=per-dealer-restricted"
+                 << "promoted=0 checker=per-dealer-restricted "
+                 << "base_field_ftag_chunk_width=" << width
+                 << " first_original_source_count="
+                 << first_original_source_count
+                 << " first_ftag_chunks="
+                 << expected_first_ftag_chunks
+                 << " total_ftag_chunks=" << state.total_ftag_chunks
+                 << " width_agreement_comm="
+                 << state.base_field_ftag_chunk_width_agreement_communication
+                 << " key_comm=" << state.key_establishment_communication
+                 << " verify_sharing_comm="
+                 << state.verify_sharing_communication
+                 << " base_sharing_comm="
+                 << state.base_sharing_communication
+                 << " tag_comm=" << state.tag_generation_communication
+                 << " restricted_check_comm="
+                 << state.tag_checking_communication
                  << endl;
         return false;
     }
@@ -1468,7 +1854,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             == DealerBatchAuthenticationState::authenticated);
     assert(first_batch->authenticated_handles.size()
             == first_local_shares.size());
-    assert(first_batch->authentication_instances == 3);
+    assert(first_batch->ftag_chunk_count
+            == expected_first_ftag_chunks);
+    validate_source_chunks(*first_batch,
+            first_original_source_count,
+            expected_first_ftag_chunks);
     assert(promote_optimistic_checkpoint(first_checkpoint_id));
     assert(state.checkpoints.at(0).sealed);
     assert(state.checkpoints.at(0).promoted);
@@ -1488,10 +1878,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
 
     vector<typename T::open_type> second_values;
     if (P.my_num() == 1)
-        for (int i = 0; i < 6; i++)
-            second_values.push_back(typename T::open_type(200 + i));
+        for (size_t i = 0; i < second_original_source_count; i++)
+            second_values.push_back(
+                    typename T::open_type(200 + int(i)));
     auto second_local_shares = deal_optimistic_source_values(
-            1, second_values, 6);
+            1, second_values, second_original_source_count);
     uint64_t second_batch_id = register_dealer_source_batch(
             1, second_local_shares);
 
@@ -1521,12 +1912,56 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
     assert(second_batch->base_sharing_check_passed);
     assert(not second_batch->has_base_sharing_failure_evidence);
     assert(second_batch->base_sharing_failure_published_shares.empty());
-    assert(second_batch->authentication_instances == 2);
+    assert(second_batch->ftag_chunk_count
+            == expected_second_ftag_chunks);
+    validate_source_chunks(*second_batch,
+            second_original_source_count,
+            expected_second_ftag_chunks);
     assert(second_batch->authenticated_handles.size()
             == second_local_shares.size());
     assert(promote_optimistic_checkpoint(second_checkpoint_id));
     assert(state.checkpoints.at(1).sealed);
     assert(state.checkpoints.at(1).promoted);
+
+    auto validate_nu_records = [&](uint64_t batch_id,
+            size_t chunk_count, bool check_mask)
+    {
+        for (const auto& key : state.keys)
+            for (size_t chunk_ordinal = 0;
+                    chunk_ordinal < chunk_count; chunk_ordinal++)
+            {
+                const auto* material = find_batch_nu_material(
+                        batch_id, chunk_ordinal, check_mask,
+                        key.verifier, key.holder);
+                assert(material != 0);
+                assert(material->batch_id == batch_id);
+                assert(material->chunk_ordinal == chunk_ordinal);
+                assert(material->verifier == key.verifier);
+                assert(material->holder == key.holder);
+                assert(material->check_mask == check_mask);
+                assert(material->key_epoch == state.key_epoch);
+                assert(material->owns_nu
+                        == (P.my_num() == key.verifier));
+            }
+    };
+    validate_nu_records(first_batch_id,
+            expected_first_ftag_chunks, false);
+    validate_nu_records(second_batch_id,
+            expected_second_ftag_chunks, false);
+    validate_nu_records(first_batch_id, 1, true);
+    validate_nu_records(second_batch_id, 1, true);
+    for (size_t left = 0; left < state.nu_material.size(); left++)
+        for (size_t right = left + 1;
+                right < state.nu_material.size(); right++)
+        {
+            const auto& left_nu = state.nu_material.at(left);
+            const auto& right_nu = state.nu_material.at(right);
+            assert(left_nu.batch_id != right_nu.batch_id
+                    || left_nu.chunk_ordinal != right_nu.chunk_ordinal
+                    || left_nu.check_mask != right_nu.check_mask
+                    || left_nu.verifier != right_nu.verifier
+                    || left_nu.holder != right_nu.holder);
+        }
 
     if (P.my_num() == 0)
     {
@@ -1541,7 +1976,15 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         assert(first_nu != 0 && first_nu->owns_nu);
         assert(second_nu != 0 && second_nu->owns_nu);
         assert(first_nu->key_epoch == second_nu->key_epoch);
-        assert(first_nu->nu != second_nu->nu);
+        assert(first_nu != second_nu);
+        assert(first_nu->batch_id == first_batch_id);
+        assert(second_nu->batch_id == second_batch_id);
+        assert(first_nu->chunk_ordinal == 0);
+        assert(second_nu->chunk_ordinal == 0);
+        assert(not first_nu->check_mask);
+        assert(not second_nu->check_mask);
+        assert(first_nu->verifier == 0 && first_nu->holder == 1);
+        assert(second_nu->verifier == 0 && second_nu->holder == 1);
     }
 
     size_t base_nu_records = 0;
@@ -1565,19 +2008,42 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             assert(batch->base_sharing_check_passed);
             base_tag_records++;
         }
-    assert(base_nu_records == state.keys.size() * 2);
-    assert(base_tag_records == state.keys.size() * 2);
+    const size_t expected_base_records = checked_size_product(
+            state.keys.size(), size_t(2),
+            "AtlasGsz test: BaseSharing FTag record count overflow");
+    assert(base_nu_records == expected_base_records);
+    assert(base_tag_records == expected_base_records);
 
-    assert(state.total_authentication_instances == 5);
+    size_t ordinary_nu_records = 0;
+    size_t ordinary_tag_records = 0;
+    for (const auto& material : state.nu_material)
+        if (not material.check_mask)
+            ordinary_nu_records++;
+    for (const auto& tag : state.holder_tags)
+        if (not tag.check_mask)
+            ordinary_tag_records++;
+    const size_t expected_ordinary_records = checked_size_product(
+            state.keys.size(), expected_total_ftag_chunks,
+            "AtlasGsz test: ordinary FTag record count overflow");
+    assert(ordinary_nu_records == expected_ordinary_records);
+    assert(ordinary_tag_records == expected_ordinary_records);
+
+    assert(state.total_ftag_chunks == expected_total_ftag_chunks);
     assert(state.dealer_batches.size() == 2);
     for (const auto& batch : state.dealer_batches)
     {
         assert(batch.authenticated_handles.size()
                 == batch.local_source_shares.size());
-        for (const auto& handle : batch.authenticated_handles)
+        for (size_t handle_index = 0;
+                handle_index < batch.authenticated_handles.size();
+                handle_index++)
         {
+            const auto& handle =
+                    batch.authenticated_handles.at(handle_index);
             assert(handle.batch_id == batch.batch_id);
             assert(handle.dealer == batch.dealer);
+            assert(handle.source_ordinal
+                    == batch.source_ordinals.at(handle_index));
             assert(handle.source_ordinal
                     < batch.local_source_shares.size());
         }
@@ -1589,10 +2055,29 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
     assert(state.checkpoints.size() == 2);
     assert(state.checkpoints.at(0).promoted);
     assert(state.checkpoints.at(1).promoted);
+    for (const auto& checkpoint : state.checkpoints)
+        for (const auto& derivation : checkpoint.output_derivations)
+            for (const auto& term : derivation.terms)
+            {
+                const auto* source_batch = find_dealer_source_batch(
+                        term.handle.batch_id);
+                assert(source_batch != 0);
+                assert(term.handle.source_ordinal
+                        < source_batch->local_source_shares.size());
+            }
     if (P.my_num() == 0)
         cout << "ATLAS_GSZ_AUTH_TEST honest PASS batches=2 "
-             << "width=" << OptimisticAuthenticationState::batch_width
-             << " instances=5 key_epoch=1 key_runs=1 key_comm="
+             << "base_field_ftag_chunk_width=" << width
+             << " first_original_source_count="
+             << first_original_source_count
+             << " second_original_source_count="
+             << second_original_source_count
+             << " first_ftag_chunks=" << expected_first_ftag_chunks
+             << " second_ftag_chunks=" << expected_second_ftag_chunks
+             << " total_ftag_chunks=" << expected_total_ftag_chunks
+             << " width_agreement_comm="
+             << state.base_field_ftag_chunk_width_agreement_communication
+             << " key_epoch=1 key_runs=1 key_comm="
              << state.key_establishment_communication
              << " check_key_equations="
              << state.check_key_masking_equation_checks

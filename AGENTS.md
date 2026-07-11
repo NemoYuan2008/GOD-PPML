@@ -137,12 +137,16 @@ vertical slice**, exercised through a focused runtime hook. The slice includes:
 - authoritative ordered dealer-source batches;
 - restricted `e = 1` dealer Verify-Sharing over each exact unpadded source
   batch, executed before key and tag work;
-- restricted `e = 1` consistency checking for each transient `B = 4`
+- restricted `e = 1` consistency checking for each transient `B`-component
   BaseSharing before any `check_mask=true` tag material is generated;
-- a fixed test authentication width of `B = 4`;
+- a configurable, session-immutable base-field FTag chunk width `B`, defaulting
+  to `4` and focused-overridable with `ATLAS_GSZ_FTAG_CHUNK_WIDTH`; this is not
+  extension-field packing;
 - one reusable verifier-holder `mu` key epoch;
 - restricted `e = 1` Check-Key with a fresh uniform twisted mask `rho`;
-- fresh `nu` material for each batch/chunk/verifier/holder relation;
+- a newly and independently uniformly sampled `nu` for each
+  batch/chunk/verifier/holder relation; accidental equality between
+  independently sampled field elements is allowed and is not reuse;
 - real twisted-sharing MPC tag computation;
 - holder-only tag reconstruction;
 - per-dealer restricted Check-Tag presentation and checking;
@@ -156,11 +160,10 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. configurable production authentication batch width;
-2. global Check-Tag aggregation across all dealers and batches;
-3. propagation of real source provenance through the normal PPML execution;
-4. normal segment/checkpoint scheduler integration;
-5. final production output gating through that scheduler.
+1. global Check-Tag aggregation across all dealers and batches;
+2. propagation of real source provenance through the normal PPML execution;
+3. normal segment/checkpoint scheduler integration;
+4. final production output gating through that scheduler.
 
 Legacy authentication, recovery, and Analyze-related metadata skeletons remain
 in the code. They are not authoritative production provenance. Do not build
@@ -187,7 +190,7 @@ Do not restore unconditional publication of the complete virtual transcript.
 Production state must respect protocol ownership:
 
 - verifier \(P_v\) owns clear long-term `mu_(v->i)`;
-- verifier \(P_v\) owns fresh per-batch `nu`;
+- verifier \(P_v\) owns freshly sampled per-batch/chunk `nu`;
 - holder \(P_i\) owns the reconstructed tag;
 - non-holder parties retain only the local twisted shares needed for MPC;
 - ordinary production records must not co-locate clear `mu`, clear `nu`,
@@ -202,8 +205,11 @@ private authentication material.
   same key epoch.
 - Never regenerate `mu` per wire, dealer batch, checkpoint, or segment unless
   a later, explicitly specified key-rotation rule requires it.
-- Generate fresh `nu` for every authenticated dealer-batch chunk.
-- Never reuse `nu` for a different batch.
+- Independently sample fresh `nu` for every authenticated dealer-batch chunk
+  and applicable verifier-holder relation.
+- Accidental equality between independent `nu` samples is allowed. Reuse means
+  reusing the same randomness instance or material record for another batch or
+  chunk.
 - Authentication instances must scale with batch chunks, not with
   `wire × verifier × holder`.
 - The current checker is per-dealer restricted; do not call it the complete
@@ -347,6 +353,9 @@ Focused optimistic-authentication hook:
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=5 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+
 ATLAS_GSZ_AUTH_TEST=verify-failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=verify-failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
@@ -366,11 +375,10 @@ and must not seal or promote the affected checkpoint.
 
 Unless the user changes priorities, the expected sequence is:
 
-1. configurable production authentication batch width;
-2. global all-dealer/all-batch Check-Tag aggregation;
-3. provenance capture from real segment-produced dealer sharings;
-4. normal segment verification → authentication → promotion integration;
-5. final output gating.
+1. global all-dealer/all-batch Check-Tag aggregation;
+2. provenance capture from real segment-produced dealer sharings;
+3. normal segment verification → authentication → promotion integration;
+4. final output gating.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.

@@ -23,6 +23,11 @@ template<class T>
 class AtlasGsz : public ProtocolBase<T>
 {
 private:
+    struct PreserveBaseFieldFTagChunkWidth
+    {
+    };
+
+    const uint64_t base_field_ftag_chunk_width_;
     Atlas<T> honest;
 
     CheckedIndirectShamirMC_2t<T> local_mc_2t;
@@ -430,8 +435,16 @@ private:
         typename T::open_type base_sharing_failure_challenge{};
         vector<typename T::open_type>
                 base_sharing_failure_published_shares;
-        size_t authentication_instances = 0;
+        size_t ftag_chunk_count = 0;
         vector<AuthenticatedSourceHandle> authenticated_handles;
+    };
+
+    struct BaseFieldFTagSourceChunk
+    {
+        size_t chunk_ordinal = 0;
+        size_t original_source_offset = 0;
+        size_t original_source_count = 0;
+        vector<T> components;
     };
 
     struct LongTermMuKeyRecord
@@ -499,8 +512,6 @@ private:
 
     struct OptimisticAuthenticationState
     {
-        static const size_t batch_width = 4;
-
         uint64_t key_epoch = 1;
         uint64_t next_key_id = 1;
         uint64_t next_batch_id = 1;
@@ -508,6 +519,8 @@ private:
 
         bool keys_established = false;
         bool keys_checked = false;
+        bool base_field_ftag_chunk_width_agreed = false;
+        size_t base_field_ftag_chunk_width_agreement_communication = 0;
         size_t key_establishment_runs = 0;
         size_t key_establishment_communication = 0;
         size_t check_key_masking_equation_checks = 0;
@@ -515,7 +528,7 @@ private:
         size_t base_sharing_communication = 0;
         size_t tag_generation_communication = 0;
         size_t tag_checking_communication = 0;
-        size_t total_authentication_instances = 0;
+        size_t total_ftag_chunks = 0;
         bool test_hook_ran = false;
 
         OptimisticAuthenticationStatus status =
@@ -1522,6 +1535,18 @@ private:
     typename Atlas<T>::KingPartialMultEvidence current_virtual_king_evidence;
     bool have_current_virtual_king_evidence = false;
 
+    AtlasGsz(Player& P, uint64_t base_field_ftag_chunk_width,
+            PreserveBaseFieldFTagChunkWidth);
+
+    static uint64_t parse_base_field_ftag_chunk_width();
+    size_t base_field_ftag_chunk_width() const;
+    size_t base_field_ftag_chunk_count(size_t original_source_count) const;
+    static size_t checked_size_product(
+            size_t left, size_t right, const char* description);
+    static size_t checked_size_sum(
+            size_t left, size_t right, const char* description);
+    bool agree_base_field_ftag_chunk_width();
+
     void validate_partial_mult_transcript_coverage() const;
     void validate_current_virtual_transcript() const;
     typename T::open_type sample_agreed_challenge();
@@ -1590,15 +1615,15 @@ private:
             DealerSourceBatchRecord& batch,
             vector<T>& base_sharing,
             bool inject_bad_published_share);
-    vector<vector<T>> source_chunks_for_batch(
+    vector<BaseFieldFTagSourceChunk> source_chunks_for_batch(
             const DealerSourceBatchRecord& batch) const;
     bool compute_and_deliver_batch_tags(
             DealerSourceBatchRecord& batch,
-            const vector<vector<T>>& source_chunks,
+            const vector<BaseFieldFTagSourceChunk>& source_chunks,
             bool check_mask);
     bool check_batch_tags(
             DealerSourceBatchRecord& batch,
-            const vector<vector<T>>& source_chunks,
+            const vector<BaseFieldFTagSourceChunk>& source_chunks,
             const vector<T>& check_mask_shares,
             bool inject_bad_presentation);
     bool authenticate_dealer_source_batch(
@@ -1971,7 +1996,8 @@ public:
 
     AtlasGsz branch()
     {
-        return P;
+        return AtlasGsz(P, base_field_ftag_chunk_width_,
+                PreserveBaseFieldFTagChunkWidth{});
     }
 
     int get_n_relevant_players()
