@@ -28,6 +28,10 @@ Related files may include:
 Do not add a separate protocol implementation or broadly refactor unrelated
 MP-SPDZ code unless the milestone explicitly requests it.
 
+The GSZ20 paper is located at ~/papers/GSZ20.pdf
+
+The LaTeX project (contains the technical core) of my GOD PPML paper is located at ~/papers/GOD-PPML-paper
+
 ## Source-of-truth hierarchy
 
 When implementation choices affect terminology, protocol structure, ownership,
