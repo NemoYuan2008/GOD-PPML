@@ -135,6 +135,8 @@ It also contains an opt-in, real, **per-dealer restricted optimistic FTag
 vertical slice**, exercised through a focused runtime hook. The slice includes:
 
 - authoritative ordered dealer-source batches;
+- restricted `e = 1` dealer Verify-Sharing over each exact unpadded source
+  batch, executed before key and tag work;
 - a fixed test authentication width of `B = 4`;
 - one reusable verifier-holder `mu` key epoch;
 - restricted `e = 1` Check-Key with a fresh uniform twisted mask `rho`;
@@ -152,13 +154,12 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. dealer `Verify-Sharing`;
-2. consistency verification for `BaseSharing`;
-3. configurable production authentication batch width;
-4. global Check-Tag aggregation across all dealers and all batches;
-5. propagation of real source provenance through the normal PPML execution;
-6. normal segment/checkpoint scheduler integration;
-7. final production output gating through that scheduler.
+1. consistency verification for `BaseSharing`;
+2. configurable production authentication batch width;
+3. global Check-Tag aggregation across all dealers and batches;
+4. propagation of real source provenance through the normal PPML execution;
+5. normal segment/checkpoint scheduler integration;
+6. final production output gating through that scheduler.
 
 Legacy authentication, recovery, and Analyze-related metadata skeletons remain
 in the code. They are not authoritative production provenance. Do not build
@@ -359,13 +360,12 @@ communication and state transitions rather than only inspecting metadata.
 
 Unless the user changes priorities, the expected sequence is:
 
-1. real dealer `Verify-Sharing` before tag generation;
-2. checked `BaseSharing`;
-3. configurable production batch width;
-4. global all-dealer/all-batch Check-Tag aggregation;
-5. provenance capture from real segment-produced dealer sharings;
-6. normal segment verification → authentication → promotion integration;
-7. final output gating.
+1. checked `BaseSharing`;
+2. configurable production batch width;
+3. global all-dealer/all-batch Check-Tag aggregation;
+4. provenance capture from real segment-produced dealer sharings;
+5. normal segment verification → authentication → promotion integration;
+6. final output gating.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.

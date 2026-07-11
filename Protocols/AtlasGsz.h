@@ -380,6 +380,7 @@ private:
     enum class OptimisticAuthenticationFailureClass
     {
         none,
+        verify_sharing,
         key_distribution,
         key_check,
         tag_generation,
@@ -414,6 +415,14 @@ private:
                 DealerBatchAuthenticationState::pending;
         OptimisticAuthenticationFailureClass failure_class =
                 OptimisticAuthenticationFailureClass::none;
+        bool verify_sharing_completed = false;
+        bool verify_sharing_passed = false;
+
+        // Retained only when the public compressed sharing is inconsistent.
+        bool has_verify_sharing_failure_evidence = false;
+        typename T::open_type verify_sharing_failure_challenge{};
+        vector<typename T::open_type>
+                verify_sharing_failure_published_shares;
         size_t authentication_instances = 0;
         vector<AuthenticatedSourceHandle> authenticated_handles;
     };
@@ -495,6 +504,7 @@ private:
         size_t key_establishment_runs = 0;
         size_t key_establishment_communication = 0;
         size_t check_key_masking_equation_checks = 0;
+        size_t verify_sharing_communication = 0;
         size_t tag_generation_communication = 0;
         size_t tag_checking_communication = 0;
         size_t total_authentication_instances = 0;
@@ -1560,6 +1570,9 @@ private:
     uint64_t register_dealer_source_batch(
             int dealer,
             const vector<T>& local_source_shares);
+    bool verify_dealer_source_batch(
+            DealerSourceBatchRecord& batch,
+            bool inject_bad_published_share);
     vector<vector<T>> source_chunks_for_batch(
             const DealerSourceBatchRecord& batch) const;
     bool compute_and_deliver_batch_tags(
@@ -1573,7 +1586,8 @@ private:
             bool inject_bad_presentation);
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
-            bool inject_bad_presentation = false);
+            bool inject_bad_presentation = false,
+            bool inject_bad_verify_sharing = false);
     void fail_optimistic_authentication(
             DealerSourceBatchRecord* batch,
             OptimisticAuthenticationFailureClass failure_class,
