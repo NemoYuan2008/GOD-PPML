@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 /**
@@ -531,14 +532,6 @@ private:
         size_t source_count = 0;
     };
 
-    struct TentativeDoubleRandAuthenticationReceipt
-    {
-        bool authenticated = false;
-        uint64_t authentication_invocation_id = 0;
-        vector<TentativeDoubleRandDealerBatchSummary> dealer_batches;
-        vector<TentativeDoubleRandSourceHandleMapping> source_handles;
-    };
-
     struct DealerBatchFailureEvidence
     {
         typename T::open_type challenge{};
@@ -643,6 +636,27 @@ private:
     struct LinearDerivation
     {
         vector<LinearDerivationTerm> terms;
+    };
+
+    struct TentativeDoubleRandConvertedRtDerivation
+    {
+        size_t capture_order_ordinal = 0;
+        size_t producer_record_ordinal = 0;
+        size_t producer_output_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        OrdinaryDoubleRandOperationKind operation_kind =
+                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+        LinearDerivation derivation;
+    };
+
+    struct TentativeDoubleRandAuthenticationReceipt
+    {
+        bool authenticated = false;
+        uint64_t authentication_invocation_id = 0;
+        vector<TentativeDoubleRandDealerBatchSummary> dealer_batches;
+        vector<TentativeDoubleRandSourceHandleMapping> source_handles;
+        vector<TentativeDoubleRandConvertedRtDerivation>
+                converted_r_t_derivations;
     };
 
     struct OptimisticCheckpointRecord

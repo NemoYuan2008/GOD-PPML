@@ -122,6 +122,10 @@ Implemented:
   per dealer and a single `next_batch_id` advance for the complete set;
 - a value receipt containing only public numeric batch summaries and the exact
   canonical temporary-source-reference-to-authenticated-handle mapping;
+- in-adapter conversion of every captured degree-`t` `r_t` derivation into an
+  ordered handle-based `LinearDerivation`, returned by value in that receipt
+  only after exact authoritative-handle validation and local evaluation against
+  the captured consumed share;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -132,10 +136,10 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- conversion of tentative `r_t` derivations to handle-based
-  `LinearDerivation` values or any checkpoint from this adapter;
 - king-generated `e_t` capture and complete multiplication/dot-product,
   input, truncation, or preprocessing provenance;
+- `z_t = e_t - r_t`, complete operation-output/checkpoint derivations, or any
+  checkpoint from this adapter;
 - final output gating;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
@@ -146,8 +150,11 @@ promotion. Tentative capture by itself creates no dealer batch or batch ID,
 authentication invocation, authenticated handle, FTag chunk, checkpoint, or
 scheduler state. The opt-in adapter consumes a finalized candidate, registers
 the complete real-dealer batch set, and passes all batch IDs to the existing
-source-only global path exactly once. It does not convert the tentative
-derivations to `LinearDerivation` and does not create a checkpoint.
+source-only global path exactly once. While its stack-local claimed candidate
+is still alive, it converts the tentative degree-`t` `r_t` derivations to
+`LinearDerivation` values over the exact committed handles and returns them in
+the value receipt. It does not create a checkpoint or persistent derivation
+registry.
 
 The adapter first rejects active capture or absence of a finalized candidate
 without mutation. Malformed finalized input is explicitly discarded before ID

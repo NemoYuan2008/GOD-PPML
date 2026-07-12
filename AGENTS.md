@@ -207,6 +207,16 @@ authenticated handle, in producer/group/dealer order, plus an ascending-dealer
 `(dealer, batch_id, source_count)` summary. The receipt contains public numeric
 identities only and is not a persistent mapping registry.
 
+While the adapter's stack-local claimed candidate is still alive, it also
+converts every captured degree-`t` `r_t` derivation into an ordered
+`LinearDerivation` over the exact committed handles. The complete result shape,
+coefficients, and numeric term-to-receipt indices are allocated and validated
+before candidate claim or authentication. Handles are assigned only after the
+existing source-only authentication commits, followed by direct authoritative
+batch validation and a local equality check against the captured `actual_r_t`.
+The converted values are returned by value in the adapter receipt; there is no
+persistent derivation or checkpoint registry.
+
 The capture alone still creates no dealer batch or batch ID, authenticated
 source handle, FTag chunk, authentication invocation, checkpoint, or scheduler
 state. Only the opt-in adapter consumes the finalized candidate and enters the
@@ -220,10 +230,10 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. conversion of tentative `r_t` derivations to handle-based
-   `LinearDerivation` values and any checkpoint;
-2. king-generated `e_t` source capture and complete operation/segment source
+1. king-generated `e_t` source capture and complete operation/segment source
    collection;
+2. construction of `z_t = e_t - r_t`, complete output/checkpoint
+   derivations, and checkpoint creation from the authenticated sources;
 3. normal segment/checkpoint scheduler integration;
 4. final production output gating through that scheduler.
 
@@ -520,17 +530,18 @@ always uses the sampled zero-permitted challenge without an override.
 
 ## Near-term honest-path milestones
 
-Unless the user changes priorities, the expected sequence is:
+The focused conversion of captured tentative `r_t` derivations to exact
+handle-based `LinearDerivation` values is implemented inside the one-shot
+adapter. Unless the user changes priorities, the expected next sequence is:
 
-1. convert the captured tentative `r_t` derivations to exact handle-based
-   `LinearDerivation` values using the adapter receipt;
-2. separately capture king-generated `e_t` sources and merge them into the
+1. separately capture king-generated `e_t` sources and merge them into the
    king's single real-dealer source sequence;
-3. form complete segment source collections and checkpoint derivations, then
+2. form complete segment source collections and checkpoint derivations, then
    integrate authentication, sealing, and promotion;
-4. integrate normal segment continuation and final output gating.
+3. integrate normal segment continuation and final output gating.
 
-The immediate next milestone is item 1 only.
+The immediate next milestone is item 1 only. It must not create a second
+logical dealer for the king.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.
