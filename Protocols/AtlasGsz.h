@@ -39,10 +39,18 @@ private:
     vector<T> z_verify;
     T z_de_linearized;
 
+    enum class OrdinaryDoubleRandOperationKind
+    {
+        scalar_multiplication,
+        dot_product,
+    };
+
     struct PartialMultTranscriptRecord
     {
         size_t offset;
         int length;
+        OrdinaryDoubleRandOperationKind operation_kind =
+                OrdinaryDoubleRandOperationKind::scalar_multiplication;
         typename Atlas<T>::PartialMultTranscript transcript;
         typename Atlas<T>::DoubleSharingProducerReference producer_reference;
         bool has_king_evidence;
@@ -51,10 +59,11 @@ private:
 
     vector<PartialMultTranscriptRecord> partial_mult_transcripts;
 
-    enum class OrdinaryDoubleRandOperationKind
+    struct TentativeConcreteEtSource
     {
-        scalar_multiplication,
-        dot_product,
+        int king = -1;
+        vector<int> special_sharing_support;
+        T local_share;
     };
 
     struct TentativeSourceGroupReference
@@ -121,6 +130,8 @@ private:
         T actual_r_2t;
         typename Atlas<T>::DoubleSharingDecomposition decomposition;
         TentativeLinearDerivation degree_t_derivation;
+        TentativeConcreteEtSource concrete_e_t_source;
+        size_t partial_mult_transcript_record_ordinal = 0;
     };
 
     struct TentativeDoubleRandCaptureCandidate
@@ -145,6 +156,8 @@ private:
         T actual_r_t;
         T actual_r_2t;
         typename Atlas<T>::DoubleSharingDecomposition decomposition;
+        TentativeConcreteEtSource concrete_e_t_source;
+        size_t partial_mult_transcript_record_ordinal = 0;
     };
 
     struct TentativeDoubleRandCaptureState
@@ -649,6 +662,19 @@ private:
         LinearDerivation derivation;
     };
 
+    struct TentativeAuthenticatedEtSource
+    {
+        size_t capture_order_ordinal = 0;
+        size_t producer_record_ordinal = 0;
+        size_t producer_output_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        OrdinaryDoubleRandOperationKind operation_kind =
+                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+        int king = -1;
+        vector<int> special_sharing_support;
+        AuthenticatedSourceHandle handle;
+    };
+
     struct TentativeDoubleRandAuthenticationReceipt
     {
         bool authenticated = false;
@@ -657,6 +683,7 @@ private:
         vector<TentativeDoubleRandSourceHandleMapping> source_handles;
         vector<TentativeDoubleRandConvertedRtDerivation>
                 converted_r_t_derivations;
+        vector<TentativeAuthenticatedEtSource> authenticated_e_t_sources;
     };
 
     struct OptimisticCheckpointRecord
@@ -1775,7 +1802,12 @@ private:
     bool begin_tentative_double_rand_capture();
     bool capture_completed_ordinary_double_rand(
             const PartialMultTranscriptRecord& record,
+            size_t record_ordinal,
             OrdinaryDoubleRandOperationKind operation_kind);
+    bool validate_tentative_concrete_e_t_source(
+            const TentativeConcreteEtSource& source,
+            size_t record_ordinal,
+            OrdinaryDoubleRandOperationKind operation_kind) const;
     bool finalize_tentative_double_rand_capture();
     const TentativeDoubleRandCaptureCandidate*
         inspect_tentative_double_rand_capture() const;

@@ -190,9 +190,10 @@ constructs the exact special sharing `[e]^T_t`: for the current optimistic
 no-dispute king 0, `T={0,...,t}` in canonical numeric order, every share
 outside `T` is zero, and the construction consumes no randomness. The
 concrete transcript retains this public support and the king retains the exact
-full distributed vector as private evidence. This does not capture or
-authenticate `e_t`, and it does not implement `Corr`/`Disp`-aware support
-selection or continued execution.
+full distributed vector as private evidence. The opt-in tentative adapter now
+captures and authenticates this concrete `e_t` source for ordinary scalar and
+dot operations. This does not implement `Corr`/`Disp`-aware support selection
+or continued execution.
 
 AtlasGsz also contains an opt-in tentative DoubleRand source-capture vertical
 slice for completed ordinary scalar multiplication and ordinary dot-product
@@ -201,8 +202,11 @@ completed-operation encounter order, rejects duplicate exact consumed outputs,
 deduplicates whole degree-`t` dealer source groups, aggregates one original
 local source share per real dealer in deterministic producer/group order, and
 forms temporary derivations over candidate-local source references for each
-consumed `r_t`. Paired degree-`2t` provenance remains validation/evidence only.
-The tentative candidate can be finalized atomically, inspected, and discarded.
+consumed `r_t`. Each consumed output also retains one narrow concrete `e_t`
+source record containing the real king, public support, and local source share,
+cross-checked against the exact retained real wrapper record and king-only
+evidence. Paired degree-`2t` provenance remains validation/evidence only. The
+tentative candidate can be finalized atomically, inspected, and discarded.
 
 The repository now also contains one opt-in, consuming adapter from that exact
 finalized candidate to the existing source-only authentication path. After a
@@ -216,6 +220,13 @@ authenticated handle, in producer/group/dealer order, plus an ascending-dealer
 `(dealer, batch_id, source_count)` summary. The receipt contains public numeric
 identities only and is not a persistent mapping registry.
 
+The DoubleRand candidate table remains equal-width with `q` sources per real
+dealer. During adapter preflight only, the real king's one prospective batch is
+extended by the captured `e_t` sources in capture order, at ordinals
+`q,...,q+m-1`; other real dealers retain exactly `q` sources. There is no
+second king batch, synthetic dealer, padding source, or second authentication
+invocation.
+
 While the adapter's stack-local claimed candidate is still alive, it also
 converts every captured degree-`t` `r_t` derivation into an ordered
 `LinearDerivation` over the exact committed handles. The complete result shape,
@@ -224,7 +235,9 @@ before candidate claim or authentication. Handles are assigned only after the
 existing source-only authentication commits, followed by direct authoritative
 batch validation and a local equality check against the captured `actual_r_t`.
 The converted values are returned by value in the adapter receipt; there is no
-persistent derivation or checkpoint registry.
+persistent derivation or checkpoint registry. The receipt also returns one
+direct authenticated king-source handle per captured operation; it does not
+wrap `e_t` in a one-term derivation.
 
 The capture alone still creates no dealer batch or batch ID, authenticated
 source handle, FTag chunk, authentication invocation, checkpoint, or scheduler
@@ -239,12 +252,10 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. king-generated `e_t` source capture/authentication and complete
-   operation/segment source collection;
-2. construction of `z_t = e_t - r_t`, complete output/checkpoint
+1. construction of `z_t = e_t - r_t`, complete output/checkpoint
    derivations, and checkpoint creation from the authenticated sources;
-3. normal segment/checkpoint scheduler integration;
-4. final production output gating through that scheduler.
+2. normal segment/checkpoint scheduler integration;
+3. final production output gating through that scheduler.
 
 A future production segment collector must merge the king's
 PartialMult-dealt degree-`t` `e_t` sources with that same real party's other
@@ -465,6 +476,10 @@ ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-malformed PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-malformed PLAYERS=5 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-e-t-malformed PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-e-t-malformed PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-verify-failure PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-verify-failure PLAYERS=5 \
@@ -539,18 +554,18 @@ always uses the sampled zero-permitted challenge without an override.
 
 ## Near-term honest-path milestones
 
-The focused conversion of captured tentative `r_t` derivations to exact
-handle-based `LinearDerivation` values is implemented inside the one-shot
-adapter. Unless the user changes priorities, the expected next sequence is:
+The focused conversion of captured tentative `r_t` derivations and direct
+authentication of exact concrete king-generated `e_t` sources are implemented
+inside the one-shot adapter. Unless the user changes priorities, the expected
+next sequence is:
 
-1. separately capture king-generated `e_t` sources and merge them into the
-   king's single real-dealer source sequence;
-2. form complete segment source collections and checkpoint derivations, then
+1. form complete segment source collections and `z_t`/checkpoint derivations,
+   then
    integrate authentication, sealing, and promotion;
-3. integrate normal segment continuation and final output gating.
+2. integrate normal segment continuation and final output gating.
 
-The immediate next milestone is item 1 only. It must not create a second
-logical dealer for the king.
+The next milestone must continue to use the king's existing real-dealer batch;
+it must not create a second logical dealer for the king.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.

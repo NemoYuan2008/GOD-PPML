@@ -112,6 +112,9 @@ Implemented:
   ordinary scalar and dot-product wrapper records, with duplicate exact-output
   rejection, whole-source-group deduplication, and deterministic per-dealer
   aggregation of original degree-`t` local source shares;
+- one exact concrete king-generated `e_t` source record per captured ordinary
+  operation, validated against the retained real wrapper transcript, canonical
+  support, operation result, and king-only full-vector evidence;
 - candidate-local temporary derivations from tentative source references to
   each consumed `r_t`, validated against the completed transcript and dealer
   contribution decomposition, while paired degree-`2t` provenance remains
@@ -129,6 +132,9 @@ Implemented:
   ordered handle-based `LinearDerivation`, returned by value in that receipt
   only after exact authoritative-handle validation and local evaluation against
   the captured consumed share;
+- one direct authenticated king-source handle per captured operation, with the
+  `e_t` suffix appended only to the king's existing real-dealer batch and no
+  one-term `e_t` derivation;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -139,8 +145,7 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- king-generated `e_t` capture/authentication and complete
-  multiplication/dot-product, input, truncation, or preprocessing provenance;
+- complete input, truncation, or preprocessing provenance;
 - `z_t = e_t - r_t`, complete operation-output/checkpoint derivations, or any
   checkpoint from this adapter;
 - final output gating;
@@ -156,8 +161,10 @@ the complete real-dealer batch set, and passes all batch IDs to the existing
 source-only global path exactly once. While its stack-local claimed candidate
 is still alive, it converts the tentative degree-`t` `r_t` derivations to
 `LinearDerivation` values over the exact committed handles and returns them in
-the value receipt. It does not create a checkpoint or persistent derivation
-registry.
+the value receipt. The finalized DoubleRand table remains `q` sources per
+dealer; the prospective king batch alone appends the `m` concrete `e_t`
+sources at ordinals `q,...,q+m-1`, and the receipt returns their direct handles.
+It does not create a checkpoint or persistent derivation registry.
 
 The adapter first rejects active capture or absence of a finalized candidate
 without mutation. Malformed finalized input is explicitly discarded before ID
@@ -216,7 +223,7 @@ the six exact special sharings, their public support and private king evidence,
 and malformed support rejection without capturing or authenticating `e_t`.
 
 The same workload drives the opt-in
-`tentative-double-rand-adapter-{honest,malformed,verify-failure,tag-failure}`
+`tentative-double-rand-adapter-{honest,malformed,e-t-malformed,verify-failure,tag-failure}`
 modes. The adapter modes exercise component integration only; they do not form
 a checkpoint, integrate a scheduler, or establish complete operation or
 segment provenance.
