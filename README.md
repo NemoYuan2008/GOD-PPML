@@ -39,8 +39,8 @@ These contain the main GS20/GOD-PPML implementation, including:
 - virtual-transcript construction;
 - optimized ultimate-tuple checking;
 - GOD control-plane and diagnostic state;
-- an opt-in real global optimistic FTag vertical slice for one checkpoint
-  authentication invocation;
+- an opt-in real global optimistic FTag vertical slice with both a source-only
+  handle-commit path and a checkpoint-coupled authentication/promotion path;
 - authenticated source handles and derivation-based checkpoint promotion.
 
 The optimistic FTag slice is currently exercised through a focused test hook.
@@ -84,16 +84,19 @@ Implemented:
 - a newly and independently uniformly sampled `nu` for each
   batch/chunk/verifier/holder relation;
 - real MPC tag computation and holder reconstruction;
-- one global Check-Tag over the exact pending dealer batches for one
-  checkpoint, using canonical ascending dealer order and
-  `position(r,k)=r*(W+1)+k`;
+- one global Check-Tag over the exact requested pending dealer batches for one
+  source-only or checkpoint-coupled invocation, using canonical ascending
+  dealer order and `position(r,k)=r*(W+1)+k`;
 - one zero-permitted shared challenge, one aggregate `B`-vector, and one
   aggregate tag scalar per holder-to-verifier relation;
 - one compact `ok`/smallest-failed-holder decision per verifier in one
   broadcast round, rather than one public Boolean per verifier-holder
   relation;
-- atomic candidate-handle validation, batch authentication, and checkpoint
-  sealing/promotion after every global equation passes;
+- atomic candidate-handle validation and batch authentication after every
+  global equation passes, independently invocable without a checkpoint;
+- the existing stronger checkpoint-coupled commit, which additionally
+  validates checkpoint derivations and atomically seals/promotes the
+  checkpoint;
 - authenticated dealer-source handles;
 - derivation-based checkpoint sealing and promotion;
 - atomic producer-neutral `Shamir::get_randoms()` provenance for original
@@ -127,12 +130,18 @@ Not yet implemented or integrated:
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
 
-The tentative candidate creates no dealer batch or batch ID, authentication
-invocation, authenticated handle, FTag chunk, checkpoint, or scheduler state.
-It is not converted to the existing handle-based `LinearDerivation` and is not
-passed to the global authentication hook. The next provenance step is a
-separately reviewed adapter/integration decision, not automatic production
-Check-Tag wiring.
+Source-only authentication is an authenticated-source-table operation, not a
+checkpoint: it creates no checkpoint record and performs no sealing or
+promotion. The tentative candidate creates no dealer batch or batch ID,
+authentication invocation, authenticated handle, FTag chunk, checkpoint, or
+scheduler state. It is not converted to the existing handle-based
+`LinearDerivation` and is not passed to either global authentication path. The
+next provenance step may be a separately reviewed adapter from the finalized
+candidate to the source-only path, not automatic production Check-Tag wiring.
+
+Authentication failures on both paths remain fail-stop at
+`RecoveryNotImplemented`: no participating batch receives handles, and no
+checkpoint is created, sealed, or promoted by the failed invocation.
 
 Therefore, this is currently an implementation of the optimistic execution
 path and supporting vertical slices, not a complete GOD implementation.

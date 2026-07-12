@@ -135,9 +135,12 @@ The repository contains working GS20/Atlas verification machinery, including
 multiplication and dot-product transcript collection, virtual-transcript
 construction, and the optimized ultimate-tuple success path.
 
-It also contains an opt-in, real, **global optimistic FTag vertical slice** for
-one checkpoint authentication round, exercised through a focused runtime hook.
-The slice includes:
+It also contains an opt-in, real, **global optimistic FTag vertical slice**,
+exercised through focused runtime hooks. The same authentication algorithm now
+has two component paths: a source-only path that atomically commits
+authenticated source handles without creating a checkpoint, and the existing
+checkpoint-coupled path that additionally validates derivations and promotes a
+checkpoint. The slice includes:
 
 - authoritative ordered dealer-source batches;
 - restricted `e = 1` dealer Verify-Sharing over each exact unpadded source
@@ -165,6 +168,8 @@ The slice includes:
   smallest rejected holder), broadcast in one decision round; the public
   payload is not a vector of verifier-holder Boolean results;
 - authenticated source handles assigned only after success;
+- an independently invocable source-only handle-commit path using
+  `checkpoint_id == 0` as the explicit no-checkpoint sentinel;
 - public linear checkpoint derivations over those handles;
 - unsealed checkpoint candidates that seal and promote only after validation;
 - fail-stop `RecoveryNotImplemented` behavior on authentication failure.
@@ -192,9 +197,9 @@ The tentative candidate can be finalized atomically, inspected, and discarded.
 
 This capture creates no dealer batch or batch ID, authenticated source handle,
 FTag chunk, authentication invocation, checkpoint, or scheduler state. It is
-not passed to the global authentication hook. A future milestone must
-separately review the adapter/integration decision before any production
-Check-Tag wiring.
+not passed to either the source-only or checkpoint-coupled authentication
+path. A future milestone may separately review an adapter from the finalized
+candidate to the source-only path before any production Check-Tag wiring.
 
 This vertical slice is not yet integrated into the normal segment scheduler.
 It must not be described as the complete GSZ20 authentication path.
@@ -202,7 +207,7 @@ It must not be described as the complete GSZ20 authentication path.
 The following honest-path items remain unimplemented:
 
 1. a separately reviewed adapter/integration decision from the finalized
-   tentative candidate to real authentication;
+   tentative candidate to the source-only authentication path;
 2. normal segment/checkpoint scheduler integration;
 3. final production output gating through that scheduler.
 
@@ -253,9 +258,10 @@ private authentication material.
   chunk.
 - Authentication instances must scale with batch chunks, not with
   `wire × verifier × holder`.
-- The current global checker covers one checkpoint authentication invocation
-  while `Corr` and `Disp` remain empty. Do not call this focused optimistic
-  vertical slice the complete GSZ20 `TAG` protocol.
+- The current global checker covers one source-batch authentication invocation,
+  either source-only or checkpoint-coupled, while `Corr` and `Disp` remain
+  empty. Do not call this focused optimistic vertical slice the complete GSZ20
+  `TAG` protocol.
 - For `m` dealers and `W=max_r w_r`, the global polynomial identity has
   maximum degree at most `m * (W + 1) - 1`. Concrete soundness depends on
   `p=2^61-1` and union bounds over all verifier-holder relations and
@@ -415,6 +421,19 @@ ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=5 \
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
+ATLAS_GSZ_AUTH_TEST=source-only-honest PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=source-only-honest PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=source-only-verify-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=source-only-verify-failure PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=source-only-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-dot
+ATLAS_GSZ_AUTH_TEST=source-only-failure PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-dot
+
 ATLAS_GSZ_FTAG_CHUNK_WIDTH=5 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-dot
 
@@ -467,7 +486,7 @@ always uses the sampled zero-permitted challenge without an override.
 Unless the user changes priorities, the expected sequence is:
 
 1. separately reviewed adaptation/integration of the finalized tentative
-   candidate with the real authentication path;
+   candidate with the source-only authentication path;
 2. normal segment verification → authentication → promotion integration;
 3. final output gating.
 

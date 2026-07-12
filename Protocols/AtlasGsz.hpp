@@ -2032,11 +2032,13 @@ bool AtlasGsz<T>::prepare_global_authentication(
     invocation.members.clear();
     invocation.max_ftag_chunk_count = 0;
 
-    const auto* checkpoint =
+    const bool source_only = invocation.checkpoint_id == 0;
+    const auto* checkpoint = source_only ? 0 :
             find_optimistic_checkpoint(invocation.checkpoint_id);
-    if (requested_batch_ids.empty() || checkpoint == 0
-            || checkpoint->sealed || checkpoint->promoted
-            || checkpoint->output_derivations.empty())
+    if (requested_batch_ids.empty()
+            || (not source_only && (checkpoint == 0
+                    || checkpoint->sealed || checkpoint->promoted
+                    || checkpoint->output_derivations.empty())))
     {
         fail_global_authentication(&invocation, 0,
                 OptimisticAuthenticationFailureClass::
@@ -2082,63 +2084,69 @@ bool AtlasGsz<T>::prepare_global_authentication(
             }
     }
 
-    vector<uint64_t> required_pending_batch_ids;
-    for (const auto& derivation : checkpoint->output_derivations)
+    if (not source_only)
     {
-        if (derivation.terms.empty())
+        vector<uint64_t> required_pending_batch_ids;
+        for (const auto& derivation : checkpoint->output_derivations)
+        {
+            if (derivation.terms.empty())
+            {
+                fail_global_authentication(&invocation, 0,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+            for (const auto& term : derivation.terms)
+            {
+                const auto* batch =
+                        find_dealer_source_batch(term.handle.batch_id);
+                if (batch == 0 || batch->dealer != term.handle.dealer
+                        || batch->source_ordinals.size()
+                                != batch->local_source_shares.size()
+                        || term.handle.source_ordinal
+                                >= batch->source_ordinals.size()
+                        || batch->source_ordinals.at(
+                                term.handle.source_ordinal)
+                                != term.handle.source_ordinal)
+                {
+                    fail_global_authentication(&invocation, 0,
+                            OptimisticAuthenticationFailureClass::
+                                invocation_validation);
+                    return false;
+                }
+                if (batch->authentication_state
+                        == DealerBatchAuthenticationState::pending)
+                {
+                    if (find(required_pending_batch_ids.begin(),
+                            required_pending_batch_ids.end(),
+                            batch->batch_id)
+                            == required_pending_batch_ids.end())
+                        required_pending_batch_ids.push_back(
+                                batch->batch_id);
+                }
+                else if (batch->authentication_state
+                                != DealerBatchAuthenticationState::
+                                    authenticated
+                        || not authenticated_handle_exists(term.handle))
+                {
+                    fail_global_authentication(&invocation, 0,
+                            OptimisticAuthenticationFailureClass::
+                                invocation_validation);
+                    return false;
+                }
+            }
+        }
+        vector<uint64_t> requested_unique = requested_batch_ids;
+        sort(requested_unique.begin(), requested_unique.end());
+        sort(required_pending_batch_ids.begin(),
+                required_pending_batch_ids.end());
+        if (requested_unique != required_pending_batch_ids)
         {
             fail_global_authentication(&invocation, 0,
                     OptimisticAuthenticationFailureClass::
                         invocation_validation);
             return false;
         }
-        for (const auto& term : derivation.terms)
-        {
-            const auto* batch =
-                    find_dealer_source_batch(term.handle.batch_id);
-            if (batch == 0 || batch->dealer != term.handle.dealer
-                    || batch->source_ordinals.size()
-                            != batch->local_source_shares.size()
-                    || term.handle.source_ordinal
-                            >= batch->source_ordinals.size()
-                    || batch->source_ordinals.at(
-                            term.handle.source_ordinal)
-                            != term.handle.source_ordinal)
-            {
-                fail_global_authentication(&invocation, 0,
-                        OptimisticAuthenticationFailureClass::
-                            invocation_validation);
-                return false;
-            }
-            if (batch->authentication_state
-                    == DealerBatchAuthenticationState::pending)
-            {
-                if (find(required_pending_batch_ids.begin(),
-                        required_pending_batch_ids.end(), batch->batch_id)
-                        == required_pending_batch_ids.end())
-                    required_pending_batch_ids.push_back(batch->batch_id);
-            }
-            else if (batch->authentication_state
-                            != DealerBatchAuthenticationState::authenticated
-                    || not authenticated_handle_exists(term.handle))
-            {
-                fail_global_authentication(&invocation, 0,
-                        OptimisticAuthenticationFailureClass::
-                            invocation_validation);
-                return false;
-            }
-        }
-    }
-    vector<uint64_t> requested_unique = requested_batch_ids;
-    sort(requested_unique.begin(), requested_unique.end());
-    sort(required_pending_batch_ids.begin(),
-            required_pending_batch_ids.end());
-    if (requested_unique != required_pending_batch_ids)
-    {
-        fail_global_authentication(&invocation, 0,
-                OptimisticAuthenticationFailureClass::
-                    invocation_validation);
-        return false;
     }
 
     for (size_t member_index = 0;
@@ -2777,9 +2785,11 @@ bool AtlasGsz<T>::commit_global_authentication(
 {
     if (not invocation.completed || not invocation.passed)
         return false;
-    auto* checkpoint =
+    const bool source_only = invocation.checkpoint_id == 0;
+    auto* checkpoint = source_only ? 0 :
             find_optimistic_checkpoint(invocation.checkpoint_id);
-    if (checkpoint == 0 || checkpoint->sealed || checkpoint->promoted
+    if ((!source_only && (checkpoint == 0 || checkpoint->sealed
+                    || checkpoint->promoted))
             || invocation.members.size() != working.members.size())
         return false;
 
@@ -2815,24 +2825,28 @@ bool AtlasGsz<T>::commit_global_authentication(
         }
     }
 
-    auto candidate_handle_exists = [&](const AuthenticatedSourceHandle& handle)
+    if (not source_only)
     {
-        for (size_t member_index = 0;
-                member_index < invocation.members.size(); member_index++)
-            if (invocation.members.at(member_index).batch_id
-                    == handle.batch_id)
-                return find(candidate_handles.at(member_index).begin(),
-                        candidate_handles.at(member_index).end(), handle)
-                        != candidate_handles.at(member_index).end();
-        return authenticated_handle_exists(handle);
-    };
-    for (const auto& derivation : checkpoint->output_derivations)
-    {
-        if (derivation.terms.empty())
-            return false;
-        for (const auto& term : derivation.terms)
-            if (not candidate_handle_exists(term.handle))
+        auto candidate_handle_exists =
+                [&](const AuthenticatedSourceHandle& handle)
+        {
+            for (size_t member_index = 0;
+                    member_index < invocation.members.size(); member_index++)
+                if (invocation.members.at(member_index).batch_id
+                        == handle.batch_id)
+                    return find(candidate_handles.at(member_index).begin(),
+                            candidate_handles.at(member_index).end(), handle)
+                            != candidate_handles.at(member_index).end();
+            return authenticated_handle_exists(handle);
+        };
+        for (const auto& derivation : checkpoint->output_derivations)
+        {
+            if (derivation.terms.empty())
                 return false;
+            for (const auto& term : derivation.terms)
+                if (not candidate_handle_exists(term.handle))
+                    return false;
+        }
     }
 
     // Every allocation and provenance validation above completes before the
@@ -2850,8 +2864,45 @@ bool AtlasGsz<T>::commit_global_authentication(
         batch->failure_class =
                 OptimisticAuthenticationFailureClass::none;
     }
-    checkpoint->sealed = true;
-    checkpoint->promoted = true;
+    if (not source_only)
+    {
+        checkpoint->sealed = true;
+        checkpoint->promoted = true;
+    }
+    return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::authenticate_source_batches(
+        const vector<uint64_t>& requested_batch_ids,
+        GlobalAuthenticationTestFault test_fault,
+        int inject_bad_verify_sharing_dealer,
+        int inject_bad_base_sharing_dealer)
+{
+    auto& state = optimistic_authentication_state;
+    GlobalAuthenticationInvocationRecord invocation{};
+    invocation.invocation_id = state.next_global_invocation_id++;
+    invocation.key_epoch = state.key_epoch;
+    invocation.checkpoint_id = 0;
+    state.global_invocations.push_back(invocation);
+    auto& retained_invocation = state.global_invocations.back();
+    GlobalAuthenticationWorkingSet working{};
+
+    if (not prepare_global_authentication(retained_invocation,
+            requested_batch_ids, working,
+            inject_bad_verify_sharing_dealer,
+            inject_bad_base_sharing_dealer, test_fault))
+        return false;
+    if (not check_global_authentication(
+            retained_invocation, working, test_fault))
+        return false;
+    if (not commit_global_authentication(retained_invocation, working))
+    {
+        fail_global_authentication(&retained_invocation, 0,
+                OptimisticAuthenticationFailureClass::
+                    invocation_validation);
+        return false;
+    }
     return true;
 }
 
@@ -2863,6 +2914,10 @@ bool AtlasGsz<T>::authenticate_checkpoint_source_batches(
         int inject_bad_verify_sharing_dealer,
         int inject_bad_base_sharing_dealer)
 {
+    // Zero is reserved exclusively for source-only authentication.
+    if (checkpoint_id == 0)
+        return false;
+
     auto& state = optimistic_authentication_state;
     GlobalAuthenticationInvocationRecord invocation{};
     invocation.invocation_id = state.next_global_invocation_id++;
@@ -2999,7 +3054,10 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             expected_first_ftag_chunks, expected_second_ftag_chunks,
             "AtlasGsz test: total FTag chunk count overflow");
 
-    const bool global_mode = mode == "honest"
+    const bool source_only = mode == "source-only-honest"
+            || mode == "source-only-verify-failure"
+            || mode == "source-only-failure";
+    const bool global_mode = source_only || mode == "honest"
             || mode == "singleton-honest"
             || mode == "failure"
             || mode == "ordinary-failure"
@@ -3043,29 +3101,34 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                     second_dealer, second_local_shares);
         }
 
-        LinearDerivation checkpoint_derivation{};
-        auto append_derivation_terms = [&](uint64_t batch_id,
-                int dealer, size_t source_count)
+        uint64_t checkpoint_id = 0;
+        if (not source_only)
         {
-            for (size_t ordinal = 0; ordinal < source_count; ordinal++)
+            LinearDerivation checkpoint_derivation{};
+            auto append_derivation_terms = [&](uint64_t batch_id,
+                    int dealer, size_t source_count)
             {
-                LinearDerivationTerm term{};
-                term.handle.batch_id = batch_id;
-                term.handle.dealer = dealer;
-                term.handle.source_ordinal = ordinal;
-                term.coefficient =
-                        typename T::open_type(int(ordinal + 1));
-                checkpoint_derivation.terms.push_back(term);
-            }
-        };
-        append_derivation_terms(first_batch_id, 0,
-                first_original_source_count);
-        if (not singleton)
-            append_derivation_terms(second_batch_id, second_dealer,
-                    second_original_source_count);
-        const uint64_t checkpoint_id = create_optimistic_checkpoint(
-                vector<LinearDerivation>(1, checkpoint_derivation));
-        assert(not promote_optimistic_checkpoint(checkpoint_id));
+                for (size_t ordinal = 0; ordinal < source_count; ordinal++)
+                {
+                    LinearDerivationTerm term{};
+                    term.handle.batch_id = batch_id;
+                    term.handle.dealer = dealer;
+                    term.handle.source_ordinal = ordinal;
+                    term.coefficient =
+                            typename T::open_type(int(ordinal + 1));
+                    checkpoint_derivation.terms.push_back(term);
+                }
+            };
+            append_derivation_terms(first_batch_id, 0,
+                    first_original_source_count);
+            if (not singleton)
+                append_derivation_terms(second_batch_id, second_dealer,
+                        second_original_source_count);
+            checkpoint_id = create_optimistic_checkpoint(
+                    vector<LinearDerivation>(1,
+                            checkpoint_derivation));
+            assert(not promote_optimistic_checkpoint(checkpoint_id));
+        }
 
         vector<uint64_t> requested_batch_ids;
         if (singleton)
@@ -3085,7 +3148,7 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
 
         GlobalAuthenticationTestFault test_fault =
                 GlobalAuthenticationTestFault::none;
-        if (mode == "failure")
+        if (mode == "failure" || mode == "source-only-failure")
             test_fault =
                     GlobalAuthenticationTestFault::aggregate_holder_tag;
         else if (mode == "ordinary-failure")
@@ -3102,22 +3165,37 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             test_fault = GlobalAuthenticationTestFault::key_epoch_mismatch;
 
         const int verify_failure_dealer =
-                mode == "verify-failure" ? 0 : -1;
+                (mode == "verify-failure"
+                        || mode == "source-only-verify-failure") ? 0 : -1;
         const int base_failure_dealer =
                 mode == "base-failure" ? 0 : -1;
-        const bool accepted = authenticate_checkpoint_source_batches(
-                checkpoint_id, requested_batch_ids, test_fault,
-                verify_failure_dealer, base_failure_dealer);
+        const bool accepted = source_only
+                ? authenticate_source_batches(requested_batch_ids,
+                        test_fault, verify_failure_dealer,
+                        base_failure_dealer)
+                : authenticate_checkpoint_source_batches(checkpoint_id,
+                        requested_batch_ids, test_fault,
+                        verify_failure_dealer, base_failure_dealer);
         assert(state.global_invocations.size() == 1);
         const auto& invocation = state.global_invocations.front();
         assert(invocation.invocation_id == 1);
         assert(invocation.checkpoint_id == checkpoint_id);
         assert(invocation.key_epoch == state.key_epoch);
 
-        const bool expected_success = mode == "honest" || singleton;
+        const bool expected_success = mode == "honest" || singleton
+                || mode == "source-only-honest";
         assert(accepted == expected_success);
-        const auto* checkpoint = find_optimistic_checkpoint(checkpoint_id);
-        assert(checkpoint != 0);
+        const auto* checkpoint = source_only ? 0 :
+                find_optimistic_checkpoint(checkpoint_id);
+        if (source_only)
+        {
+            assert(checkpoint_id == 0);
+            assert(state.checkpoints.empty());
+            assert(state.next_checkpoint_id == 1);
+            assert(verifiable_registry.checkpoints.empty());
+        }
+        else
+            assert(checkpoint != 0);
         const auto* first_batch =
                 find_dealer_source_batch(first_batch_id);
         const auto* second_batch = singleton ? 0 :
@@ -3153,7 +3231,8 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                             singleton ? size_t(0)
                                     : expected_second_ftag_chunks));
             assert(state.global_check_tag_challenges == 1);
-            assert(checkpoint->sealed && checkpoint->promoted);
+            assert(source_only
+                    || (checkpoint->sealed && checkpoint->promoted));
             assert(first_batch->authentication_state
                     == DealerBatchAuthenticationState::authenticated);
             assert(first_batch->authenticated_handles.size()
@@ -3250,13 +3329,17 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                      << (first_original_source_count
                              + (singleton ? 0
                                      : second_original_source_count))
-                     << " sealed=1 promoted=1" << endl;
+                     << " checkpoint_id=" << checkpoint_id
+                     << " checkpoints=" << state.checkpoints.size()
+                     << " sealed=" << (source_only ? 0 : 1)
+                     << " promoted=" << (source_only ? 0 : 1) << endl;
             return true;
         }
 
         assert(not accepted);
         assert(invocation.completed && not invocation.passed);
-        assert(not checkpoint->sealed && not checkpoint->promoted);
+        assert(source_only
+                || (not checkpoint->sealed && not checkpoint->promoted));
         assert(first_batch->authentication_state
                 != DealerBatchAuthenticationState::authenticated);
         assert(first_batch->authenticated_handles.empty());
@@ -3269,13 +3352,14 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         assert(state.status == OptimisticAuthenticationStatus::
                 RecoveryNotImplemented);
         const bool tag_failure = mode == "failure"
+                || mode == "source-only-failure"
                 || mode == "ordinary-failure"
                 || mode == "base-contribution-failure";
         const char* fault_component = mode == "ordinary-failure"
                 ? "ordinary_sigma"
                 : mode == "base-contribution-failure"
                     ? "base_sigma"
-                    : mode == "failure"
+                    : mode == "failure" || mode == "source-only-failure"
                         ? "aggregate_tag"
                         : "none";
         if (tag_failure)
@@ -3298,7 +3382,8 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
             assert(not invocation.challenge_sampled);
             assert(state.global_check_tag_challenges == 0);
             assert(not invocation.owns_failure_presentation);
-            if (mode == "verify-failure")
+            if (mode == "verify-failure"
+                    || mode == "source-only-verify-failure")
             {
                 assert(invocation.failure_class
                         == OptimisticAuthenticationFailureClass::
@@ -3325,7 +3410,10 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
         if (P.my_num() == 0)
             cout << "ATLAS_GSZ_AUTH_TEST " << mode
                  << " PASS status=RecoveryNotImplemented"
-                 << " checker=global handles=0 sealed=0 promoted=0"
+                 << " checker=global handles=0 checkpoint_id="
+                 << checkpoint_id
+                 << " checkpoints=" << state.checkpoints.size()
+                 << " sealed=0 promoted=0"
                  << " failed_batch_id=" << state.failed_batch_id
                  << " failed_verifier=" << state.failed_verifier
                  << " failed_holder=" << state.failed_holder
@@ -13009,7 +13097,8 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 }
             }
             else if (not optimistic_authentication_state.test_hook_ran
-                    && (mode == "honest" || mode == "singleton-honest"))
+                    && (mode == "honest" || mode == "singleton-honest"
+                    || mode == "source-only-honest"))
             {
                 if (not run_optimistic_authentication_test_hook(mode))
                     throw mac_fail(
@@ -13025,7 +13114,9 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                     || mode == "omission"
                     || mode == "missing-chunk"
                     || mode == "duplicate-chunk"
-                    || mode == "epoch-mismatch"))
+                    || mode == "epoch-mismatch"
+                    || mode == "source-only-verify-failure"
+                    || mode == "source-only-failure"))
             {
                 bool accepted = run_optimistic_authentication_test_hook(mode);
                 assert(not accepted);

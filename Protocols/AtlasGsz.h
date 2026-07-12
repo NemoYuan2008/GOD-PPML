@@ -1843,6 +1843,12 @@ private:
                     GlobalAuthenticationTestFault::none,
             int inject_bad_verify_sharing_dealer = -1,
             int inject_bad_base_sharing_dealer = -1);
+    bool authenticate_source_batches(
+            const vector<uint64_t>& requested_batch_ids,
+            GlobalAuthenticationTestFault test_fault =
+                    GlobalAuthenticationTestFault::none,
+            int inject_bad_verify_sharing_dealer = -1,
+            int inject_bad_base_sharing_dealer = -1);
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
             bool inject_bad_presentation = false,
