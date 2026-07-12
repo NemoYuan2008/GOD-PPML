@@ -677,6 +677,164 @@ bool AtlasGsz<T>::no_authentication_or_checkpoint_artifacts() const
 }
 
 template<class T>
+void AtlasGsz<T>::run_special_e_t_malformed_support_test()
+{
+    const int t = ShamirMachine::s().threshold;
+    vector<int> valid_support;
+    for (int party = 0; party < t + 1; party++)
+        valid_support.push_back(party);
+
+    vector<vector<int>> malformed_supports;
+    auto wrong_size = valid_support;
+    wrong_size.pop_back();
+    malformed_supports.push_back(wrong_size);
+
+    auto duplicate = valid_support;
+    duplicate.back() = duplicate.front();
+    malformed_supports.push_back(duplicate);
+
+    auto out_of_range = valid_support;
+    out_of_range.back() = P.num_players();
+    malformed_supports.push_back(out_of_range);
+
+    vector<int> omits_king;
+    for (int party = 1; party < t + 2; party++)
+        omits_king.push_back(party);
+    malformed_supports.push_back(omits_king);
+
+    const size_t communication_before = P.total_comm().sent;
+    for (const auto& support : malformed_supports)
+    {
+        bool rejected = false;
+        try
+        {
+            honest.set_fixed_king_special_sharing_support(support);
+        }
+        catch (const invalid_argument&)
+        {
+            rejected = true;
+        }
+        if (not rejected || P.total_comm().sent != communication_before)
+            throw logic_error(
+                    "AtlasGsz: malformed special-e_t support was not rejected before operation communication");
+    }
+    if (not no_authentication_or_checkpoint_artifacts())
+        throw logic_error(
+                "AtlasGsz: malformed special-e_t support test created an authentication or checkpoint artifact");
+}
+
+template<class T>
+void AtlasGsz<T>::maybe_run_special_e_t_test(
+        const PartialMultTranscriptRecord& record,
+        OrdinaryDoubleRandOperationKind operation_kind,
+        const T& result)
+{
+    if (not special_e_t_test_enabled || special_e_t_test_hook_ran)
+        return;
+
+    auto fail = [] (const string& reason) {
+        throw logic_error("AtlasGsz: special-e-t test failed: " + reason);
+    };
+    if (not no_authentication_or_checkpoint_artifacts())
+        fail("ordinary execution created authentication or checkpoint artifacts");
+
+    const size_t ordinal = special_e_t_test_completed_records;
+    const auto expected_kind = ordinal % 2 == 0
+            ? OrdinaryDoubleRandOperationKind::scalar_multiplication
+            : OrdinaryDoubleRandOperationKind::dot_product;
+    if (operation_kind != expected_kind)
+        fail("scalar/dot operation order is not alternating");
+
+    const auto& transcript = record.transcript;
+    const int t = ShamirMachine::s().threshold;
+    if (transcript.king != 0
+            || transcript.special_sharing_support.size() != size_t(t + 1))
+        fail("king or support width is incorrect");
+    for (size_t i = 0; i < transcript.special_sharing_support.size(); i++)
+        if (transcript.special_sharing_support.at(i) != int(i))
+            fail("support is not the canonical ascending no-dispute set");
+    if (result != transcript.e_t - transcript.r_t)
+        fail("returned result does not equal e_t - r_t");
+
+    const bool local_in_support = find(
+            transcript.special_sharing_support.begin(),
+            transcript.special_sharing_support.end(), P.my_num())
+            != transcript.special_sharing_support.end();
+    if (not local_in_support && transcript.e_t != T{0})
+        fail("local e_t is nonzero outside support");
+    if (record.has_king_evidence != (P.my_num() == transcript.king))
+        fail("king-evidence ownership is incorrect");
+
+    if (record.has_king_evidence)
+    {
+        const auto& evidence = record.king_evidence;
+        if (evidence.king != transcript.king
+                || evidence.received_e_2t.size() != size_t(P.num_players())
+                || evidence.distributed_e_t.size()
+                        != size_t(P.num_players()))
+            fail("king evidence has incorrect shape or ownership");
+
+        for (int party = 0; party < P.num_players(); party++)
+        {
+            const bool in_support = find(
+                    transcript.special_sharing_support.begin(),
+                    transcript.special_sharing_support.end(), party)
+                    != transcript.special_sharing_support.end();
+            if (not in_support
+                    && evidence.distributed_e_t.at(party)
+                            != typename Atlas<T>::share_value_type{})
+                fail("king evidence is nonzero outside support");
+
+            auto factors = Shamir<T>::get_rec_factors(
+                    transcript.special_sharing_support, party);
+            typename Atlas<T>::share_value_type expected{};
+            for (size_t i = 0;
+                    i < transcript.special_sharing_support.size(); i++)
+                expected += evidence.distributed_e_t.at(
+                        transcript.special_sharing_support.at(i))
+                        * factors.at(i);
+            if (expected != evidence.distributed_e_t.at(party))
+                fail("king evidence is not degree at most t");
+        }
+
+        typename Atlas<T>::share_value_type received_secret{};
+        for (int party = 0; party < 2 * t + 1; party++)
+            received_secret += evidence.received_e_2t.at(party)
+                    * Shamir<T>::get_rec_factor(party, 2 * t + 1);
+        typename Atlas<T>::share_value_type distributed_secret{};
+        auto reconstruction = Shamir<T>::get_rec_factors(
+                transcript.special_sharing_support);
+        for (size_t i = 0;
+                i < transcript.special_sharing_support.size(); i++)
+            distributed_secret += evidence.distributed_e_t.at(
+                    transcript.special_sharing_support.at(i))
+                    * reconstruction.at(i);
+        typename Atlas<T>::share_value_type local_e_t = transcript.e_t;
+        if (received_secret != distributed_secret
+                || evidence.distributed_e_t.at(transcript.king) != local_e_t)
+            fail("king evidence has the wrong secret or king component");
+    }
+
+    special_e_t_test_completed_records++;
+    const size_t expected_records = 6;
+    if (special_e_t_test_completed_records < expected_records)
+        return;
+    if (special_e_t_test_completed_records != expected_records)
+        fail("dedicated workload produced an unexpected record count");
+    special_e_t_test_hook_ran = true;
+    if (P.my_num() == 0)
+        cout << "ATLAS_GSZ_AUTH_TEST special-e-t"
+             << " PASS records=6 operation_order=scalar-dot-alternating"
+             << " e_t_sharings=6 king=0 support=canonical-ascending"
+             << " support_size=t+1 outside_support=zero"
+             << " king_evidence=exact degree=at-most-t secret=exact"
+             << " result=e_t-minus-r_t malformed_supports=rejected-pre-communication"
+             << " dealer_batches=0 handles=0 ftag_chunks=0"
+             << " checkpoints=0 authentication_invocations=0"
+             << endl;
+}
+
+template<class T>
 void AtlasGsz<T>::maybe_complete_tentative_double_rand_capture_test()
 {
     if (not tentative_double_rand_capture_test_enabled
@@ -963,6 +1121,23 @@ void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
         assert(record.transcript.e_t
                 - record.transcript.r_t
                 == z_verify.at(record.offset));
+        if (not record.transcript.special_sharing_support.empty())
+        {
+            const auto& support =
+                    record.transcript.special_sharing_support;
+            assert(support.size()
+                    == size_t(ShamirMachine::s().threshold + 1));
+            assert(is_sorted(support.begin(), support.end()));
+            assert(adjacent_find(support.begin(), support.end())
+                    == support.end());
+            assert(find(support.begin(), support.end(), batch_king)
+                    != support.end());
+            assert(support.front() >= 0);
+            assert(support.back() < P.num_players());
+            if (find(support.begin(), support.end(), P.my_num())
+                    == support.end())
+                assert(record.transcript.e_t == T{0});
+        }
         validate_double_sharing_decomposition(
                 record.transcript.r_decomposition,
                 record.transcript.r_t,
@@ -1036,12 +1211,29 @@ void AtlasGsz<T>::validate_current_virtual_transcript() const
                     current_virtual_king_evidence.received_e_2t.at(i)
                     * Shamir<T>::get_rec_factor(i, 2 * t + 1);
 
-        for (int i = 0; i < t + 1; i++)
-            distributed_secret +=
-                    current_virtual_king_evidence.distributed_e_t.at(i)
-                    * Shamir<T>::get_rec_factor(i, t + 1);
+        vector<int> reconstruction_support =
+                current_virtual_transcript.special_sharing_support;
+        if (reconstruction_support.empty())
+            for (int i = 0; i < t + 1; i++)
+                reconstruction_support.push_back(i);
+        auto distributed_factors = Shamir<T>::get_rec_factors(
+                reconstruction_support);
+        for (size_t i = 0; i < reconstruction_support.size(); i++)
+            distributed_secret += current_virtual_king_evidence
+                    .distributed_e_t.at(reconstruction_support.at(i))
+                    * distributed_factors.at(i);
 
         assert(received_secret == distributed_secret);
+
+        if (not current_virtual_transcript
+                .special_sharing_support.empty())
+            for (int party = 0; party < P.num_players(); party++)
+                if (find(reconstruction_support.begin(),
+                        reconstruction_support.end(), party)
+                        == reconstruction_support.end())
+                    assert(current_virtual_king_evidence
+                            .distributed_e_t.at(party)
+                            == typename Atlas<T>::share_value_type{});
     }
 #endif
 }
@@ -14347,6 +14539,14 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 // This focused check runs only after a normal wrapper record
                 // has finalized and pulled the exact Atlas reference.
             }
+            else if (mode == "special-e-t")
+            {
+                if (not no_authentication_or_checkpoint_artifacts())
+                    throw logic_error(
+                            "AtlasGsz: special-e-t test did not start from empty state");
+                run_special_e_t_malformed_support_test();
+                special_e_t_test_enabled = true;
+            }
             else if (mode == "tentative-double-rand-capture"
                     || mode == "tentative-double-rand-adapter-honest"
                     || mode == "tentative-double-rand-adapter-malformed"
@@ -14510,6 +14710,10 @@ T AtlasGsz<T>::finalize_mul(int)
     partial_mult_transcripts.push_back(record);
     assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(res);
+    maybe_run_special_e_t_test(
+            partial_mult_transcripts.back(),
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            res);
     maybe_run_consumed_provenance_transfer_test(
             partial_mult_transcripts.back());
     if (tentative_double_rand_capture_state.active)
@@ -14585,6 +14789,10 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     // the rest are padded with zeros to maintain 
     // z_verify is of the same length as x_verify and y_verify
     z_verify.insert(z_verify.end(), length - 1, T{0});
+    maybe_run_special_e_t_test(
+            partial_mult_transcripts.back(),
+            OrdinaryDoubleRandOperationKind::dot_product,
+            res);
     maybe_run_consumed_provenance_transfer_test(
             partial_mult_transcripts.back());
     if (tentative_double_rand_capture_state.active)
@@ -14991,6 +15199,9 @@ void AtlasGsz<T>::de_linearization()
 
     int batch_king = partial_mult_transcripts.front().transcript.king;
     current_virtual_transcript.king = batch_king;
+    current_virtual_transcript.special_sharing_support =
+            partial_mult_transcripts.front().transcript
+                    .special_sharing_support;
 
     if (P.my_num() == batch_king)
     {
@@ -15013,6 +15224,9 @@ void AtlasGsz<T>::de_linearization()
 #endif
         assert(record.length > 0);
         assert(record.transcript.king == batch_king);
+        if (record.transcript.special_sharing_support
+                != current_virtual_transcript.special_sharing_support)
+            current_virtual_transcript.special_sharing_support.clear();
         assert(record.offset + size_t(record.length) <= x_verify.size());
 
         for (int j = 0; j < record.length; j++)
@@ -15212,6 +15426,10 @@ void AtlasGsz<T>::dimension_reduction()
     T c_1 = input_z - c_0;
     typename Atlas<T>::PartialMultTranscript transcript_1{};
     transcript_1.king = batch_king;
+    if (input_transcript.special_sharing_support
+            == transcript_0.special_sharing_support)
+        transcript_1.special_sharing_support =
+                input_transcript.special_sharing_support;
     transcript_1.r_t = input_transcript.r_t - transcript_0.r_t;
     transcript_1.r_2t = input_transcript.r_2t - transcript_0.r_2t;
     transcript_1.e_2t = input_transcript.e_2t - transcript_0.e_2t;
@@ -15291,10 +15509,18 @@ void AtlasGsz<T>::dimension_reduction()
             evidence_1_received_secret +=
                     evidence_1.received_e_2t.at(i)
                     * Shamir<T>::get_rec_factor(i, 2 * t + 1);
-        for (int i = 0; i < t + 1; i++)
+        vector<int> reconstruction_support =
+                transcript_1.special_sharing_support;
+        if (reconstruction_support.empty())
+            for (int i = 0; i < t + 1; i++)
+                reconstruction_support.push_back(i);
+        auto reconstruction = Shamir<T>::get_rec_factors(
+                reconstruction_support);
+        for (size_t i = 0; i < reconstruction_support.size(); i++)
             evidence_1_distributed_secret +=
-                    evidence_1.distributed_e_t.at(i)
-                    * Shamir<T>::get_rec_factor(i, t + 1);
+                    evidence_1.distributed_e_t.at(
+                            reconstruction_support.at(i))
+                    * reconstruction.at(i);
         assert(evidence_1_received_secret
                 == evidence_1_distributed_secret);
     }
@@ -15349,6 +15575,12 @@ void AtlasGsz<T>::dimension_reduction()
 
     typename Atlas<T>::PartialMultTranscript next_virtual_transcript{};
     next_virtual_transcript.king = batch_king;
+    if (transcript_0.special_sharing_support
+                    == transcript_1.special_sharing_support
+            && transcript_0.special_sharing_support
+                    == transcript_2.special_sharing_support)
+        next_virtual_transcript.special_sharing_support =
+                transcript_0.special_sharing_support;
     next_virtual_transcript.r_t =
             transcript_0.r_t * L0
             + transcript_1.r_t * L1
@@ -15565,6 +15797,12 @@ void AtlasGsz<T>::randomization()
 
     typename Atlas<T>::PartialMultTranscript ultimate_transcript{};
     ultimate_transcript.king = batch_king;
+    if (transcript_0.special_sharing_support
+                    == transcript_1.special_sharing_support
+            && transcript_0.special_sharing_support
+                    == transcript_2.special_sharing_support)
+        ultimate_transcript.special_sharing_support =
+                transcript_0.special_sharing_support;
     ultimate_transcript.r_t =
             transcript_0.r_t * L0
             + transcript_1.r_t * L1

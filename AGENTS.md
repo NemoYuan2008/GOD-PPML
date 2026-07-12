@@ -185,6 +185,15 @@ record. This transfer does not create tentative capture state, dealer batches,
 authentication, handles, derivations over handles, FTag chunks, checkpoints,
 or scheduler state.
 
+The fixed-king ordinary scalar-multiplication and dot-product path now
+constructs the exact special sharing `[e]^T_t`: for the current optimistic
+no-dispute king 0, `T={0,...,t}` in canonical numeric order, every share
+outside `T` is zero, and the construction consumes no randomness. The
+concrete transcript retains this public support and the king retains the exact
+full distributed vector as private evidence. This does not capture or
+authenticate `e_t`, and it does not implement `Corr`/`Disp`-aware support
+selection or continued execution.
+
 AtlasGsz also contains an opt-in tentative DoubleRand source-capture vertical
 slice for completed ordinary scalar multiplication and ordinary dot-product
 wrapper records. One focused round assigns producer-record ordinals by
@@ -230,8 +239,8 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. king-generated `e_t` source capture and complete operation/segment source
-   collection;
+1. king-generated `e_t` source capture/authentication and complete
+   operation/segment source collection;
 2. construction of `z_t = e_t - r_t`, complete output/checkpoint
    derivations, and checkpoint creation from the authenticated sources;
 3. normal segment/checkpoint scheduler integration;

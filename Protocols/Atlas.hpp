@@ -492,6 +492,109 @@ void Atlas<T>::initialize_reconstruction_factors()
 }
 
 template<class T>
+vector<int> Atlas<T>::canonical_fixed_king_special_sharing_support(
+        int king) const
+{
+    if (king < 0 || king >= P.num_players())
+        throw out_of_range("invalid Atlas fixed king");
+
+    int t = ShamirMachine::s().threshold;
+    vector<int> support{king};
+    for (int party = 0;
+            party < P.num_players() && support.size() < size_t(t + 1);
+            party++)
+        if (party != king)
+            support.push_back(party);
+    sort(support.begin(), support.end());
+    validate_fixed_king_special_sharing_support(king, support);
+    return support;
+}
+
+template<class T>
+void Atlas<T>::validate_fixed_king_special_sharing_support(
+        int king, const vector<int>& support) const
+{
+    int t = ShamirMachine::s().threshold;
+    if (king < 0 || king >= P.num_players())
+        throw invalid_argument(
+                "Atlas fixed-king special-sharing support has an invalid king");
+    if (P.num_players() != 2 * t + 1)
+        throw invalid_argument(
+                "Atlas fixed-king special sharing requires n = 2t + 1");
+    if (support.size() != size_t(t + 1))
+        throw invalid_argument(
+                "Atlas fixed-king special-sharing support must have size t + 1");
+
+    vector<bool> seen(P.num_players(), false);
+    bool contains_king = false;
+    int previous = -1;
+    for (int party : support)
+    {
+        if (party < 0 || party >= P.num_players())
+            throw invalid_argument(
+                    "Atlas fixed-king special-sharing support member is out of range");
+        if (seen.at(party))
+            throw invalid_argument(
+                    "Atlas fixed-king special-sharing support contains a duplicate member");
+        if (party <= previous)
+            throw invalid_argument(
+                    "Atlas fixed-king special-sharing support is not in canonical numeric order");
+        seen.at(party) = true;
+        contains_king |= party == king;
+        previous = party;
+    }
+    if (not contains_king)
+        throw invalid_argument(
+                "Atlas fixed-king special-sharing support omits the king");
+
+    vector<int> expected{king};
+    for (int party = 0;
+            party < P.num_players() && expected.size() < size_t(t + 1);
+            party++)
+        if (party != king)
+            expected.push_back(party);
+    sort(expected.begin(), expected.end());
+    if (support != expected)
+        throw invalid_argument(
+                "Atlas fixed-king special-sharing support is not the deterministic canonical set");
+}
+
+template<class T>
+bool Atlas<T>::fixed_king_special_sharing_support_contains(int party) const
+{
+    return find(fixed_king_special_sharing_support.begin(),
+            fixed_king_special_sharing_support.end(), party)
+            != fixed_king_special_sharing_support.end();
+}
+
+template<class T>
+vector<typename Atlas<T>::share_value_type>
+Atlas<T>::make_fixed_king_special_sharing(
+        const share_value_type& secret,
+        const vector<int>& support) const
+{
+    validate_fixed_king_special_sharing_support(fixed_king, support);
+
+    vector<int> interpolation_points{-1};
+    for (int party = 0; party < P.num_players(); party++)
+        if (find(support.begin(), support.end(), party) == support.end())
+            interpolation_points.push_back(party);
+    if (interpolation_points.size()
+            != size_t(ShamirMachine::s().threshold + 1))
+        throw logic_error(
+                "Atlas fixed-king special-sharing interpolation has the wrong number of points");
+
+    vector<share_value_type> sharing(P.num_players(), share_value_type{});
+    for (int party : support)
+    {
+        auto factors = Shamir<T>::get_rec_factors(
+                interpolation_points, party);
+        sharing.at(party) = secret * factors.front();
+    }
+    return sharing;
+}
+
+template<class T>
 typename Atlas<T>::share_value_type Atlas<T>::reconstruct_received_e_2t(
         const vector<typename Atlas<T>::share_value_type>& sharing) const
 {
@@ -506,17 +609,73 @@ typename Atlas<T>::share_value_type Atlas<T>::reconstruct_received_e_2t(
 
 template<class T>
 typename Atlas<T>::share_value_type Atlas<T>::reconstruct_distributed_e_t(
-        const vector<typename Atlas<T>::share_value_type>& sharing) const
+        const vector<typename Atlas<T>::share_value_type>& sharing,
+        const vector<int>& support) const
 {
-    int t = ShamirMachine::s().threshold;
-
     assert(sharing.size() == size_t(P.num_players()));
-    assert(reconstruction_t.size() == size_t(t + 1));
+    validate_fixed_king_special_sharing_support(fixed_king, support);
 
     share_value_type res{};
-    for (int i = 0; i < t + 1; i++)
-        res += sharing.at(i) * reconstruction_t.at(i);
+    auto factors = Shamir<T>::get_rec_factors(support);
+    for (size_t i = 0; i < support.size(); i++)
+        res += sharing.at(support.at(i)) * factors.at(i);
     return res;
+}
+
+template<class T>
+void Atlas<T>::validate_fixed_king_special_sharing_evidence(
+        const PartialMultTranscript& transcript,
+        const KingPartialMultEvidence& evidence) const
+{
+    validate_fixed_king_special_sharing_support(
+            transcript.king, transcript.special_sharing_support);
+    if (P.my_num() != transcript.king || evidence.king != transcript.king)
+        throw logic_error(
+                "Atlas fixed-king special-sharing evidence has the wrong owner");
+    if (evidence.received_e_2t.size() != size_t(P.num_players())
+            || evidence.distributed_e_t.size() != size_t(P.num_players()))
+        throw logic_error(
+                "Atlas fixed-king special-sharing evidence has the wrong width");
+
+    for (int party = 0; party < P.num_players(); party++)
+    {
+        const bool in_support = find(
+                transcript.special_sharing_support.begin(),
+                transcript.special_sharing_support.end(), party)
+                != transcript.special_sharing_support.end();
+        if (not in_support
+                && evidence.distributed_e_t.at(party) != share_value_type{})
+            throw logic_error(
+                    "Atlas fixed-king special sharing is nonzero outside its support");
+
+        auto factors = Shamir<T>::get_rec_factors(
+                transcript.special_sharing_support, party);
+        share_value_type expected{};
+        for (size_t i = 0;
+                i < transcript.special_sharing_support.size(); i++)
+            expected += evidence.distributed_e_t.at(
+                    transcript.special_sharing_support.at(i))
+                    * factors.at(i);
+        if (expected != evidence.distributed_e_t.at(party))
+            throw logic_error(
+                    "Atlas fixed-king special sharing exceeds degree t");
+    }
+
+    const auto received_secret =
+            reconstruct_received_e_2t(evidence.received_e_2t);
+    const auto distributed_secret = reconstruct_distributed_e_t(
+            evidence.distributed_e_t,
+            transcript.special_sharing_support);
+    if (received_secret != distributed_secret)
+        throw logic_error(
+                "Atlas fixed-king special sharing represents the wrong secret");
+
+    share_value_type local_e_2t = transcript.e_2t;
+    share_value_type local_e_t = transcript.e_t;
+    if (evidence.received_e_2t.at(transcript.king) != local_e_2t
+            || evidence.distributed_e_t.at(transcript.king) != local_e_t)
+        throw logic_error(
+                "Atlas fixed-king special-sharing evidence disagrees with the concrete transcript");
 }
 
 template<class T>
@@ -544,7 +703,10 @@ void Atlas<T>::build_public_opening_king_evidence(
     assert(evidence.king == 0);
     assert(reconstruct_received_e_2t(evidence.received_e_2t)
             == opened_value);
-    assert(reconstruct_distributed_e_t(evidence.distributed_e_t)
+    const auto support =
+            canonical_fixed_king_special_sharing_support(0);
+    assert(reconstruct_distributed_e_t(
+            evidence.distributed_e_t, support)
             == opened_value);
 
     const auto& transcript =
@@ -575,6 +737,7 @@ void Atlas<T>::init_mul()
     base_king = next_king;
     pending_partial_mult_operations.clear();
     pending_king_partial_mult_evidence.clear();
+    fixed_king_special_e_t_shares.clear();
     next_partial_mult_transcript = 0;
     have_last_partial_mult_transcript = false;
     have_last_king_partial_mult_evidence = false;
@@ -602,6 +765,13 @@ void Atlas<T>::prepare(const typename T::open_type& product)
     transcript.r_2t = r.r_2t;
     transcript.e_2t = e_2t;
     transcript.king = king;
+    if (fixed_king_enabled)
+    {
+        validate_fixed_king_special_sharing_support(
+                king, fixed_king_special_sharing_support);
+        transcript.special_sharing_support =
+                fixed_king_special_sharing_support;
+    }
     transcript.r_decomposition = r.decomposition;
     validate_double_sharing_decomposition(
             transcript.r_decomposition, transcript.r_t, transcript.r_2t);
@@ -614,22 +784,29 @@ void Atlas<T>::prepare(const typename T::open_type& product)
 template<class T>
 void Atlas<T>::exchange()
 {
+    if (fixed_king_enabled)
+        validate_fixed_king_special_sharing_support(
+                fixed_king, fixed_king_special_sharing_support);
     P.send_receive_all(oss2, oss);
     oss.mine = oss2.mine;
     assert(pending_partial_mult_operations.size() == masks.size());
 
     int t = ShamirMachine::s().threshold;
     initialize_reconstruction_factors();
-    resharing.reset_all(P);
 
     if (fixed_king_enabled)
     {
+        vector<octetStream> special_sharing_outgoing(P.num_players());
+        vector<octetStream> special_sharing_incoming;
+        vector<vector<bool>> special_sharing_channels(
+                P.num_players(), vector<bool>(P.num_players(), false));
+        for (int recipient : fixed_king_special_sharing_support)
+            if (recipient != fixed_king)
+                special_sharing_channels.at(fixed_king).at(recipient) = true;
+
         if (P.my_num() == fixed_king)
         {
             assert(pending_king_partial_mult_evidence.empty());
-            vector<share_value_type> reconstructed_e_values;
-            reconstructed_e_values.reserve(masks.size());
-            resharing.begin_mine_sharing_recording();
 
             for (size_t j = 0; j < masks.size(); j++)
             {
@@ -647,37 +824,45 @@ void Atlas<T>::exchange()
                 assert(evidence.received_e_2t.size() == size_t(P.num_players()));
                 assert(evidence.king == fixed_king);
                 assert(reconstruct_received_e_2t(evidence.received_e_2t) == e);
+                evidence.distributed_e_t = make_fixed_king_special_sharing(
+                        e, fixed_king_special_sharing_support);
+                for (int recipient : fixed_king_special_sharing_support)
+                    if (recipient != fixed_king)
+                        evidence.distributed_e_t.at(recipient).pack(
+                                special_sharing_outgoing.at(recipient));
                 pending_king_partial_mult_evidence.push_back(evidence);
-                reconstructed_e_values.push_back(e);
-                resharing.add_mine(e);
             }
-            resharing.end_mine_sharing_recording();
-
-            assert(resharing.num_recorded_mine_sharings() == masks.size());
             assert(pending_king_partial_mult_evidence.size() == masks.size());
-            for (size_t j = 0; j < pending_king_partial_mult_evidence.size(); j++)
-            {
-                auto& evidence = pending_king_partial_mult_evidence.at(j);
-                evidence.distributed_e_t = resharing.get_recorded_mine_sharing(j);
-                assert(evidence.received_e_2t.size() == size_t(P.num_players()));
-                assert(evidence.distributed_e_t.size() == size_t(P.num_players()));
-                assert(evidence.king == fixed_king);
-                assert(reconstruct_distributed_e_t(evidence.distributed_e_t)
-                        == reconstructed_e_values.at(j));
-            }
-            resharing.clear_recorded_mine_sharings();
         }
         else
-        {
             assert(pending_king_partial_mult_evidence.empty());
-            resharing.clear_recorded_mine_sharings();
-        }
 
-        if (not masks.empty())
-            resharing.add_sender(fixed_king);
+        P.send_receive_all(special_sharing_channels,
+                special_sharing_outgoing, special_sharing_incoming);
+
+        fixed_king_special_e_t_shares.reserve(masks.size());
+        for (size_t j = 0; j < masks.size(); j++)
+        {
+            if (P.my_num() == fixed_king)
+                fixed_king_special_e_t_shares.push_back(T(
+                        pending_king_partial_mult_evidence.at(j)
+                                .distributed_e_t.at(fixed_king)));
+            else if (fixed_king_special_sharing_support_contains(P.my_num()))
+                fixed_king_special_e_t_shares.push_back(
+                        special_sharing_incoming.at(fixed_king)
+                                .template get<T>());
+            else
+                fixed_king_special_e_t_shares.push_back(T{0});
+        }
+        if (P.my_num() != fixed_king
+                && fixed_king_special_sharing_support_contains(P.my_num())
+                && not special_sharing_incoming.at(fixed_king).done())
+            throw logic_error(
+                    "Atlas fixed-king special-sharing stream has trailing data");
     }
     else
     {
+        resharing.reset_all(P);
         for (size_t j = P.get_player(-base_king); j < masks.size();
                 j += P.num_players())
         {
@@ -695,26 +880,39 @@ void Atlas<T>::exchange()
             int j = (base_king + i) % P.num_players();
             resharing.add_sender(j);
         }
+        resharing.exchange();
     }
-
-    resharing.exchange();
 }
 
 template<class T>
 T Atlas<T>::finalize_mul(int)
 {
     int king = fixed_king_enabled ? fixed_king : base_king;
-    T e_t = resharing.finalize(king);
-    T r_t = masks.next();
-    T res = e_t - r_t;
     size_t transcript_index = next_partial_mult_transcript;
     assert(transcript_index < pending_partial_mult_operations.size());
+    T e_t = fixed_king_enabled
+            ? fixed_king_special_e_t_shares.at(transcript_index)
+            : resharing.finalize(king);
+    T r_t = masks.next();
+    T res = e_t - r_t;
     auto& operation = pending_partial_mult_operations.at(transcript_index);
     auto& transcript = operation.transcript;
     next_partial_mult_transcript++;
     assert(transcript.king == king);
     assert(transcript.r_t == r_t);
     transcript.e_t = e_t;
+    if (fixed_king_enabled)
+    {
+        validate_fixed_king_special_sharing_support(
+                transcript.king, transcript.special_sharing_support);
+        if (not fixed_king_special_sharing_support_contains(P.my_num())
+                && transcript.e_t != T{0})
+            throw logic_error(
+                    "Atlas fixed-king special-sharing local component is nonzero outside support");
+        if (res != transcript.e_t - transcript.r_t)
+            throw logic_error(
+                    "Atlas fixed-king special-sharing transcript does not match the returned result");
+    }
     if (fixed_king_enabled && P.my_num() == fixed_king)
     {
         assert(transcript_index < pending_king_partial_mult_evidence.size());
@@ -726,12 +924,8 @@ T Atlas<T>::finalize_mul(int)
                 == size_t(P.num_players()));
         assert(last_king_partial_mult_evidence.distributed_e_t.size()
                 == size_t(P.num_players()));
-        share_value_type local_e_2t = transcript.e_2t;
-        share_value_type local_e_t = transcript.e_t;
-        assert(last_king_partial_mult_evidence.received_e_2t.at(fixed_king)
-                == local_e_2t);
-        assert(last_king_partial_mult_evidence.distributed_e_t.at(fixed_king)
-                == local_e_t);
+        validate_fixed_king_special_sharing_evidence(
+                transcript, last_king_partial_mult_evidence);
     }
     else
     {
@@ -752,6 +946,22 @@ void Atlas<T>::set_fixed_king(int king)
     assert(next_partial_mult_transcript == pending_partial_mult_operations.size());
     fixed_king_enabled = true;
     fixed_king = king;
+    fixed_king_special_sharing_support =
+            canonical_fixed_king_special_sharing_support(king);
+}
+
+template<class T>
+void Atlas<T>::set_fixed_king_special_sharing_support(
+        const vector<int>& support)
+{
+    if (not fixed_king_enabled)
+        throw logic_error(
+                "Atlas special-sharing support requires a fixed king");
+    if (next_partial_mult_transcript != pending_partial_mult_operations.size())
+        throw logic_error(
+                "Atlas special-sharing support cannot change during an operation batch");
+    validate_fixed_king_special_sharing_support(fixed_king, support);
+    fixed_king_special_sharing_support = support;
 }
 
 template<class T>
@@ -912,7 +1122,8 @@ inline T Atlas<T>::finalize_mul_pub()
         assert(reconstruct_received_e_2t(
                 last_king_partial_mult_evidence.received_e_2t) == alpha);
         assert(reconstruct_distributed_e_t(
-                last_king_partial_mult_evidence.distributed_e_t) == alpha);
+                last_king_partial_mult_evidence.distributed_e_t,
+                canonical_fixed_king_special_sharing_support(0)) == alpha);
     }
     else
     {
@@ -1195,7 +1406,8 @@ T Atlas<T>::finalize_mul_trunc(T* pre_trunc)
         assert(reconstruct_received_e_2t(
                 last_king_partial_mult_evidence.received_e_2t) == c);
         assert(reconstruct_distributed_e_t(
-                last_king_partial_mult_evidence.distributed_e_t) == c);
+                last_king_partial_mult_evidence.distributed_e_t,
+                canonical_fixed_king_special_sharing_support(0)) == c);
     }
     else
     {

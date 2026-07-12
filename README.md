@@ -105,6 +105,9 @@ Implemented:
 - private-process transfer of the exact shared producer record and producer
   output ordinal from each successfully completed concrete Atlas operation to
   the corresponding real AtlasGsz wrapper record;
+- exact fixed-king ordinary scalar/dot special sharing `[e]^T_t`, using the
+  deterministic ascending no-dispute support `T={0,...,t}` for the current
+  king 0, zero local shares outside `T`, and no resharing randomness;
 - one opt-in AtlasGsz-owned tentative DoubleRand capture round for completed
   ordinary scalar and dot-product wrapper records, with duplicate exact-output
   rejection, whole-source-group deduplication, and deterministic per-dealer
@@ -136,8 +139,8 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- king-generated `e_t` capture and complete multiplication/dot-product,
-  input, truncation, or preprocessing provenance;
+- king-generated `e_t` capture/authentication and complete
+  multiplication/dot-product, input, truncation, or preprocessing provenance;
 - `z_t = e_t - r_t`, complete operation-output/checkpoint derivations, or any
   checkpoint from this adapter;
 - final output gating;
@@ -177,6 +180,8 @@ checkpoint is created, sealed, or promoted by the failed invocation.
 
 Therefore, this is currently an implementation of the optimistic execution
 path and supporting vertical slices, not a complete GOD implementation.
+The deterministic support rule is only for the current optimistic no-dispute
+stage; it does not claim `Corr`/`Disp`-aware selection or continued execution.
 
 For `m` dealers and `W=max_r w_r`, the uniform global Check-Tag layout has
 maximum degree at most `m*(W+1)-1`. Its concrete soundness uses
@@ -205,6 +210,10 @@ source group contains `n` outputs, while current `0-dot` has only four eligible
 ordinary operations and therefore cannot cross a source-group boundary with
 five parties. Its ordinary and focused communication counts must match at the
 same party count.
+
+The same workload also drives `ATLAS_GSZ_AUTH_TEST=special-e-t`, which checks
+the six exact special sharings, their public support and private king evidence,
+and malformed support rejection without capturing or authenticating `e_t`.
 
 The same workload drives the opt-in
 `tentative-double-rand-adapter-{honest,malformed,verify-failure,tag-failure}`

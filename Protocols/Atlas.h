@@ -72,6 +72,7 @@ public:
         T e_2t;
         T e_t;
         int king;
+        vector<int> special_sharing_support;
         DoubleSharingDecomposition r_decomposition;
     };
 
@@ -110,6 +111,8 @@ private:
     int next_king, base_king;
     bool fixed_king_enabled = false;
     int fixed_king = 0;
+    vector<int> fixed_king_special_sharing_support;
+    vector<T> fixed_king_special_e_t_shares;
 
     ShamirInput<T> resharing;
 
@@ -143,10 +146,22 @@ private:
     void validate_double_sharing_material_provenance(
             const DoubleSharingMaterial& material) const;
     void initialize_reconstruction_factors();
+    vector<int> canonical_fixed_king_special_sharing_support(
+            int king) const;
+    void validate_fixed_king_special_sharing_support(
+            int king, const vector<int>& support) const;
+    bool fixed_king_special_sharing_support_contains(int party) const;
+    vector<share_value_type> make_fixed_king_special_sharing(
+            const share_value_type& secret,
+            const vector<int>& support) const;
     share_value_type reconstruct_received_e_2t(
             const vector<share_value_type>& sharing) const;
     share_value_type reconstruct_distributed_e_t(
-            const vector<share_value_type>& sharing) const;
+            const vector<share_value_type>& sharing,
+            const vector<int>& support) const;
+    void validate_fixed_king_special_sharing_evidence(
+            const PartialMultTranscript& transcript,
+            const KingPartialMultEvidence& evidence) const;
     void build_public_opening_king_evidence(
             size_t transcript_index,
             const share_value_type& opened_value);
@@ -187,6 +202,8 @@ public:
     void exchange();
     T finalize_mul(int n = -1);
     void set_fixed_king(int king);
+    void set_fixed_king_special_sharing_support(
+            const vector<int>& support);
     const PartialMultTranscript& get_last_partial_mult_transcript() const;
     const DoubleSharingProducerReference&
         get_last_double_sharing_producer_reference() const;

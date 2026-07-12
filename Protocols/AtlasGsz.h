@@ -1741,6 +1741,9 @@ private:
     OptimisticAuthenticationState optimistic_authentication_state;
     bool producer_provenance_test_hook_ran = false;
     bool consumed_provenance_transfer_test_hook_ran = false;
+    bool special_e_t_test_enabled = false;
+    bool special_e_t_test_hook_ran = false;
+    size_t special_e_t_test_completed_records = 0;
     bool tentative_double_rand_capture_test_enabled = false;
     bool tentative_double_rand_capture_test_checked_first_output = false;
     bool tentative_double_rand_capture_test_hook_ran = false;
@@ -1784,6 +1787,11 @@ private:
             const TentativeDoubleRandCaptureCandidate& candidate) const;
     void maybe_complete_tentative_double_rand_capture_test();
     bool no_authentication_or_checkpoint_artifacts() const;
+    void run_special_e_t_malformed_support_test();
+    void maybe_run_special_e_t_test(
+            const PartialMultTranscriptRecord& record,
+            OrdinaryDoubleRandOperationKind operation_kind,
+            const T& result);
 
     void validate_partial_mult_transcript_coverage() const;
     void validate_current_virtual_transcript() const;
