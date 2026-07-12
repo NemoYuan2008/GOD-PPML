@@ -115,6 +115,13 @@ Implemented:
   validation/evidence only;
 - atomic tentative candidate finalization, inspection, malformed-copy
   validation, and discard;
+- one opt-in consuming adapter from a finalized tentative DoubleRand candidate
+  to one authoritative batch per real dealer and exactly one source-only global
+  authentication invocation;
+- atomic ascending-dealer batch registration with one range-checked batch ID
+  per dealer and a single `next_batch_id` advance for the complete set;
+- a value receipt containing only public numeric batch summaries and the exact
+  canonical temporary-source-reference-to-authenticated-handle mapping;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -125,19 +132,37 @@ packing.
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
-- an independently reviewed adapter/integration decision from the finalized
-  tentative candidate to real authentication and Check-Tag;
+- conversion of tentative `r_t` derivations to handle-based
+  `LinearDerivation` values or any checkpoint from this adapter;
+- king-generated `e_t` capture and complete multiplication/dot-product,
+  input, truncation, or preprocessing provenance;
+- final output gating;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
 
 Source-only authentication is an authenticated-source-table operation, not a
 checkpoint: it creates no checkpoint record and performs no sealing or
-promotion. The tentative candidate creates no dealer batch or batch ID,
+promotion. Tentative capture by itself creates no dealer batch or batch ID,
 authentication invocation, authenticated handle, FTag chunk, checkpoint, or
-scheduler state. It is not converted to the existing handle-based
-`LinearDerivation` and is not passed to either global authentication path. The
-next provenance step may be a separately reviewed adapter from the finalized
-candidate to the source-only path, not automatic production Check-Tag wiring.
+scheduler state. The opt-in adapter consumes a finalized candidate, registers
+the complete real-dealer batch set, and passes all batch IDs to the existing
+source-only global path exactly once. It does not convert the tentative
+derivations to `LinearDerivation` and does not create a checkpoint.
+
+The adapter first rejects active capture or absence of a finalized candidate
+without mutation. Malformed finalized input is explicitly discarded before ID
+allocation, registration, communication, or authentication randomness. After
+successful preflight, the candidate is one-shot: success and authentication
+rejection both consume it, and a second call returns before changing any ID,
+batch, invocation, communication counter, or authentication PRNG state.
+
+Successful authentication certifies consistency of the dealer-generated
+source sharings. It does not prove that a corrupt dealer sampled a uniformly
+random or otherwise prescribed secret.
+
+A future production segment collector must merge the king's
+PartialMult-dealt degree-`t` `e_t` sources with that same party's other dealer
+sources instead of creating a second logical dealer for the king.
 
 Authentication failures on both paths remain fail-stop at
 `RecoveryNotImplemented`: no participating batch receives handles, and no
@@ -173,6 +198,12 @@ source group contains `n` outputs, while current `0-dot` has only four eligible
 ordinary operations and therefore cannot cross a source-group boundary with
 five parties. Its ordinary and focused communication counts must match at the
 same party count.
+
+The same workload drives the opt-in
+`tentative-double-rand-adapter-{honest,malformed,verify-failure,tag-failure}`
+modes. The adapter modes exercise component integration only; they do not form
+a checkpoint, integrate a scheduler, or establish complete operation or
+segment provenance.
 
 ## Archive scope
 

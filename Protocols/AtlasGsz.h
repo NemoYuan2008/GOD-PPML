@@ -516,8 +516,45 @@ private:
         }
     };
 
+    struct TentativeDoubleRandSourceHandleMapping
+    {
+        size_t producer_record_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        int dealer = -1;
+        AuthenticatedSourceHandle handle;
+    };
+
+    struct TentativeDoubleRandDealerBatchSummary
+    {
+        int dealer = -1;
+        uint64_t batch_id = 0;
+        size_t source_count = 0;
+    };
+
+    struct TentativeDoubleRandAuthenticationReceipt
+    {
+        bool authenticated = false;
+        uint64_t authentication_invocation_id = 0;
+        vector<TentativeDoubleRandDealerBatchSummary> dealer_batches;
+        vector<TentativeDoubleRandSourceHandleMapping> source_handles;
+    };
+
+    struct DealerBatchFailureEvidence
+    {
+        typename T::open_type challenge{};
+        vector<typename T::open_type> published_shares;
+    };
+
     struct DealerSourceBatchRecord
     {
+        DealerSourceBatchRecord() = default;
+        DealerSourceBatchRecord(DealerSourceBatchRecord&&) noexcept = default;
+        DealerSourceBatchRecord& operator=(
+                DealerSourceBatchRecord&&) noexcept = default;
+        DealerSourceBatchRecord(const DealerSourceBatchRecord&) = delete;
+        DealerSourceBatchRecord& operator=(
+                const DealerSourceBatchRecord&) = delete;
+
         uint64_t batch_id = 0;
         int dealer = -1;
         vector<uint64_t> source_ordinals;
@@ -536,14 +573,10 @@ private:
         bool base_sharing_check_passed = false;
 
         // Retained only when the public compressed sharing is inconsistent.
-        bool has_verify_sharing_failure_evidence = false;
-        typename T::open_type verify_sharing_failure_challenge{};
-        vector<typename T::open_type>
-                verify_sharing_failure_published_shares;
-        bool has_base_sharing_failure_evidence = false;
-        typename T::open_type base_sharing_failure_challenge{};
-        vector<typename T::open_type>
-                base_sharing_failure_published_shares;
+        unique_ptr<DealerBatchFailureEvidence>
+                verify_sharing_failure_evidence;
+        unique_ptr<DealerBatchFailureEvidence>
+                base_sharing_failure_evidence;
         size_t ftag_chunk_count = 0;
         vector<AuthenticatedSourceHandle> authenticated_handles;
     };
@@ -1697,6 +1730,7 @@ private:
     bool tentative_double_rand_capture_test_enabled = false;
     bool tentative_double_rand_capture_test_checked_first_output = false;
     bool tentative_double_rand_capture_test_hook_ran = false;
+    string tentative_double_rand_adapter_test_mode;
     SeededPRNG optimistic_authentication_prng;
     ShamirInput<T> optimistic_authentication_input;
 
@@ -1801,6 +1835,9 @@ private:
     uint64_t register_dealer_source_batch(
             int dealer,
             const vector<T>& local_source_shares);
+    void register_tentative_double_rand_batches_atomically(
+            vector<DealerSourceBatchRecord>& prospective_batches,
+            uint64_t next_batch_id_after);
     bool masked_degree_t_consistency_check(
             const vector<T>& local_shares,
             bool inject_bad_published_share,
@@ -1849,6 +1886,12 @@ private:
                     GlobalAuthenticationTestFault::none,
             int inject_bad_verify_sharing_dealer = -1,
             int inject_bad_base_sharing_dealer = -1);
+    TentativeDoubleRandAuthenticationReceipt
+        adapt_finalized_tentative_double_rand_candidate(
+                GlobalAuthenticationTestFault test_fault =
+                        GlobalAuthenticationTestFault::none,
+                int inject_bad_verify_sharing_dealer = -1);
+    void run_tentative_double_rand_adapter_test_hook(const string& mode);
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
             bool inject_bad_presentation = false,

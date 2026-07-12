@@ -195,21 +195,41 @@ forms temporary derivations over candidate-local source references for each
 consumed `r_t`. Paired degree-`2t` provenance remains validation/evidence only.
 The tentative candidate can be finalized atomically, inspected, and discarded.
 
-This capture creates no dealer batch or batch ID, authenticated source handle,
-FTag chunk, authentication invocation, checkpoint, or scheduler state. It is
-not passed to either the source-only or checkpoint-coupled authentication
-path. A future milestone may separately review an adapter from the finalized
-candidate to the source-only path before any production Check-Tag wiring.
+The repository now also contains one opt-in, consuming adapter from that exact
+finalized candidate to the existing source-only authentication path. After a
+complete local preflight, it copies one ordered source sequence into one
+`DealerSourceBatchRecord` per real dealer, claims the candidate, atomically
+appends the complete ascending-dealer batch set, advances `next_batch_id` once,
+and invokes `authenticate_source_batches()` exactly once. On success it returns
+a value receipt mapping
+`(producer_record_ordinal, input_generation_group_ordinal, dealer)` to the exact
+authenticated handle, in producer/group/dealer order, plus an ascending-dealer
+`(dealer, batch_id, source_count)` summary. The receipt contains public numeric
+identities only and is not a persistent mapping registry.
+
+The capture alone still creates no dealer batch or batch ID, authenticated
+source handle, FTag chunk, authentication invocation, checkpoint, or scheduler
+state. Only the opt-in adapter consumes the finalized candidate and enters the
+source-only authentication path. Malformed preflight discards the candidate
+before any authentication mutation or execution. Authentication rejection
+retains the registered diagnostic records and fail-stop evidence, creates no
+handles, and does not permit reuse or retry.
 
 This vertical slice is not yet integrated into the normal segment scheduler.
 It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. a separately reviewed adapter/integration decision from the finalized
-   tentative candidate to the source-only authentication path;
-2. normal segment/checkpoint scheduler integration;
-3. final production output gating through that scheduler.
+1. conversion of tentative `r_t` derivations to handle-based
+   `LinearDerivation` values and any checkpoint;
+2. king-generated `e_t` source capture and complete operation/segment source
+   collection;
+3. normal segment/checkpoint scheduler integration;
+4. final production output gating through that scheduler.
+
+A future production segment collector must merge the king's
+PartialMult-dealt degree-`t` `e_t` sources with that same real party's other
+dealer sources. It must not create a second logical dealer for the king.
 
 Legacy authentication, recovery, and Analyze-related metadata skeletons remain
 in the code. They are not authoritative production provenance. Do not build
@@ -418,6 +438,23 @@ ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=3 \
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=5 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
 
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-honest PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-honest PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-malformed PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-malformed PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-verify-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-verify-failure PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-tag-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-tag-failure PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
 
@@ -485,10 +522,15 @@ always uses the sampled zero-permitted challenge without an override.
 
 Unless the user changes priorities, the expected sequence is:
 
-1. separately reviewed adaptation/integration of the finalized tentative
-   candidate with the source-only authentication path;
-2. normal segment verification → authentication → promotion integration;
-3. final output gating.
+1. convert the captured tentative `r_t` derivations to exact handle-based
+   `LinearDerivation` values using the adapter receipt;
+2. separately capture king-generated `e_t` sources and merge them into the
+   king's single real-dealer source sequence;
+3. form complete segment source collections and checkpoint derivations, then
+   integrate authentication, sealing, and promotion;
+4. integrate normal segment continuation and final output gating.
+
+The immediate next milestone is item 1 only.
 
 Keep each milestone independently reviewable. Do not pull later milestones
 into an earlier pass merely because adjacent code is available.

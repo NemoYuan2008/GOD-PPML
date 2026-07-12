@@ -13,6 +13,7 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <type_traits>
 #include "BufferScope.h"
 #include "AtlasConfig.h"
 
@@ -786,6 +787,12 @@ void AtlasGsz<T>::maybe_complete_tentative_double_rand_capture_test()
             || not validate_tentative_double_rand_candidate(*candidate)
             || not no_authentication_or_checkpoint_artifacts())
         fail("finalized positive candidate failed focused inspection");
+    if (not tentative_double_rand_adapter_test_mode.empty())
+    {
+        run_tentative_double_rand_adapter_test_hook(
+                tentative_double_rand_adapter_test_mode);
+        return;
+    }
     if (begin_tentative_double_rand_capture())
         fail("begin accepted while a finalized candidate was retained");
 
@@ -1566,7 +1573,8 @@ uint64_t AtlasGsz<T>::register_dealer_source_batch(
     auto& state = optimistic_authentication_state;
 
     DealerSourceBatchRecord batch{};
-    batch.batch_id = state.next_batch_id++;
+    const uint64_t batch_id = state.next_batch_id;
+    batch.batch_id = batch_id;
     batch.dealer = dealer;
     batch.local_source_shares = local_source_shares;
     batch.source_ordinals.reserve(local_source_shares.size());
@@ -1574,8 +1582,42 @@ uint64_t AtlasGsz<T>::register_dealer_source_batch(
         batch.source_ordinals.push_back(ordinal);
     assert(batch.source_ordinals.size()
             == batch.local_source_shares.size());
-    state.dealer_batches.push_back(batch);
-    return batch.batch_id;
+    state.dealer_batches.push_back(std::move(batch));
+    state.next_batch_id = batch_id + 1;
+    return batch_id;
+}
+
+template<class T>
+void AtlasGsz<T>::register_tentative_double_rand_batches_atomically(
+        vector<DealerSourceBatchRecord>& prospective_batches,
+        uint64_t next_batch_id_after)
+{
+    auto& state = optimistic_authentication_state;
+    assert(prospective_batches.size() == size_t(P.num_players()));
+    assert(state.dealer_batches.capacity()
+            >= state.dealer_batches.size() + prospective_batches.size());
+    assert(next_batch_id_after > state.next_batch_id);
+    for (size_t dealer = 0; dealer < prospective_batches.size(); dealer++)
+    {
+        const auto& batch = prospective_batches.at(dealer);
+        assert(batch.dealer == int(dealer));
+        assert(batch.batch_id == state.next_batch_id + dealer);
+        assert(not batch.local_source_shares.empty());
+        assert(batch.source_ordinals.size()
+                == batch.local_source_shares.size());
+    }
+
+    // Capacity and every complete record were prepared before the candidate
+    // was claimed. Moving the vector-backed records cannot allocate, so the
+    // authoritative registry receives the whole dealer set without a prefix.
+    static_assert(
+            std::is_nothrow_move_constructible<
+                    DealerSourceBatchRecord>::value,
+            "DealerSourceBatchRecord must be nothrow move constructible for prefix-free atomic registration");
+    state.dealer_batches.insert(state.dealer_batches.end(),
+            make_move_iterator(prospective_batches.begin()),
+            make_move_iterator(prospective_batches.end()));
+    state.next_batch_id = next_batch_id_after;
 }
 
 template<class T>
@@ -1620,6 +1662,7 @@ bool AtlasGsz<T>::verify_dealer_source_batch(
             == DealerBatchAuthenticationState::pending);
     assert(not batch.local_source_shares.empty());
     assert(not batch.verify_sharing_completed);
+    assert(not batch.verify_sharing_failure_evidence);
 
     const size_t communication_before = P.total_comm().sent;
     typename T::open_type challenge{};
@@ -1635,9 +1678,10 @@ bool AtlasGsz<T>::verify_dealer_source_batch(
     if (consistent)
         return true;
 
-    batch.has_verify_sharing_failure_evidence = true;
-    batch.verify_sharing_failure_challenge = challenge;
-    batch.verify_sharing_failure_published_shares = published_shares;
+    auto evidence = make_unique<DealerBatchFailureEvidence>();
+    evidence->challenge = challenge;
+    evidence->published_shares = std::move(published_shares);
+    batch.verify_sharing_failure_evidence = std::move(evidence);
     return false;
 }
 
@@ -1650,6 +1694,7 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
     assert(batch.authentication_state
             == DealerBatchAuthenticationState::pending);
     assert(not batch.base_sharing_check_completed);
+    assert(not batch.base_sharing_failure_evidence);
     assert(base_sharing.empty());
 
     const size_t communication_before = P.total_comm().sent;
@@ -1683,9 +1728,10 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
     if (consistent)
         return true;
 
-    batch.has_base_sharing_failure_evidence = true;
-    batch.base_sharing_failure_challenge = challenge;
-    batch.base_sharing_failure_published_shares = published_shares;
+    auto evidence = make_unique<DealerBatchFailureEvidence>();
+    evidence->challenge = challenge;
+    evidence->published_shares = std::move(published_shares);
+    batch.base_sharing_failure_evidence = std::move(evidence);
     base_sharing.clear();
     return false;
 }
@@ -2907,6 +2953,741 @@ bool AtlasGsz<T>::authenticate_source_batches(
 }
 
 template<class T>
+typename AtlasGsz<T>::TentativeDoubleRandAuthenticationReceipt
+AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
+        GlobalAuthenticationTestFault test_fault,
+        int inject_bad_verify_sharing_dealer)
+{
+    TentativeDoubleRandAuthenticationReceipt receipt{};
+    auto& capture = tentative_double_rand_capture_state;
+    auto& auth = optimistic_authentication_state;
+
+    // Active capture and absence of a finalized candidate are non-consuming
+    // rejections. In particular, the active round remains available to its
+    // producer and no authentication state is inspected or changed.
+    if (capture.active)
+        return receipt;
+    const auto* candidate = capture.finalized_candidate.get();
+    if (candidate == 0)
+        return receipt;
+
+    struct ProspectiveSourceMapping
+    {
+        size_t producer_record_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        int dealer = -1;
+        uint64_t batch_id = 0;
+        uint64_t source_ordinal = 0;
+    };
+
+    bool preflight_ok = auth.status == OptimisticAuthenticationStatus::ready
+            && validate_tentative_double_rand_candidate(*candidate)
+            && candidate->source_count != 0
+            && candidate->source_count
+                    <= uint64_t(numeric_limits<uint64_t>::max())
+            && candidate->dealer_sources.size()
+                    == size_t(P.num_players());
+    const size_t dealer_count = size_t(P.num_players());
+    size_t mapping_count = 0;
+    if (preflight_ok)
+        try
+        {
+            mapping_count = checked_size_product(dealer_count,
+                    candidate->source_count,
+                    "AtlasGsz: tentative adapter mapping count overflow");
+        }
+        catch (const overflow_error&)
+        {
+            preflight_ok = false;
+        }
+
+    vector<bool> seen_dealers;
+    vector<ProspectiveSourceMapping> prospective_mappings;
+    vector<DealerSourceBatchRecord> prospective_batches;
+    vector<uint64_t> requested_batch_ids;
+    if (preflight_ok)
+    {
+        seen_dealers.resize(dealer_count, false);
+        if (dealer_count > prospective_batches.max_size()
+                || dealer_count > requested_batch_ids.max_size()
+                || dealer_count > receipt.dealer_batches.max_size()
+                || mapping_count > prospective_mappings.max_size()
+                || mapping_count > receipt.source_handles.max_size())
+            preflight_ok = false;
+    }
+
+    auto group_less = [] (const TentativeSourceGroupReference& left,
+            const TentativeSourceGroupReference& right) {
+        if (left.producer_record_ordinal
+                != right.producer_record_ordinal)
+            return left.producer_record_ordinal
+                    < right.producer_record_ordinal;
+        return left.input_generation_group_ordinal
+                < right.input_generation_group_ordinal;
+    };
+    if (preflight_ok)
+        for (size_t source_ordinal = 0;
+                source_ordinal < candidate->source_groups.size();
+                source_ordinal++)
+        {
+            const auto& group = candidate->source_groups.at(source_ordinal);
+            if ((source_ordinal > 0 && not group_less(
+                            candidate->source_groups.at(source_ordinal - 1),
+                            group))
+                    || group.producer_record_ordinal
+                            >= candidate->producer_records.size()
+                    || not candidate->producer_records.at(
+                            group.producer_record_ordinal)
+                    || group.input_generation_group_ordinal
+                            >= candidate->producer_records.at(
+                                    group.producer_record_ordinal)
+                                    ->degree_t.source_groups.size())
+            {
+                preflight_ok = false;
+                break;
+            }
+        }
+
+    if (preflight_ok)
+        for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        {
+            const auto& sequence = candidate->dealer_sources.at(dealer);
+            if (sequence.dealer < 0
+                    || size_t(sequence.dealer) >= dealer_count
+                    || sequence.dealer != int(dealer)
+                    || seen_dealers.at(sequence.dealer)
+                    || sequence.sources.size() != candidate->source_count)
+            {
+                preflight_ok = false;
+                break;
+            }
+            seen_dealers.at(sequence.dealer) = true;
+            if (candidate->source_count > sequence.sources.max_size())
+            {
+                preflight_ok = false;
+                break;
+            }
+            for (size_t source_ordinal = 0;
+                    source_ordinal < candidate->source_count;
+                    source_ordinal++)
+            {
+                const auto& source = sequence.sources.at(source_ordinal);
+                const auto& group =
+                        candidate->source_groups.at(source_ordinal);
+                TentativeSourceReference expected_reference{};
+                expected_reference.producer_record_ordinal =
+                        group.producer_record_ordinal;
+                expected_reference.input_generation_group_ordinal =
+                        group.input_generation_group_ordinal;
+                expected_reference.dealer = int(dealer);
+                const auto& original = candidate->producer_records.at(
+                        group.producer_record_ordinal)
+                        ->degree_t.source_groups.at(
+                                group.input_generation_group_ordinal)
+                        .sources.at(dealer);
+                if (source.tentative_source_ordinal != source_ordinal
+                        || not (source.reference == expected_reference)
+                        || original.dealer != int(dealer)
+                        || original.input_batch_ordinal
+                                != group.input_generation_group_ordinal
+                        || source.local_share != original.local_share)
+                {
+                    preflight_ok = false;
+                    break;
+                }
+            }
+            if (not preflight_ok)
+                break;
+        }
+    if (preflight_ok
+            && find(seen_dealers.begin(), seen_dealers.end(), false)
+                    != seen_dealers.end())
+        preflight_ok = false;
+
+    // A malformed finalized candidate is one-shot input: discard it without
+    // allocating an ID, registering a batch, retaining an invocation, or
+    // entering any communication/randomness path.
+    if (not preflight_ok)
+    {
+        discard_tentative_double_rand_capture();
+        return receipt;
+    }
+
+    // The batch-ID snapshot follows the complete candidate structural
+    // preflight. The next free ID must remain representable after reserving
+    // exactly one ID for every real dealer.
+    const uint64_t first_batch_id = auth.next_batch_id;
+    const uint64_t dealer_count_u64 = uint64_t(dealer_count);
+    if (first_batch_id == 0
+            || dealer_count_u64
+                    > numeric_limits<uint64_t>::max() - first_batch_id)
+    {
+        discard_tentative_double_rand_capture();
+        return receipt;
+    }
+    const uint64_t next_batch_id_after =
+            first_batch_id + dealer_count_u64;
+
+    prospective_batches.reserve(dealer_count);
+    requested_batch_ids.reserve(dealer_count);
+    receipt.dealer_batches.reserve(dealer_count);
+    prospective_mappings.reserve(mapping_count);
+    receipt.source_handles.reserve(mapping_count);
+    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+    {
+        const uint64_t batch_id = first_batch_id + uint64_t(dealer);
+        if (find_dealer_source_batch(batch_id) != 0)
+        {
+            discard_tentative_double_rand_capture();
+            return TentativeDoubleRandAuthenticationReceipt{};
+        }
+
+        DealerSourceBatchRecord batch{};
+        batch.batch_id = batch_id;
+        batch.dealer = int(dealer);
+        if (candidate->source_count > batch.source_ordinals.max_size()
+                || candidate->source_count
+                        > batch.local_source_shares.max_size())
+        {
+            discard_tentative_double_rand_capture();
+            return TentativeDoubleRandAuthenticationReceipt{};
+        }
+        batch.source_ordinals.reserve(candidate->source_count);
+        batch.local_source_shares.reserve(candidate->source_count);
+        for (size_t source_ordinal = 0;
+                source_ordinal < candidate->source_count; source_ordinal++)
+        {
+            batch.source_ordinals.push_back(source_ordinal);
+            // Copy from the const candidate. No source vector is partially
+            // moved out of the one-shot object.
+            batch.local_source_shares.push_back(
+                    candidate->dealer_sources.at(dealer).sources.at(
+                            source_ordinal).local_share);
+        }
+        prospective_batches.push_back(std::move(batch));
+        requested_batch_ids.push_back(batch_id);
+
+        TentativeDoubleRandDealerBatchSummary summary{};
+        summary.dealer = int(dealer);
+        summary.batch_id = batch_id;
+        summary.source_count = candidate->source_count;
+        receipt.dealer_batches.push_back(summary);
+    }
+
+    // Validate the complete public mapping prospectively using raw numeric
+    // identities. AuthenticatedSourceHandle objects are created only after
+    // the existing authentication commit has succeeded.
+    for (size_t source_ordinal = 0;
+            source_ordinal < candidate->source_count; source_ordinal++)
+        for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        {
+            const auto& source = candidate->dealer_sources.at(dealer)
+                    .sources.at(source_ordinal);
+            ProspectiveSourceMapping mapping{};
+            mapping.producer_record_ordinal =
+                    source.reference.producer_record_ordinal;
+            mapping.input_generation_group_ordinal =
+                    source.reference.input_generation_group_ordinal;
+            mapping.dealer = int(dealer);
+            mapping.batch_id = first_batch_id + uint64_t(dealer);
+            mapping.source_ordinal = source_ordinal;
+            prospective_mappings.push_back(mapping);
+        }
+    if (prospective_mappings.size() != mapping_count)
+    {
+        discard_tentative_double_rand_capture();
+        return TentativeDoubleRandAuthenticationReceipt{};
+    }
+
+    if (prospective_batches.size()
+                    > auth.dealer_batches.max_size()
+                            - auth.dealer_batches.size()
+            || auth.global_invocations.size()
+                    == auth.global_invocations.max_size())
+    {
+        discard_tentative_double_rand_capture();
+        return TentativeDoubleRandAuthenticationReceipt{};
+    }
+    const size_t registered_count_after =
+            auth.dealer_batches.size() + prospective_batches.size();
+    const size_t invocation_count_after =
+            auth.global_invocations.size() + 1;
+    const size_t batch_start_index = auth.dealer_batches.size();
+    const size_t receipt_source_handles_capacity =
+            receipt.source_handles.capacity();
+
+    // Reserve all adapter-owned authoritative container growth before the
+    // one-shot claim. Capacity changes carry no protocol identity.
+    auth.dealer_batches.reserve(registered_count_after);
+    auth.global_invocations.reserve(invocation_count_after);
+
+    unique_ptr<TentativeDoubleRandCaptureCandidate> claimed_candidate =
+            std::move(capture.finalized_candidate);
+    assert(claimed_candidate != 0);
+    assert(inspect_tentative_double_rand_capture() == 0);
+    register_tentative_double_rand_batches_atomically(
+            prospective_batches, next_batch_id_after);
+
+    const size_t invocation_count_before = auth.global_invocations.size();
+    const size_t checkpoint_count_before = auth.checkpoints.size();
+    const uint64_t next_checkpoint_id_before = auth.next_checkpoint_id;
+    const bool accepted = authenticate_source_batches(requested_batch_ids,
+            test_fault, inject_bad_verify_sharing_dealer, -1);
+    if (auth.global_invocations.size() != invocation_count_before + 1
+            || auth.checkpoints.size() != checkpoint_count_before
+            || auth.next_checkpoint_id != next_checkpoint_id_before)
+        throw logic_error(
+                "AtlasGsz: tentative adapter authentication boundary changed unexpectedly");
+    const auto& invocation = auth.global_invocations.back();
+    receipt.authentication_invocation_id = invocation.invocation_id;
+    if (invocation.checkpoint_id != 0
+            || invocation.members.size() != dealer_count)
+        throw logic_error(
+                "AtlasGsz: tentative adapter did not retain one source-only all-dealer invocation");
+    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        if (invocation.members.at(dealer).dealer != int(dealer)
+                || invocation.members.at(dealer).batch_id
+                        != first_batch_id + uint64_t(dealer))
+            throw logic_error(
+                    "AtlasGsz: tentative adapter invocation lost canonical dealer order");
+
+    if (not accepted)
+    {
+        for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        {
+            const auto& batch = auth.dealer_batches.at(
+                    batch_start_index + dealer);
+            if (batch.batch_id != first_batch_id + uint64_t(dealer)
+                    || batch.dealer != int(dealer)
+                    || batch.authentication_state
+                            != DealerBatchAuthenticationState::rejected
+                    || not batch.authenticated_handles.empty())
+                throw logic_error(
+                        "AtlasGsz: rejected tentative adapter batch retained authenticated state");
+        }
+        return receipt;
+    }
+
+    // Validate each newly registered authoritative batch exactly once. The
+    // direct batch range is the complete set appended by this adaptation.
+    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+    {
+        const auto& batch = auth.dealer_batches.at(
+                batch_start_index + dealer);
+        const auto& expected_sources =
+                claimed_candidate->dealer_sources.at(dealer).sources;
+        if (batch.batch_id != first_batch_id + uint64_t(dealer)
+                || batch.dealer != int(dealer)
+                || batch.authentication_state
+                        != DealerBatchAuthenticationState::authenticated
+                || batch.source_ordinals.size()
+                        != claimed_candidate->source_count
+                || batch.local_source_shares.size()
+                        != claimed_candidate->source_count
+                || batch.authenticated_handles.size()
+                        != claimed_candidate->source_count
+                || batch.verify_sharing_failure_evidence
+                || batch.base_sharing_failure_evidence)
+            throw logic_error(
+                    "AtlasGsz: authenticated tentative adapter batch failed exact source validation");
+        for (size_t source_ordinal = 0;
+                source_ordinal < claimed_candidate->source_count;
+                source_ordinal++)
+        {
+            const auto& handle =
+                    batch.authenticated_handles.at(source_ordinal);
+            if (batch.source_ordinals.at(source_ordinal)
+                            != source_ordinal
+                    || batch.local_source_shares.at(source_ordinal)
+                            != expected_sources.at(source_ordinal).local_share
+                    || handle.batch_id != batch.batch_id
+                    || handle.dealer != int(dealer)
+                    || handle.source_ordinal != source_ordinal)
+                throw logic_error(
+                        "AtlasGsz: authenticated tentative adapter batch failed exact source validation");
+        }
+    }
+
+    // Materialize the canonical receipt from the complete prospective numeric
+    // mapping and the exact committed handle at the corresponding direct
+    // authoritative index. Capacity was allocated before candidate claim, so
+    // this loop cannot grow the receipt vector after authentication commit.
+    if (receipt.source_handles.capacity() < mapping_count
+            || not receipt.source_handles.empty())
+        throw logic_error(
+                "AtlasGsz: tentative adapter receipt capacity was not prepared before authentication");
+    for (size_t mapping_index = 0;
+            mapping_index < prospective_mappings.size(); mapping_index++)
+    {
+        const size_t source_ordinal = mapping_index / dealer_count;
+        const size_t dealer = mapping_index % dealer_count;
+        const auto& expected_group =
+                claimed_candidate->source_groups.at(source_ordinal);
+        const auto& source = claimed_candidate->dealer_sources.at(dealer)
+                .sources.at(source_ordinal);
+        const auto& prospective = prospective_mappings.at(mapping_index);
+        const auto& batch = auth.dealer_batches.at(
+                batch_start_index + dealer);
+        const auto& handle =
+                batch.authenticated_handles.at(source_ordinal);
+        if (prospective.producer_record_ordinal
+                            != expected_group.producer_record_ordinal
+                || prospective.input_generation_group_ordinal
+                            != expected_group.input_generation_group_ordinal
+                || prospective.dealer != int(dealer)
+                || prospective.batch_id != batch.batch_id
+                || prospective.source_ordinal != source_ordinal
+                || source.reference.producer_record_ordinal
+                            != prospective.producer_record_ordinal
+                || source.reference.input_generation_group_ordinal
+                            != prospective.input_generation_group_ordinal
+                || source.reference.dealer != prospective.dealer
+                || handle.batch_id != prospective.batch_id
+                || handle.dealer != prospective.dealer
+                || handle.source_ordinal != prospective.source_ordinal)
+            throw logic_error(
+                    "AtlasGsz: tentative adapter mapping did not resolve to the exact indexed authenticated handle");
+
+        TentativeDoubleRandSourceHandleMapping mapping{};
+        mapping.producer_record_ordinal =
+                prospective.producer_record_ordinal;
+        mapping.input_generation_group_ordinal =
+                prospective.input_generation_group_ordinal;
+        mapping.dealer = prospective.dealer;
+        mapping.handle = handle;
+        receipt.source_handles.push_back(mapping);
+    }
+    if (receipt.source_handles.size() != mapping_count
+            || receipt.source_handles.capacity()
+                    != receipt_source_handles_capacity)
+        throw logic_error(
+                "AtlasGsz: tentative adapter receipt does not cover every candidate source");
+    receipt.authenticated = true;
+    return receipt;
+}
+
+template<class T>
+void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
+        const string& mode)
+{
+    auto fail = [&] (const string& reason) {
+        throw logic_error("AtlasGsz: " + mode + " test failed: " + reason);
+    };
+    auto& auth = optimistic_authentication_state;
+    const auto* candidate = inspect_tentative_double_rand_capture();
+    const size_t dealer_count = size_t(P.num_players());
+    if (candidate == 0
+            || not validate_tentative_double_rand_candidate(*candidate)
+            || candidate->source_count != 2
+            || candidate->dealer_sources.size() != dealer_count)
+        fail("finalized two-source all-dealer candidate is absent");
+
+    const size_t source_count = candidate->source_count;
+    const auto expected_groups = candidate->source_groups;
+    vector<vector<T>> expected_local_sources(dealer_count);
+    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+    {
+        const auto& sequence = candidate->dealer_sources.at(dealer);
+        if (sequence.dealer != int(dealer)
+                || sequence.sources.size() != source_count)
+            fail("candidate dealer sequence is not canonical");
+        expected_local_sources.at(dealer).reserve(source_count);
+        for (size_t source_ordinal = 0;
+                source_ordinal < source_count; source_ordinal++)
+            expected_local_sources.at(dealer).push_back(
+                    sequence.sources.at(source_ordinal).local_share);
+    }
+
+    const size_t communication_before = P.total_comm().sent;
+    const uint64_t next_batch_id_before = auth.next_batch_id;
+    const size_t batch_count_before = auth.dealer_batches.size();
+    const size_t invocation_count_before = auth.global_invocations.size();
+    const uint64_t next_invocation_id_before =
+            auth.next_global_invocation_id;
+    const size_t challenge_count_before =
+            auth.global_check_tag_challenges;
+    const size_t checkpoint_count_before = auth.checkpoints.size();
+    const uint64_t next_checkpoint_id_before = auth.next_checkpoint_id;
+
+    if (mode == "tentative-double-rand-adapter-malformed")
+    {
+        auto* malformed = tentative_double_rand_capture_state
+                .finalized_candidate.get();
+        malformed->dealer_sources.front().sources.pop_back();
+        SeededPRNG expected_prng = optimistic_authentication_prng;
+        const auto receipt =
+                adapt_finalized_tentative_double_rand_candidate();
+        const auto duplicate =
+                adapt_finalized_tentative_double_rand_candidate();
+        SeededPRNG actual_prng = optimistic_authentication_prng;
+        for (size_t i = 0; i < 4; i++)
+            if (expected_prng.get_word() != actual_prng.get_word())
+                fail("malformed preflight advanced authentication randomness");
+        if (receipt.authenticated
+                || receipt.authentication_invocation_id != 0
+                || not receipt.dealer_batches.empty()
+                || not receipt.source_handles.empty()
+                || duplicate.authenticated
+                || duplicate.authentication_invocation_id != 0
+                || inspect_tentative_double_rand_capture() != 0
+                || auth.next_batch_id != next_batch_id_before
+                || auth.dealer_batches.size() != batch_count_before
+                || auth.global_invocations.size() != invocation_count_before
+                || auth.next_global_invocation_id
+                        != next_invocation_id_before
+                || auth.global_check_tag_challenges
+                        != challenge_count_before
+                || auth.checkpoints.size() != checkpoint_count_before
+                || auth.next_checkpoint_id != next_checkpoint_id_before
+                || P.total_comm().sent != communication_before
+                || not auth.keys.empty() || not auth.nu_material.empty()
+                || not auth.holder_tags.empty())
+            fail("malformed candidate was not discarded before all protocol mutation");
+
+        tentative_double_rand_capture_test_hook_ran = true;
+        if (P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST " << mode
+                 << " PASS candidate=discarded retry=unsupported"
+                 << " dealer_batches=0 handles=0 authentication_invocations=0"
+                 << " communication=0 authentication_randomness=0"
+                 << " checkpoints=0 derivation_conversion=0" << endl;
+        return;
+    }
+
+    GlobalAuthenticationTestFault test_fault =
+            GlobalAuthenticationTestFault::none;
+    int bad_verify_sharing_dealer = -1;
+    if (mode == "tentative-double-rand-adapter-verify-failure")
+        bad_verify_sharing_dealer = 0;
+    else if (mode == "tentative-double-rand-adapter-tag-failure")
+        test_fault = GlobalAuthenticationTestFault::aggregate_holder_tag;
+    else if (mode != "tentative-double-rand-adapter-honest")
+        fail("unknown adapter mode reached focused hook");
+
+    const auto receipt = adapt_finalized_tentative_double_rand_candidate(
+            test_fault, bad_verify_sharing_dealer);
+    const bool expected_success =
+            mode == "tentative-double-rand-adapter-honest";
+    if (receipt.authenticated != expected_success
+            || receipt.authentication_invocation_id == 0
+            || receipt.dealer_batches.size() != dealer_count
+            || auth.next_batch_id
+                    != next_batch_id_before + uint64_t(dealer_count)
+            || auth.dealer_batches.size()
+                    != batch_count_before + dealer_count
+            || auth.global_invocations.size()
+                    != invocation_count_before + 1
+            || auth.next_global_invocation_id
+                    != next_invocation_id_before + 1
+            || auth.checkpoints.size() != checkpoint_count_before
+            || auth.next_checkpoint_id != next_checkpoint_id_before
+            || inspect_tentative_double_rand_capture() != 0)
+        fail("adapter did not consume exactly one candidate into one all-dealer invocation");
+
+    const auto& invocation = auth.global_invocations.back();
+    if (invocation.invocation_id != receipt.authentication_invocation_id
+            || invocation.checkpoint_id != 0
+            || invocation.members.size() != dealer_count)
+        fail("retained invocation is not the exact source-only invocation");
+
+    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+    {
+        const auto& summary = receipt.dealer_batches.at(dealer);
+        const auto& member = invocation.members.at(dealer);
+        const auto& batch = auth.dealer_batches.at(batch_count_before + dealer);
+        const uint64_t expected_batch_id =
+                next_batch_id_before + uint64_t(dealer);
+        if (summary.dealer != int(dealer)
+                || summary.batch_id != expected_batch_id
+                || summary.source_count != source_count
+                || member.dealer != int(dealer)
+                || member.batch_id != expected_batch_id
+                || batch.dealer != int(dealer)
+                || batch.batch_id != expected_batch_id
+                || batch.source_ordinals.size() != source_count
+                || batch.local_source_shares.size() != source_count)
+            fail("dealer batch identity/order/count is not exact");
+        for (size_t source_ordinal = 0;
+                source_ordinal < source_count; source_ordinal++)
+            if (batch.source_ordinals.at(source_ordinal) != source_ordinal
+                    || batch.local_source_shares.at(source_ordinal)
+                            != expected_local_sources.at(dealer).at(
+                                    source_ordinal))
+                fail("source ordinal or copied local source share changed");
+    }
+
+    const size_t expected_mapping_count = checked_size_product(
+            dealer_count, source_count,
+            "AtlasGsz test: tentative adapter mapping count overflow");
+    if (expected_success)
+    {
+        if (not invocation.completed || not invocation.passed
+                || not invocation.challenge_sampled
+                || auth.global_check_tag_challenges
+                        != challenge_count_before + 1
+                || receipt.source_handles.size() != expected_mapping_count
+                || auth.status != OptimisticAuthenticationStatus::ready)
+            fail("successful adapter authentication state is incomplete");
+        for (size_t index = 0;
+                index < receipt.source_handles.size(); index++)
+        {
+            const size_t source_ordinal = index / dealer_count;
+            const size_t dealer = index % dealer_count;
+            const auto& expected_group = expected_groups.at(source_ordinal);
+            const auto& mapping = receipt.source_handles.at(index);
+            const auto& batch = auth.dealer_batches.at(
+                    batch_count_before + dealer);
+            const auto& exact_handle =
+                    batch.authenticated_handles.at(source_ordinal);
+            if (mapping.producer_record_ordinal
+                            != expected_group.producer_record_ordinal
+                    || mapping.input_generation_group_ordinal
+                            != expected_group.input_generation_group_ordinal
+                    || mapping.dealer != int(dealer)
+                    || mapping.handle.batch_id
+                            != next_batch_id_before + uint64_t(dealer)
+                    || mapping.handle.dealer != int(dealer)
+                    || mapping.handle.source_ordinal != source_ordinal
+                    || not (mapping.handle == exact_handle))
+                fail("receipt mapping is incomplete, non-canonical, or inexact");
+        }
+        for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        {
+            const auto& batch = auth.dealer_batches.at(
+                    batch_count_before + dealer);
+            if (batch.authentication_state
+                            != DealerBatchAuthenticationState::authenticated
+                    || batch.authenticated_handles.size() != source_count
+                    || batch.verify_sharing_failure_evidence
+                    || batch.base_sharing_failure_evidence)
+                fail("successful batch did not receive every exact handle");
+        }
+    }
+    else
+    {
+        if (not invocation.completed || invocation.passed
+                || not receipt.source_handles.empty()
+                || auth.status != OptimisticAuthenticationStatus::
+                        RecoveryNotImplemented)
+            fail("failed adapter authentication did not retain fail-stop state");
+        const bool verify_failure = bad_verify_sharing_dealer >= 0;
+        if (verify_failure
+                ? (invocation.failure_class
+                                != OptimisticAuthenticationFailureClass::
+                                        verify_sharing
+                        || invocation.challenge_sampled
+                        || auth.global_check_tag_challenges
+                                != challenge_count_before)
+                : (invocation.failure_class
+                                != OptimisticAuthenticationFailureClass::
+                                        tag_check
+                        || not invocation.challenge_sampled
+                        || auth.global_check_tag_challenges
+                                != challenge_count_before + 1))
+            fail("failure occurred at the wrong authentication boundary");
+        for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        {
+            const auto& batch = auth.dealer_batches.at(
+                    batch_count_before + dealer);
+            if (batch.authentication_state
+                            != DealerBatchAuthenticationState::rejected
+                    || not batch.authenticated_handles.empty())
+                fail("a rejected participating batch retained a handle");
+            if (verify_failure)
+            {
+                const bool failed_dealer = dealer == 0;
+                if (bool(batch.verify_sharing_failure_evidence)
+                                != failed_dealer
+                        || batch.base_sharing_failure_evidence
+                        || (failed_dealer
+                            && batch.verify_sharing_failure_evidence
+                                    ->published_shares.size()
+                                    != dealer_count))
+                    fail("Verify-Sharing failure evidence ownership is incorrect");
+            }
+            else if (batch.verify_sharing_failure_evidence
+                    || batch.base_sharing_failure_evidence)
+                fail("Check-Tag rejection retained unrelated sharing evidence");
+        }
+    }
+
+    if (not auth.checkpoints.empty()
+            || not verifiable_registry.checkpoints.empty())
+        fail("adapter created a checkpoint");
+
+    // The candidate is already absent. A duplicate call must return before
+    // every ID, retained record, communication counter, and PRNG transition.
+    const uint64_t duplicate_next_batch_id = auth.next_batch_id;
+    const size_t duplicate_batch_count = auth.dealer_batches.size();
+    const uint64_t duplicate_next_invocation_id =
+            auth.next_global_invocation_id;
+    const size_t duplicate_invocation_count = auth.global_invocations.size();
+    const size_t duplicate_challenge_count =
+            auth.global_check_tag_challenges;
+    const size_t duplicate_key_count = auth.keys.size();
+    const size_t duplicate_nu_count = auth.nu_material.size();
+    const size_t duplicate_tag_count = auth.holder_tags.size();
+    const size_t duplicate_key_runs = auth.key_establishment_runs;
+    const size_t duplicate_total_chunks = auth.total_ftag_chunks;
+    const size_t duplicate_verify_comm = auth.verify_sharing_communication;
+    const size_t duplicate_base_comm = auth.base_sharing_communication;
+    const size_t duplicate_tag_comm = auth.tag_generation_communication;
+    const size_t duplicate_check_comm = auth.tag_checking_communication;
+    const size_t duplicate_communication = P.total_comm().sent;
+    SeededPRNG expected_prng = optimistic_authentication_prng;
+    const auto duplicate = adapt_finalized_tentative_double_rand_candidate();
+    SeededPRNG actual_prng = optimistic_authentication_prng;
+    for (size_t i = 0; i < 4; i++)
+        if (expected_prng.get_word() != actual_prng.get_word())
+            fail("duplicate adaptation advanced authentication randomness");
+    if (duplicate.authenticated
+            || duplicate.authentication_invocation_id != 0
+            || not duplicate.dealer_batches.empty()
+            || not duplicate.source_handles.empty()
+            || auth.next_batch_id != duplicate_next_batch_id
+            || auth.dealer_batches.size() != duplicate_batch_count
+            || auth.next_global_invocation_id
+                    != duplicate_next_invocation_id
+            || auth.global_invocations.size() != duplicate_invocation_count
+            || auth.global_check_tag_challenges != duplicate_challenge_count
+            || auth.keys.size() != duplicate_key_count
+            || auth.nu_material.size() != duplicate_nu_count
+            || auth.holder_tags.size() != duplicate_tag_count
+            || auth.key_establishment_runs != duplicate_key_runs
+            || auth.total_ftag_chunks != duplicate_total_chunks
+            || auth.verify_sharing_communication != duplicate_verify_comm
+            || auth.base_sharing_communication != duplicate_base_comm
+            || auth.tag_generation_communication != duplicate_tag_comm
+            || auth.tag_checking_communication != duplicate_check_comm
+            || P.total_comm().sent != duplicate_communication)
+        fail("duplicate adaptation changed authoritative or communication state");
+
+    tentative_double_rand_capture_test_hook_ran = true;
+    if (P.my_num() == 0)
+        cout << "ATLAS_GSZ_AUTH_TEST " << mode
+             << " PASS dealers=" << dealer_count
+             << " sources_per_dealer=" << source_count
+             << " batch_order=ascending-dealer distinct_batch_ids=1"
+             << " invocation=source-only checkpoint_id=0"
+             << " global_challenges="
+             << (auth.global_check_tag_challenges - challenge_count_before)
+             << " handles="
+             << (expected_success ? expected_mapping_count : 0)
+             << " mapping_order=producer-then-group-then-dealer"
+             << " candidate=consumed duplicate_adaptation=rejected"
+             << " checkpoints=0 derivation_conversion=0"
+             << " certification=consistent-dealer-generated-source-sharings"
+             << " randomness_prescription=not-certified"
+             << (expected_success
+                    ? " status=authenticated"
+                    : " status=RecoveryNotImplemented") << endl;
+
+    if (not expected_success)
+        throw mac_fail(
+                "AtlasGsz: RecoveryNotImplemented after tentative DoubleRand adapter authentication failure");
+}
+
+template<class T>
 bool AtlasGsz<T>::authenticate_checkpoint_source_batches(
         uint64_t checkpoint_id,
         const vector<uint64_t>& requested_batch_ids,
@@ -3272,6 +4053,9 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                         == (P.my_num() == tag.holder));
             }
             for (const auto& batch : state.dealer_batches)
+            {
+                assert(not batch.verify_sharing_failure_evidence);
+                assert(not batch.base_sharing_failure_evidence);
                 for (size_t handle_index = 0;
                         handle_index < batch.authenticated_handles.size();
                         handle_index++)
@@ -3284,6 +4068,7 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                     assert(handle.source_ordinal
                             < batch.local_source_shares.size());
                 }
+            }
 
             const size_t max_degree = checked_size_product(
                     invocation.members.size(),
@@ -3388,7 +4173,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                 assert(invocation.failure_class
                         == OptimisticAuthenticationFailureClass::
                             verify_sharing);
-                assert(first_batch->has_verify_sharing_failure_evidence);
+                assert(first_batch->verify_sharing_failure_evidence);
+                assert(first_batch->verify_sharing_failure_evidence
+                                ->published_shares.size()
+                        == size_t(P.num_players()));
+                assert(not first_batch->base_sharing_failure_evidence);
                 assert(not state.keys_established);
             }
             else if (mode == "base-failure")
@@ -3396,7 +4185,11 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                 assert(invocation.failure_class
                         == OptimisticAuthenticationFailureClass::
                             base_sharing);
-                assert(first_batch->has_base_sharing_failure_evidence);
+                assert(first_batch->base_sharing_failure_evidence);
+                assert(first_batch->base_sharing_failure_evidence
+                                ->published_shares.size()
+                        == size_t(P.num_players()));
+                assert(not first_batch->verify_sharing_failure_evidence);
                 assert(state.keys_established && state.keys_checked);
             }
             else
@@ -3404,6 +4197,12 @@ bool AtlasGsz<T>::run_optimistic_authentication_test_hook(
                         == OptimisticAuthenticationFailureClass::
                             invocation_validation);
         }
+        if (tag_failure)
+            for (const auto& batch : state.dealer_batches)
+            {
+                assert(not batch.verify_sharing_failure_evidence);
+                assert(not batch.base_sharing_failure_evidence);
+            }
         assert(dispute_control_state.corr.empty());
         assert(dispute_control_state.disp.empty());
         assert(pending_analyze_sharing_state.requests.empty());
@@ -13062,10 +13861,17 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 // This focused check runs only after a normal wrapper record
                 // has finalized and pulled the exact Atlas reference.
             }
-            else if (mode == "tentative-double-rand-capture")
+            else if (mode == "tentative-double-rand-capture"
+                    || mode == "tentative-double-rand-adapter-honest"
+                    || mode == "tentative-double-rand-adapter-malformed"
+                    || mode
+                            == "tentative-double-rand-adapter-verify-failure"
+                    || mode == "tentative-double-rand-adapter-tag-failure")
             {
                 if (not tentative_double_rand_capture_test_enabled)
                 {
+                    const bool adapter_mode =
+                            mode != "tentative-double-rand-capture";
                     if (not no_authentication_or_checkpoint_artifacts()
                             || tentative_double_rand_capture_state.active
                             || tentative_double_rand_capture_state
@@ -13077,22 +13883,67 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                         throw logic_error(
                                 "AtlasGsz: tentative capture test did not start from empty state");
 
-                    if (not begin_tentative_double_rand_capture())
-                        throw logic_error(
-                                "AtlasGsz: tentative capture test could not begin empty negative round");
-                    if (finalize_tentative_double_rand_capture()
-                            || tentative_double_rand_capture_state.active
-                            || tentative_double_rand_capture_state
-                                    .finalized_candidate
-                            || not tentative_double_rand_capture_state
-                                    .producer_records.empty()
-                            || not tentative_double_rand_capture_state
-                                    .consumptions.empty())
-                        throw logic_error(
-                                "AtlasGsz: empty tentative capture was not rejected cleanly");
-                    if (not begin_tentative_double_rand_capture())
-                        throw logic_error(
-                                "AtlasGsz: tentative capture test could not begin real round");
+                    if (adapter_mode)
+                    {
+                        auto& auth = optimistic_authentication_state;
+                        const uint64_t next_batch_id = auth.next_batch_id;
+                        const uint64_t next_invocation_id =
+                                auth.next_global_invocation_id;
+                        const size_t communication = P.total_comm().sent;
+                        SeededPRNG expected_prng =
+                                optimistic_authentication_prng;
+                        const auto absent =
+                                adapt_finalized_tentative_double_rand_candidate();
+                        if (not begin_tentative_double_rand_capture())
+                            throw logic_error(
+                                    "AtlasGsz: tentative adapter test could not begin real round");
+                        const auto active =
+                                adapt_finalized_tentative_double_rand_candidate();
+                        SeededPRNG actual_prng =
+                                optimistic_authentication_prng;
+                        bool same_prng = true;
+                        for (size_t i = 0; i < 4; i++)
+                            same_prng &= expected_prng.get_word()
+                                    == actual_prng.get_word();
+                        if (absent.authenticated
+                                || absent.authentication_invocation_id != 0
+                                || not absent.dealer_batches.empty()
+                                || not absent.source_handles.empty()
+                                || active.authenticated
+                                || active.authentication_invocation_id != 0
+                                || not active.dealer_batches.empty()
+                                || not active.source_handles.empty()
+                                || not tentative_double_rand_capture_state.active
+                                || auth.next_batch_id != next_batch_id
+                                || auth.next_global_invocation_id
+                                        != next_invocation_id
+                                || not auth.dealer_batches.empty()
+                                || not auth.global_invocations.empty()
+                                || P.total_comm().sent != communication
+                                || not same_prng)
+                            throw logic_error(
+                                    "AtlasGsz: absent/active tentative adapter rejection mutated protocol state");
+                        tentative_double_rand_adapter_test_mode = mode;
+                    }
+                    else
+                    {
+                        if (not begin_tentative_double_rand_capture())
+                            throw logic_error(
+                                    "AtlasGsz: tentative capture test could not begin empty negative round");
+                        if (finalize_tentative_double_rand_capture()
+                                || tentative_double_rand_capture_state.active
+                                || tentative_double_rand_capture_state
+                                        .finalized_candidate
+                                || not tentative_double_rand_capture_state
+                                        .producer_records.empty()
+                                || not tentative_double_rand_capture_state
+                                        .consumptions.empty())
+                            throw logic_error(
+                                    "AtlasGsz: empty tentative capture was not rejected cleanly");
+                        if (not begin_tentative_double_rand_capture())
+                            throw logic_error(
+                                    "AtlasGsz: tentative capture test could not begin real round");
+                    }
                     tentative_double_rand_capture_test_enabled = true;
                 }
             }
