@@ -135,6 +135,10 @@ Implemented:
 - one direct authenticated king-source handle per captured operation, with the
   `e_t` suffix appended only to the king's existing real-dealer batch and no
   one-term `e_t` derivation;
+- one exact by-value handle-based `z_t = e_t - r_t` derivation per captured
+  ordinary scalar or dot operation, ordered as `(1,h_e)` followed by the
+  existing `r_t` terms with native field-negated coefficients, without a new
+  source, handle, authentication invocation, checkpoint, or registry;
 - fail-stop `RecoveryNotImplemented` behavior;
 - restricted `e = 1` dealer Verify-Sharing;
 - restricted checked `BaseSharing` before Check-Tag mask tagging;
@@ -146,8 +150,10 @@ Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
 - complete input, truncation, or preprocessing provenance;
-- `z_t = e_t - r_t`, complete operation-output/checkpoint derivations, or any
-  checkpoint from this adapter;
+- complete segment operation-output/checkpoint derivations or any checkpoint
+  from this adapter;
+- mul-public, virtual-transcript, compression-generated, and ultimate-tuple
+  provenance;
 - final output gating;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
@@ -161,7 +167,9 @@ the complete real-dealer batch set, and passes all batch IDs to the existing
 source-only global path exactly once. While its stack-local claimed candidate
 is still alive, it converts the tentative degree-`t` `r_t` derivations to
 `LinearDerivation` values over the exact committed handles and returns them in
-the value receipt. The finalized DoubleRand table remains `q` sources per
+the value receipt. It also returns the exact public `z_t` derivation formed
+from each direct authenticated `e_t` suffix handle and the corresponding
+negated `r_t` derivation. The finalized DoubleRand table remains `q` sources per
 dealer; the prospective king batch alone appends the `m` concrete `e_t`
 sources at ordinals `q,...,q+m-1`, and the receipt returns their direct handles.
 It does not create a checkpoint or persistent derivation registry.

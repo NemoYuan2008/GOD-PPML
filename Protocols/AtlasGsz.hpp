@@ -3381,6 +3381,7 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
     vector<bool> used_mapping_indices;
     vector<size_t> mapping_last_seen_in_derivation;
     vector<vector<size_t>> converted_term_mapping_indices;
+    vector<size_t> e_t_source_ordinals;
     if (preflight_ok)
     {
         const size_t converted_count = candidate->consumed_outputs.size();
@@ -3401,7 +3402,10 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
                 || converted_count
                         > receipt.converted_r_t_derivations.max_size()
                 || converted_count
-                        > receipt.authenticated_e_t_sources.max_size())
+                        > receipt.authenticated_e_t_sources.max_size()
+                || converted_count > e_t_source_ordinals.max_size()
+                || converted_count
+                        > receipt.converted_z_t_derivations.max_size())
             preflight_ok = false;
         else
         {
@@ -3415,6 +3419,8 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
             converted_term_mapping_indices.resize(converted_count);
             receipt.converted_r_t_derivations.resize(converted_count);
             receipt.authenticated_e_t_sources.resize(converted_count);
+            e_t_source_ordinals.resize(converted_count);
+            receipt.converted_z_t_derivations.resize(converted_count);
             if (seen_dealers.capacity() < dealer_count
                     || seen_capture_ordinals.capacity() < converted_count
                     || used_mapping_indices.capacity() < mapping_count
@@ -3425,6 +3431,9 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
                     || receipt.converted_r_t_derivations.capacity()
                             < converted_count
                     || receipt.authenticated_e_t_sources.capacity()
+                            < converted_count
+                    || e_t_source_ordinals.capacity() < converted_count
+                    || receipt.converted_z_t_derivations.capacity()
                             < converted_count)
                 preflight_ok = false;
         }
@@ -3537,6 +3546,14 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
         {
             const auto& tentative =
                     candidate->consumed_outputs.at(output_index);
+            const bool transcript_ordinal_valid = tentative
+                    .partial_mult_transcript_record_ordinal
+                    < partial_mult_transcripts.size();
+            const PartialMultTranscriptRecord* transcript_record =
+                    transcript_ordinal_valid
+                    ? &partial_mult_transcripts.at(tentative
+                            .partial_mult_transcript_record_ordinal)
+                    : 0;
             if (tentative.capture_order_ordinal
                             >= seen_capture_ordinals.size()
                     || tentative.capture_order_ordinal != output_index
@@ -3550,11 +3567,53 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
                                         dot_product)
                     || tentative.degree_t_derivation.terms.empty()
                     || tentative.degree_t_derivation.terms.size()
-                            != dealer_count)
+                            != dealer_count
+                    || transcript_record == 0
+                    || transcript_record->operation_kind
+                            != tentative.operation_kind
+                    || transcript_record->producer_reference
+                            .producer_provenance
+                            != candidate->producer_records.at(
+                                    tentative.producer_record_ordinal)
+                    || transcript_record->producer_reference
+                            .producer_output_ordinal
+                            != tentative.producer_output_ordinal
+                    || transcript_record->transcript.r_t
+                            != tentative.actual_r_t
+                    || transcript_record->transcript.e_t
+                            != tentative.concrete_e_t_source.local_share
+                    || transcript_record->offset >= z_verify.size()
+                    || transcript_record->length <= 0
+                    || size_t(transcript_record->length)
+                            > z_verify.size() - transcript_record->offset
+                    || z_verify.at(transcript_record->offset)
+                            != transcript_record->transcript.e_t
+                                    - transcript_record->transcript.r_t)
             {
                 preflight_ok = false;
                 break;
             }
+            if (tentative.operation_kind
+                            == OrdinaryDoubleRandOperationKind::
+                                    scalar_multiplication
+                    && transcript_record->length != 1)
+            {
+                preflight_ok = false;
+                break;
+            }
+            if (tentative.operation_kind
+                    == OrdinaryDoubleRandOperationKind::dot_product)
+                for (size_t padding = 1;
+                        padding < size_t(transcript_record->length);
+                        padding++)
+                    if (z_verify.at(transcript_record->offset + padding)
+                            != T{})
+                    {
+                        preflight_ok = false;
+                        break;
+                    }
+            if (not preflight_ok)
+                break;
             seen_capture_ordinals.at(
                     tentative.capture_order_ordinal) = true;
 
@@ -3593,22 +3652,59 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
             authenticated_e_t.king = tentative.concrete_e_t_source.king;
             authenticated_e_t.special_sharing_support =
                     tentative.concrete_e_t_source.special_sharing_support;
+            auto& converted_z =
+                    receipt.converted_z_t_derivations.at(output_index);
+            converted_z.capture_order_ordinal =
+                    tentative.capture_order_ordinal;
+            converted_z.producer_record_ordinal =
+                    tentative.producer_record_ordinal;
+            converted_z.producer_output_ordinal =
+                    tentative.producer_output_ordinal;
+            converted_z.input_generation_group_ordinal =
+                    tentative.input_generation_group_ordinal;
+            converted_z.operation_kind = tentative.operation_kind;
             auto& mapping_indices =
                     converted_term_mapping_indices.at(output_index);
+            size_t z_term_count = 0;
+            try
+            {
+                z_term_count = checked_size_sum(
+                        tentative.degree_t_derivation.terms.size(), 1,
+                        "AtlasGsz: converted z_t term count overflow");
+                e_t_source_ordinals.at(output_index) = checked_size_sum(
+                        candidate->source_count,
+                        tentative.capture_order_ordinal,
+                        "AtlasGsz: tentative adapter e_t suffix ordinal overflow");
+            }
+            catch (const overflow_error&)
+            {
+                preflight_ok = false;
+                break;
+            }
             if (dealer_count > converted.derivation.terms.max_size()
                     || dealer_count > mapping_indices.max_size())
             {
                 preflight_ok = false;
                 break;
             }
-            converted.derivation.terms.resize(dealer_count);
-            mapping_indices.resize(dealer_count);
-            if (converted.derivation.terms.capacity() < dealer_count
-                    || mapping_indices.capacity() < dealer_count)
+            if (z_term_count > converted_z.derivation.terms.max_size())
             {
                 preflight_ok = false;
                 break;
             }
+            converted.derivation.terms.resize(dealer_count);
+            mapping_indices.resize(dealer_count);
+            converted_z.derivation.terms.resize(z_term_count);
+            if (converted.derivation.terms.capacity() < dealer_count
+                    || mapping_indices.capacity() < dealer_count
+                    || converted_z.derivation.terms.capacity()
+                            < z_term_count)
+            {
+                preflight_ok = false;
+                break;
+            }
+            converted_z.derivation.terms.at(0).coefficient =
+                    typename T::open_type(1);
 
             for (size_t dealer = 0; dealer < dealer_count; dealer++)
             {
@@ -3670,7 +3766,65 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
                 mapping_indices.at(dealer) = mapping_index;
                 converted.derivation.terms.at(dealer).coefficient =
                         temporary_term.coefficient;
+                converted_z.derivation.terms.at(dealer + 1).coefficient =
+                        typename T::open_type{}
+                                - temporary_term.coefficient;
             }
+            if (not preflight_ok)
+                break;
+            const bool complete_identity_matches =
+                    converted.capture_order_ordinal
+                            == tentative.capture_order_ordinal
+                    && converted.producer_record_ordinal
+                            == tentative.producer_record_ordinal
+                    && converted.producer_output_ordinal
+                            == tentative.producer_output_ordinal
+                    && converted.input_generation_group_ordinal
+                            == tentative.input_generation_group_ordinal
+                    && converted.operation_kind
+                            == tentative.operation_kind
+                    && authenticated_e_t.capture_order_ordinal
+                            == tentative.capture_order_ordinal
+                    && authenticated_e_t.producer_record_ordinal
+                            == tentative.producer_record_ordinal
+                    && authenticated_e_t.producer_output_ordinal
+                            == tentative.producer_output_ordinal
+                    && authenticated_e_t.input_generation_group_ordinal
+                            == tentative.input_generation_group_ordinal
+                    && authenticated_e_t.operation_kind
+                            == tentative.operation_kind
+                    && converted_z.capture_order_ordinal
+                            == tentative.capture_order_ordinal
+                    && converted_z.producer_record_ordinal
+                            == tentative.producer_record_ordinal
+                    && converted_z.producer_output_ordinal
+                            == tentative.producer_output_ordinal
+                    && converted_z.input_generation_group_ordinal
+                            == tentative.input_generation_group_ordinal
+                    && converted_z.operation_kind
+                            == tentative.operation_kind;
+            if (not complete_identity_matches
+                    || converted_z.derivation.terms.empty()
+                    || converted_z.derivation.terms.size() - 1
+                            != converted.derivation.terms.size()
+                    || converted_z.derivation.terms.at(0).coefficient
+                            != typename T::open_type(1))
+            {
+                preflight_ok = false;
+                break;
+            }
+            for (size_t term_index = 0;
+                    term_index < converted.derivation.terms.size();
+                    term_index++)
+                if (converted_z.derivation.terms.at(term_index + 1)
+                            .coefficient
+                        != typename T::open_type{}
+                                - converted.derivation.terms.at(term_index)
+                                        .coefficient)
+                {
+                    preflight_ok = false;
+                    break;
+                }
             if (not preflight_ok)
                 break;
         }
@@ -3777,6 +3931,8 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
             receipt.converted_r_t_derivations.capacity();
     const size_t receipt_e_t_capacity =
             receipt.authenticated_e_t_sources.capacity();
+    const size_t receipt_z_t_capacity =
+            receipt.converted_z_t_derivations.capacity();
 
     // Reserve all adapter-owned authoritative container growth before any
     // protocol ID is selected. Capacity changes carry no protocol identity.
@@ -3890,8 +4046,12 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
         }
         receipt.converted_r_t_derivations.clear();
         receipt.authenticated_e_t_sources.clear();
+        receipt.converted_z_t_derivations.clear();
         return receipt;
     }
+    if (not invocation.completed || not invocation.passed)
+        throw logic_error(
+                "AtlasGsz: accepted tentative adapter invocation is not completed and passed");
 
     // Validate each newly registered authoritative batch exactly once. The
     // direct batch range is the complete set appended by this adaptation.
@@ -3899,6 +4059,8 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
     {
         const auto& batch = auth.dealer_batches.at(
                 batch_start_index + dealer);
+        const auto* authoritative_batch =
+                find_dealer_source_batch(batch.batch_id);
         const auto& expected_sources =
                 claimed_candidate->dealer_sources.at(dealer).sources;
         const size_t expected_source_count = dealer == 0
@@ -3906,6 +4068,7 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
                 : claimed_candidate->source_count;
         if (batch.batch_id != first_batch_id + uint64_t(dealer)
                 || batch.dealer != int(dealer)
+                || authoritative_batch != &batch
                 || batch.authentication_state
                         != DealerBatchAuthenticationState::authenticated
                 || batch.source_ordinals.size()
@@ -4110,9 +4273,10 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
                     || final_term.handle.source_ordinal != source_ordinal)
                 throw logic_error(
                         "AtlasGsz: converted r_t term changed its coefficient or committed handle");
-            // Duplicate handles are impossible after the preflight's unique
-            // mapping indices resolve in canonical dealer order to distinct
-            // per-dealer batch IDs and pass the exact committed-handle check.
+            // Duplicate handles are structurally impossible: there is one
+            // term per ascending dealer, dealer equals term_index, every
+            // dealer has a distinct batch ID, and this handle equals the
+            // exact authoritative entry at its source ordinal.
             evaluated += final_term.coefficient
                     * batch.local_source_shares.at(source_ordinal);
         }
@@ -4162,6 +4326,196 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
             throw logic_error(
                     "AtlasGsz: authenticated e_t result did not bind to its exact king suffix handle");
         result.handle = handle;
+        // Preflight proves capture_order_ordinal == output_index and unique
+        // capture ordinals. Exact authoritative binding to king suffix
+        // q + output_index therefore makes all operation e_t handles unique.
+    }
+
+    // Complete each preallocated z_t result only from the exact committed
+    // e_t suffix handle and the already validated r_t derivation. The
+    // candidate-private transcript ordinal is consumed only for validation
+    // and is not copied into the public receipt.
+    if (receipt.converted_z_t_derivations.size() != operation_count
+            || receipt.converted_z_t_derivations.capacity()
+                    != receipt_z_t_capacity
+            || e_t_source_ordinals.size() != operation_count)
+        throw logic_error(
+                "AtlasGsz: converted z_t skeleton changed across authentication");
+    const typename T::open_type one(1);
+    for (size_t output_index = 0;
+            output_index < operation_count; output_index++)
+    {
+        const auto& tentative =
+                claimed_candidate->consumed_outputs.at(output_index);
+        const auto& converted_r =
+                receipt.converted_r_t_derivations.at(output_index);
+        const auto& authenticated_e =
+                receipt.authenticated_e_t_sources.at(output_index);
+        auto& converted_z =
+                receipt.converted_z_t_derivations.at(output_index);
+
+        const bool full_identity_matches =
+                converted_r.capture_order_ordinal
+                        == tentative.capture_order_ordinal
+                && converted_r.producer_record_ordinal
+                        == tentative.producer_record_ordinal
+                && converted_r.producer_output_ordinal
+                        == tentative.producer_output_ordinal
+                && converted_r.input_generation_group_ordinal
+                        == tentative.input_generation_group_ordinal
+                && converted_r.operation_kind == tentative.operation_kind
+                && authenticated_e.capture_order_ordinal
+                        == tentative.capture_order_ordinal
+                && authenticated_e.producer_record_ordinal
+                        == tentative.producer_record_ordinal
+                && authenticated_e.producer_output_ordinal
+                        == tentative.producer_output_ordinal
+                && authenticated_e.input_generation_group_ordinal
+                        == tentative.input_generation_group_ordinal
+                && authenticated_e.operation_kind
+                        == tentative.operation_kind
+                && converted_z.capture_order_ordinal
+                        == tentative.capture_order_ordinal
+                && converted_z.producer_record_ordinal
+                        == tentative.producer_record_ordinal
+                && converted_z.producer_output_ordinal
+                        == tentative.producer_output_ordinal
+                && converted_z.input_generation_group_ordinal
+                        == tentative.input_generation_group_ordinal
+                && converted_z.operation_kind == tentative.operation_kind;
+        if (not full_identity_matches)
+            throw logic_error(
+                    "AtlasGsz: r_t, e_t, and z_t results lost their exact operation identity");
+
+        if (tentative.partial_mult_transcript_record_ordinal
+                    >= partial_mult_transcripts.size())
+            throw logic_error(
+                    "AtlasGsz: converted z_t lost its private transcript binding");
+        const auto& transcript_record = partial_mult_transcripts.at(
+                tentative.partial_mult_transcript_record_ordinal);
+        const auto& transcript = transcript_record.transcript;
+        if (transcript_record.operation_kind != tentative.operation_kind
+                || transcript_record.producer_reference.producer_provenance
+                        != claimed_candidate->producer_records.at(
+                                tentative.producer_record_ordinal)
+                || transcript_record.producer_reference
+                        .producer_output_ordinal
+                        != tentative.producer_output_ordinal
+                || transcript.r_t != tentative.actual_r_t
+                || transcript.e_t
+                        != tentative.concrete_e_t_source.local_share
+                || transcript_record.offset >= z_verify.size()
+                || transcript_record.length <= 0
+                || size_t(transcript_record.length)
+                        > z_verify.size() - transcript_record.offset
+                || z_verify.at(transcript_record.offset)
+                        != transcript.e_t - transcript.r_t
+                || (tentative.operation_kind
+                            == OrdinaryDoubleRandOperationKind::
+                                    scalar_multiplication
+                        && transcript_record.length != 1))
+            throw logic_error(
+                    "AtlasGsz: converted z_t transcript binding is inconsistent");
+        if (tentative.operation_kind
+                == OrdinaryDoubleRandOperationKind::dot_product)
+            for (size_t padding = 1;
+                    padding < size_t(transcript_record.length); padding++)
+                if (z_verify.at(transcript_record.offset + padding) != T{})
+                    throw logic_error(
+                            "AtlasGsz: converted dot-product z_t transcript has nonzero padding");
+
+        const size_t expected_e_t_source_ordinal = checked_size_sum(
+                claimed_candidate->source_count,
+                tentative.capture_order_ordinal,
+                "AtlasGsz: committed z_t e_t suffix ordinal overflow");
+        if (e_t_source_ordinals.at(output_index)
+                        != expected_e_t_source_ordinal
+                || authenticated_e.king != 0
+                || authenticated_e.handle.dealer != 0
+                || authenticated_e.handle.batch_id != king_batch.batch_id
+                || authenticated_e.handle.source_ordinal
+                        != expected_e_t_source_ordinal
+                || expected_e_t_source_ordinal
+                        >= king_batch.source_ordinals.size()
+                || king_batch.source_ordinals.at(
+                        expected_e_t_source_ordinal)
+                        != expected_e_t_source_ordinal
+                || expected_e_t_source_ordinal
+                        >= king_batch.authenticated_handles.size()
+                || not (authenticated_e.handle
+                        == king_batch.authenticated_handles.at(
+                                expected_e_t_source_ordinal))
+                || king_batch.authentication_state
+                        != DealerBatchAuthenticationState::authenticated)
+            throw logic_error(
+                    "AtlasGsz: converted z_t e_t handle is not the exact authoritative king suffix");
+
+        if (converted_z.derivation.terms.size()
+                    != converted_r.derivation.terms.size() + 1
+                || converted_z.derivation.terms.at(0).coefficient != one)
+            throw logic_error(
+                    "AtlasGsz: converted z_t has a non-canonical term shape");
+        converted_z.derivation.terms.at(0).handle =
+                authenticated_e.handle;
+
+        const T& local_e = king_batch.local_source_shares.at(
+                expected_e_t_source_ordinal);
+        if (local_e != tentative.concrete_e_t_source.local_share
+                || local_e != transcript.e_t)
+            throw logic_error(
+                    "AtlasGsz: converted z_t e_t handle has the wrong authoritative local source");
+
+        T local_r{};
+        T local_z = local_e;
+        for (size_t term_index = 0;
+                term_index < converted_r.derivation.terms.size();
+                term_index++)
+        {
+            const auto& r_term =
+                    converted_r.derivation.terms.at(term_index);
+            auto& z_term =
+                    converted_z.derivation.terms.at(term_index + 1);
+            if (r_term.handle.dealer < 0
+                    || size_t(r_term.handle.dealer) >= dealer_count)
+                throw logic_error(
+                        "AtlasGsz: converted z_t r_t handle dealer is invalid");
+            const auto& batch = auth.dealer_batches.at(
+                    batch_start_index + size_t(r_term.handle.dealer));
+            const size_t source_ordinal = r_term.handle.source_ordinal;
+            if (batch.batch_id != r_term.handle.batch_id
+                    || batch.dealer != r_term.handle.dealer
+                    || batch.authentication_state
+                            != DealerBatchAuthenticationState::authenticated
+                    || source_ordinal >= batch.source_ordinals.size()
+                    || batch.source_ordinals.at(source_ordinal)
+                            != source_ordinal
+                    || source_ordinal
+                            >= batch.authenticated_handles.size()
+                    || not (r_term.handle
+                            == batch.authenticated_handles.at(
+                                    source_ordinal))
+                    || authenticated_e.handle == r_term.handle)
+                throw logic_error(
+                        "AtlasGsz: converted z_t term did not resolve through its exact authoritative source");
+            z_term.handle = r_term.handle;
+            if (z_term.coefficient
+                            != typename T::open_type{}
+                                    - r_term.coefficient
+                    || not (z_term.handle == r_term.handle))
+                throw logic_error(
+                        "AtlasGsz: converted z_t changed canonical coefficient or handle order");
+            local_r += r_term.coefficient
+                    * batch.local_source_shares.at(source_ordinal);
+            local_z += z_term.coefficient
+                    * batch.local_source_shares.at(source_ordinal);
+        }
+        if (local_r != tentative.actual_r_t
+                || local_r != transcript.r_t
+                || local_z != local_e - local_r
+                || local_z != transcript.e_t - transcript.r_t
+                || local_z != z_verify.at(transcript_record.offset))
+            throw logic_error(
+                    "AtlasGsz: converted z_t failed authoritative local r_t/e_t/z_t evaluation");
     }
     receipt.authenticated = true;
     return receipt;
@@ -4184,7 +4538,21 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
             || candidate->dealer_sources.size() != dealer_count)
         fail("finalized six-operation two-source all-dealer candidate is absent");
 
+    // Deterministic local checks for the exact native field negation used by
+    // Delta_z. These consume neither protocol randomness nor communication.
+    const typename T::open_type zero{};
+    const typename T::open_type one(1);
+    const typename T::open_type minus_one = zero - one;
+    const typename T::open_type general(17);
+    const typename T::open_type negated_general = zero - general;
+    if (zero - zero != zero || zero - one != minus_one
+            || zero - minus_one != one
+            || general == zero || general == one || general == minus_one
+            || general + negated_general != zero)
+        fail("native field coefficient negation failed deterministic edge cases");
+
     const size_t source_count = candidate->source_count;
+    const auto expected_producer_records = candidate->producer_records;
     const auto expected_groups = candidate->source_groups;
     const auto expected_consumed_outputs = candidate->consumed_outputs;
     vector<vector<bool>> seen_outputs;
@@ -4273,10 +4641,12 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
                 || not receipt.source_handles.empty()
                 || not receipt.converted_r_t_derivations.empty()
                 || not receipt.authenticated_e_t_sources.empty()
+                || not receipt.converted_z_t_derivations.empty()
                 || duplicate.authenticated
                 || duplicate.authentication_invocation_id != 0
                 || not duplicate.converted_r_t_derivations.empty()
                 || not duplicate.authenticated_e_t_sources.empty()
+                || not duplicate.converted_z_t_derivations.empty()
                 || inspect_tentative_double_rand_capture() != 0
                 || auth.next_batch_id != next_batch_id_before
                 || auth.dealer_batches.size() != batch_count_before
@@ -4299,7 +4669,8 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
                  << " dealer_batches=0 handles=0 authentication_invocations=0"
                  << " communication=0 authentication_randomness=0"
                  << " checkpoints=0 converted_r_t_derivations=0"
-                 << " authenticated_e_t_handles=0" << endl;
+                 << " authenticated_e_t_handles=0"
+                 << " converted_z_t_derivations=0" << endl;
         return;
     }
 
@@ -4328,6 +4699,10 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
                     ? receipt.authenticated_e_t_sources.size()
                             != expected_consumed_outputs.size()
                     : not receipt.authenticated_e_t_sources.empty())
+            || (expected_success
+                    ? receipt.converted_z_t_derivations.size()
+                            != expected_consumed_outputs.size()
+                    : not receipt.converted_z_t_derivations.empty())
             || auth.next_batch_id
                     != next_batch_id_before + uint64_t(dealer_count)
             || auth.dealer_batches.size()
@@ -4410,6 +4785,10 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
     const size_t ordinary_relation_count =
             expected_total_chunks * key_relation_count;
     const size_t base_relation_count = dealer_count * key_relation_count;
+    size_t full_identity_match_count = 0;
+    size_t local_z_t_evaluation_count = 0;
+    size_t dot_product_z_t_count = 0;
+    size_t z_t_term_count = 0;
     if (expected_success)
     {
         if (not invocation.completed || not invocation.passed
@@ -4596,6 +4975,174 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
                     || not (result.handle == exact_handle))
                 fail("authenticated e_t result lost its exact operation or king suffix binding");
         }
+
+        for (size_t output_index = 0;
+                output_index < expected_consumed_outputs.size();
+                output_index++)
+        {
+            const auto& expected =
+                    expected_consumed_outputs.at(output_index);
+            const auto& converted_r =
+                    receipt.converted_r_t_derivations.at(output_index);
+            const auto& authenticated_e =
+                    receipt.authenticated_e_t_sources.at(output_index);
+            const auto& converted_z =
+                    receipt.converted_z_t_derivations.at(output_index);
+            const bool full_identity_matches =
+                    converted_r.capture_order_ordinal
+                            == expected.capture_order_ordinal
+                    && converted_r.producer_record_ordinal
+                            == expected.producer_record_ordinal
+                    && converted_r.producer_output_ordinal
+                            == expected.producer_output_ordinal
+                    && converted_r.input_generation_group_ordinal
+                            == expected.input_generation_group_ordinal
+                    && converted_r.operation_kind
+                            == expected.operation_kind
+                    && authenticated_e.capture_order_ordinal
+                            == expected.capture_order_ordinal
+                    && authenticated_e.producer_record_ordinal
+                            == expected.producer_record_ordinal
+                    && authenticated_e.producer_output_ordinal
+                            == expected.producer_output_ordinal
+                    && authenticated_e.input_generation_group_ordinal
+                            == expected.input_generation_group_ordinal
+                    && authenticated_e.operation_kind
+                            == expected.operation_kind
+                    && converted_z.capture_order_ordinal
+                            == expected.capture_order_ordinal
+                    && converted_z.producer_record_ordinal
+                            == expected.producer_record_ordinal
+                    && converted_z.producer_output_ordinal
+                            == expected.producer_output_ordinal
+                    && converted_z.input_generation_group_ordinal
+                            == expected.input_generation_group_ordinal
+                    && converted_z.operation_kind
+                            == expected.operation_kind;
+            if (not full_identity_matches)
+                fail("r_t/e_t/z_t full operation identity does not match captured evidence");
+            full_identity_match_count++;
+
+            if (expected.partial_mult_transcript_record_ordinal
+                        >= partial_mult_transcripts.size())
+                fail("z_t result lost its concrete transcript record");
+            const auto& record = partial_mult_transcripts.at(
+                    expected.partial_mult_transcript_record_ordinal);
+            const auto& transcript = record.transcript;
+            if (record.operation_kind != expected.operation_kind
+                    || record.producer_reference.producer_provenance
+                            != expected_producer_records.at(
+                                    expected.producer_record_ordinal)
+                    || record.producer_reference.producer_output_ordinal
+                            != expected.producer_output_ordinal
+                    || record.offset >= z_verify.size()
+                    || record.length <= 0
+                    || size_t(record.length)
+                            > z_verify.size() - record.offset
+                    || transcript.r_t != expected.actual_r_t
+                    || transcript.e_t
+                            != expected.concrete_e_t_source.local_share
+                    || z_verify.at(record.offset)
+                            != transcript.e_t - transcript.r_t)
+                fail("z_t result does not bind to the exact real transcript and z_verify entry");
+            if (expected.operation_kind
+                    == OrdinaryDoubleRandOperationKind::dot_product)
+            {
+                dot_product_z_t_count++;
+                for (size_t padding = 1;
+                        padding < size_t(record.length); padding++)
+                    if (z_verify.at(record.offset + padding) != T{})
+                        fail("dot-product z_verify padding is nonzero");
+            }
+            else if (record.length != 1)
+                fail("scalar z_t transcript length is not one");
+
+            const size_t e_t_source_ordinal = source_count
+                    + expected.capture_order_ordinal;
+            if (converted_z.derivation.terms.size() != dealer_count + 1
+                    || converted_z.derivation.terms.at(0).coefficient
+                            != one
+                    || not (converted_z.derivation.terms.at(0).handle
+                            == authenticated_e.handle)
+                    || authenticated_e.handle.dealer != 0
+                    || authenticated_e.handle.batch_id
+                            != king_batch.batch_id
+                    || authenticated_e.handle.source_ordinal
+                            != e_t_source_ordinal
+                    || not (authenticated_e.handle
+                            == king_batch.authenticated_handles.at(
+                                    e_t_source_ordinal)))
+                fail("z_t derivation does not start with exact (1,h_e)");
+
+            T local_r{};
+            const T& local_e = king_batch.local_source_shares.at(
+                    e_t_source_ordinal);
+            T local_z = local_e;
+            for (size_t r_term_index = 0;
+                    r_term_index < converted_r.derivation.terms.size();
+                    r_term_index++)
+            {
+                const auto& r_term = converted_r.derivation.terms.at(
+                        r_term_index);
+                const auto& z_term = converted_z.derivation.terms.at(
+                        r_term_index + 1);
+                if (r_term.handle.dealer < 0
+                        || size_t(r_term.handle.dealer) >= dealer_count)
+                    fail("z_t r_t term dealer is invalid");
+                const auto& batch = auth.dealer_batches.at(
+                        batch_count_before
+                        + size_t(r_term.handle.dealer));
+                const size_t source_ordinal = r_term.handle.source_ordinal;
+                if (z_term.coefficient
+                                != typename T::open_type{}
+                                        - r_term.coefficient
+                        || not (z_term.handle == r_term.handle)
+                        || z_term.handle == authenticated_e.handle
+                        || batch.batch_id != r_term.handle.batch_id
+                        || batch.dealer != r_term.handle.dealer
+                        || source_ordinal >= batch.source_ordinals.size()
+                        || batch.source_ordinals.at(source_ordinal)
+                                != source_ordinal
+                        || source_ordinal
+                                >= batch.authenticated_handles.size()
+                        || not (r_term.handle
+                                == batch.authenticated_handles.at(
+                                        source_ordinal)))
+                    fail("z_t negated term changed r_t coefficient, handle, or authoritative source");
+                local_r += r_term.coefficient
+                        * batch.local_source_shares.at(source_ordinal);
+                local_z += z_term.coefficient
+                        * batch.local_source_shares.at(source_ordinal);
+            }
+            for (size_t left = 0;
+                    left < converted_z.derivation.terms.size(); left++)
+                for (size_t right = 0; right < left; right++)
+                    if (converted_z.derivation.terms.at(left).handle
+                            == converted_z.derivation.terms.at(right).handle)
+                        fail("one z_t derivation contains duplicate handles");
+            for (size_t previous = 0; previous < output_index; previous++)
+                if (authenticated_e.handle
+                        == receipt.authenticated_e_t_sources.at(
+                                previous).handle)
+                    fail("e_t handle was reused by another z_t operation");
+            if (local_r != expected.actual_r_t
+                    || local_r != transcript.r_t
+                    || local_e
+                            != expected.concrete_e_t_source.local_share
+                    || local_e != transcript.e_t
+                    || local_z != local_e - local_r
+                    || local_z != transcript.e_t - transcript.r_t
+                    || local_z != z_verify.at(record.offset))
+                fail("local authoritative r_t/e_t/z_t evaluation is not exact");
+            local_z_t_evaluation_count++;
+            z_t_term_count = converted_z.derivation.terms.size();
+        }
+        if (full_identity_match_count != expected_consumed_outputs.size()
+                || local_z_t_evaluation_count
+                        != expected_consumed_outputs.size()
+                || dot_product_z_t_count != 3
+                || z_t_term_count != dealer_count + 1)
+            fail("z_t focused coverage count is incomplete");
     }
     else
     {
@@ -4603,6 +5150,7 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
                 || not receipt.source_handles.empty()
                 || not receipt.converted_r_t_derivations.empty()
                 || not receipt.authenticated_e_t_sources.empty()
+                || not receipt.converted_z_t_derivations.empty()
                 || auth.status != OptimisticAuthenticationStatus::
                         RecoveryNotImplemented)
             fail("failed adapter authentication did not retain fail-stop state");
@@ -4682,6 +5230,7 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
             || not duplicate.source_handles.empty()
             || not duplicate.converted_r_t_derivations.empty()
             || not duplicate.authenticated_e_t_sources.empty()
+            || not duplicate.converted_z_t_derivations.empty()
             || auth.next_batch_id != duplicate_next_batch_id
             || auth.dealer_batches.size() != duplicate_batch_count
             || auth.next_global_invocation_id
@@ -4703,12 +5252,14 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
     tentative_double_rand_capture_test_hook_ran = true;
     if (P.my_num() == 0)
     {
+        size_t verified_sharings = 0;
         size_t checked_base_sharings = 0;
         size_t committed_handles = 0;
         for (size_t dealer = 0; dealer < dealer_count; dealer++)
         {
             const auto& batch = auth.dealer_batches.at(
                     batch_count_before + dealer);
+            verified_sharings += batch.verify_sharing_completed;
             checked_base_sharings += batch.base_sharing_check_completed;
             committed_handles += batch.authenticated_handles.size();
         }
@@ -4740,6 +5291,13 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
              << " converted_r_t_derivations="
              << (expected_success
                     ? receipt.converted_r_t_derivations.size() : 0)
+             << " converted_z_t_derivations="
+             << (expected_success
+                    ? receipt.converted_z_t_derivations.size() : 0)
+             << " full_identity_matches="
+             << (expected_success ? full_identity_match_count : 0)
+             << " z_t_terms_per_operation="
+             << (expected_success ? z_t_term_count : 0)
              << " double_rand_mapping_formula=source-ordinal-times-dealers-plus-dealer"
              << " king_e_t_ordinals=2..7"
              << " key_establishment_runs=" << auth.key_establishment_runs
@@ -4751,9 +5309,12 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
              << " check_key_relations=" << auth.keys.size()
              << " check_key_local_equations="
              << auth.check_key_masking_equation_checks
+             << " verify_sharings=" << verified_sharings
              << " base_sharings=" << checked_base_sharings
              << " ordinary_tag_nu_relations="
              << (auth.total_ftag_chunks * auth.keys.size())
+             << " base_sharing_tag_nu_relations="
+             << (dealer_count * auth.keys.size())
              << " king_tag_nu_relation_increase="
              << ((new_king_chunks - old_king_chunks) * auth.keys.size())
              << " nu_records=" << auth.nu_material.size()
@@ -4769,9 +5330,19 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
              << " focused_invocation_comm="
              << (P.total_comm().sent - communication_before)
              << " candidate=consumed duplicate_adaptation=rejected"
-             << " derivation_order=capture-order coefficients=exact"
-             << " local_r_t_evaluation=exact z_t=deferred"
-             << " operation_output_provenance=deferred"
+             << " derivation_order=capture-order"
+             << " z_t_term_order=e_t-then-negated-r_t"
+             << " coefficient_negation=field-native-edge-cases-exact"
+             << " duplicate_handles=none"
+             << " local_r_t_evaluation=exact"
+             << " local_e_t_binding=exact"
+             << " local_z_t_evaluation="
+             << (expected_success ? "exact" : "not-published")
+             << " transcript_z_t_binding="
+             << (expected_success ? "exact" : "not-published")
+             << " dot_product_z_t_results="
+             << (expected_success ? dot_product_z_t_count : 0)
+             << " excluded_operation_classes=absent"
              << " certification=consistent-dealer-generated-source-sharings"
              << " randomness_prescription=not-certified"
              << (expected_success

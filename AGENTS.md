@@ -237,7 +237,10 @@ batch validation and a local equality check against the captured `actual_r_t`.
 The converted values are returned by value in the adapter receipt; there is no
 persistent derivation or checkpoint registry. The receipt also returns one
 direct authenticated king-source handle per captured operation; it does not
-wrap `e_t` in a one-term derivation.
+wrap `e_t` in a one-term derivation. For each captured ordinary scalar or dot
+operation, the receipt additionally returns the exact ordered handle-based
+derivation `Delta_z = (1, h_e) - Delta_r`. This is a by-value receipt result:
+it creates no new source, handle, checkpoint, or persistent registry.
 
 The capture alone still creates no dealer batch or batch ID, authenticated
 source handle, FTag chunk, authentication invocation, checkpoint, or scheduler
@@ -252,10 +255,13 @@ It must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. construction of `z_t = e_t - r_t`, complete output/checkpoint
-   derivations, and checkpoint creation from the authenticated sources;
+1. complete segment source collection, checkpoint derivation construction,
+   and checkpoint creation from the authenticated sources;
 2. normal segment/checkpoint scheduler integration;
 3. final production output gating through that scheduler.
+
+Truncation, mul-public, virtual-transcript, compression-generated, and
+ultimate-tuple provenance remain deferred.
 
 A future production segment collector must merge the king's
 PartialMult-dealt degree-`t` `e_t` sources with that same real party's other
@@ -554,13 +560,13 @@ always uses the sampled zero-permitted challenge without an override.
 
 ## Near-term honest-path milestones
 
-The focused conversion of captured tentative `r_t` derivations and direct
-authentication of exact concrete king-generated `e_t` sources are implemented
-inside the one-shot adapter. Unless the user changes priorities, the expected
-next sequence is:
+The focused conversion of captured tentative `r_t` derivations, direct
+authentication of exact concrete king-generated `e_t` sources, and exact
+handle-based `z_t = e_t - r_t` derivations are implemented inside the
+one-shot adapter. Unless the user changes priorities, the expected next
+sequence is:
 
-1. form complete segment source collections and `z_t`/checkpoint derivations,
-   then
+1. form complete segment source collections and checkpoint derivations, then
    integrate authentication, sealing, and promotion;
 2. integrate normal segment continuation and final output gating.
 

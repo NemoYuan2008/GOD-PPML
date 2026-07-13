@@ -662,6 +662,17 @@ private:
         LinearDerivation derivation;
     };
 
+    struct TentativeDoubleRandConvertedZtDerivation
+    {
+        size_t capture_order_ordinal = 0;
+        size_t producer_record_ordinal = 0;
+        size_t producer_output_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        OrdinaryDoubleRandOperationKind operation_kind =
+                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+        LinearDerivation derivation;
+    };
+
     struct TentativeAuthenticatedEtSource
     {
         size_t capture_order_ordinal = 0;
@@ -684,6 +695,8 @@ private:
         vector<TentativeDoubleRandConvertedRtDerivation>
                 converted_r_t_derivations;
         vector<TentativeAuthenticatedEtSource> authenticated_e_t_sources;
+        vector<TentativeDoubleRandConvertedZtDerivation>
+                converted_z_t_derivations;
     };
 
     struct OptimisticCheckpointRecord
