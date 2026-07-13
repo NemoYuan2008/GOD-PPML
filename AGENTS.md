@@ -250,14 +250,35 @@ before any authentication mutation or execution. Authentication rejection
 retains the registered diagnostic records and fail-stop evidence, creates no
 handles, and does not permit reuse or retry.
 
-This vertical slice is not yet integrated into the normal segment scheduler.
-It must not be described as the complete GSZ20 authentication path.
+Eligible ordinary scalar-multiplication and ordinary dot-product verification
+batches are now integrated automatically through the existing
+`AtlasConfig::max_before_check` / `maybe_check()` / `check()` lifecycle. The
+production order is pure finalize/freeze and exact preflight, then the existing
+GS20 verification, then exactly one source-only global authentication
+invocation. One frozen candidate is retained across GS20. Only after GS20 and
+authentication both succeed are the exact `r_t`, direct `e_t`, and `z_t`
+bindings validated and the batch-local verification, capture, receipt, dealer
+batch, `nu`, holder-tag, and global-invocation state retired. Reusable checked
+`mu` keys, their epoch, agreed FTag width, monotonic IDs, PRNG state, and
+cumulative counters persist.
+
+Unsupported operation families remain GS20-only and force an eligible ordinary
+batch boundary before entering. `max_before_check` still counts `x_verify`
+coordinates rather than operations, so a single dot product can cross or
+overshoot it while producing one captured operation and one concrete king
+`e_t` source. Focused integration tests use a test-only effective threshold
+and explicit residual flush. Destructor-time checking is not a production
+pre-output gate.
+
+This automatic ordinary-batch lifecycle is not a complete segment/checkpoint
+scheduler and must not be described as the complete GSZ20 authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. complete segment source collection, checkpoint derivation construction,
-   and checkpoint creation from the authenticated sources;
-2. normal segment/checkpoint scheduler integration;
+1. complete segment-wide source collection across the deferred operation
+   families, checkpoint derivation construction, and checkpoint creation;
+2. normal segment/checkpoint scheduler integration beyond eligible ordinary
+   GS20 verification batches;
 3. final production output gating through that scheduler.
 
 Truncation, mul-public, virtual-transcript, compression-generated, and
@@ -468,6 +489,36 @@ ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=3 \
 ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=5 \
     ./Scripts/atlas-gsz.sh 0-dot
 
+conda run -n pytorch ./compile.py 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-preflight-rejections PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-preflight-rejections PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-auth-rejection PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-auth-rejection PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-gs20-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-gs20-failure PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-unsupported-gs20-failure PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-unsupported-gs20-failure PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-nested-preprocessing PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-nested-preprocessing PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-fixed-king PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-fixed-king PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+
 conda run -n pytorch ./compile.py 0-tentative-double-rand-capture
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
@@ -562,9 +613,9 @@ always uses the sampled zero-permitted challenge without an override.
 
 The focused conversion of captured tentative `r_t` derivations, direct
 authentication of exact concrete king-generated `e_t` sources, and exact
-handle-based `z_t = e_t - r_t` derivations are implemented inside the
-one-shot adapter. Unless the user changes priorities, the expected next
-sequence is:
+handle-based `z_t = e_t - r_t` derivations are implemented in both the
+one-shot adapter and the automatic eligible ordinary-batch lifecycle. Unless
+the user changes priorities, the expected next sequence is:
 
 1. form complete segment source collections and checkpoint derivations, then
    integrate authentication, sealing, and promotion;

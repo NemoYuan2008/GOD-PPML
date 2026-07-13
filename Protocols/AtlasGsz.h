@@ -28,6 +28,31 @@ private:
     {
     };
 
+    class SentCommunicationAccumulator
+    {
+        Player& player;
+        size_t& primary;
+        size_t* secondary;
+        size_t communication_before;
+
+    public:
+        SentCommunicationAccumulator(Player& player, size_t& primary,
+                size_t* secondary = 0) :
+                player(player), primary(primary), secondary(secondary),
+                communication_before(player.total_comm().sent)
+        {
+        }
+
+        ~SentCommunicationAccumulator()
+        {
+            const size_t communication =
+                    player.total_comm().sent - communication_before;
+            primary += communication;
+            if (secondary != 0)
+                *secondary += communication;
+        }
+    };
+
     const uint64_t base_field_ftag_chunk_width_;
     Atlas<T> honest;
 
@@ -41,6 +66,7 @@ private:
 
     enum class OrdinaryDoubleRandOperationKind
     {
+        noneligible,
         scalar_multiplication,
         dot_product,
     };
@@ -50,7 +76,8 @@ private:
         size_t offset;
         int length;
         OrdinaryDoubleRandOperationKind operation_kind =
-                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+                OrdinaryDoubleRandOperationKind::noneligible;
+        uint64_t verification_batch_serial = 0;
         typename Atlas<T>::PartialMultTranscript transcript;
         typename Atlas<T>::DoubleSharingProducerReference producer_reference;
         bool has_king_evidence;
@@ -125,7 +152,7 @@ private:
         size_t producer_output_ordinal = 0;
         size_t input_generation_group_ordinal = 0;
         OrdinaryDoubleRandOperationKind operation_kind =
-                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+                OrdinaryDoubleRandOperationKind::noneligible;
         T actual_r_t;
         T actual_r_2t;
         typename Atlas<T>::DoubleSharingDecomposition decomposition;
@@ -152,7 +179,7 @@ private:
         size_t producer_record_ordinal = 0;
         typename Atlas<T>::DoubleSharingProducerReference producer_reference;
         OrdinaryDoubleRandOperationKind operation_kind =
-                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+                OrdinaryDoubleRandOperationKind::noneligible;
         T actual_r_t;
         T actual_r_2t;
         typename Atlas<T>::DoubleSharingDecomposition decomposition;
@@ -167,6 +194,12 @@ private:
                 DoubleSharingProducerProvenance>> producer_records;
         vector<TentativeCapturedConsumption> consumptions;
         unique_ptr<TentativeDoubleRandCaptureCandidate> finalized_candidate;
+
+        // Candidate-local direct indices. They exist only while capture is
+        // active and avoid another operation-count factor in producer and
+        // exact-output lookup.
+        unordered_map<const void*, size_t> producer_record_ordinals;
+        vector<unordered_map<size_t, bool>> consumed_outputs_by_producer;
     };
 
     TentativeDoubleRandCaptureState tentative_double_rand_capture_state;
@@ -658,7 +691,7 @@ private:
         size_t producer_output_ordinal = 0;
         size_t input_generation_group_ordinal = 0;
         OrdinaryDoubleRandOperationKind operation_kind =
-                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+                OrdinaryDoubleRandOperationKind::noneligible;
         LinearDerivation derivation;
     };
 
@@ -669,7 +702,7 @@ private:
         size_t producer_output_ordinal = 0;
         size_t input_generation_group_ordinal = 0;
         OrdinaryDoubleRandOperationKind operation_kind =
-                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+                OrdinaryDoubleRandOperationKind::noneligible;
         LinearDerivation derivation;
     };
 
@@ -680,7 +713,7 @@ private:
         size_t producer_output_ordinal = 0;
         size_t input_generation_group_ordinal = 0;
         OrdinaryDoubleRandOperationKind operation_kind =
-                OrdinaryDoubleRandOperationKind::scalar_multiplication;
+                OrdinaryDoubleRandOperationKind::noneligible;
         int king = -1;
         vector<int> special_sharing_support;
         AuthenticatedSourceHandle handle;
@@ -697,6 +730,33 @@ private:
         vector<TentativeAuthenticatedEtSource> authenticated_e_t_sources;
         vector<TentativeDoubleRandConvertedZtDerivation>
                 converted_z_t_derivations;
+    };
+
+    struct TentativeDoubleRandProspectiveSourceMapping
+    {
+        size_t producer_record_ordinal = 0;
+        size_t input_generation_group_ordinal = 0;
+        int dealer = -1;
+        uint64_t source_ordinal = 0;
+    };
+
+    struct FrozenOrdinaryBatch
+    {
+        unique_ptr<TentativeDoubleRandCaptureCandidate> candidate;
+        vector<DealerSourceBatchRecord> prospective_batches;
+        vector<TentativeDoubleRandProspectiveSourceMapping>
+                prospective_mappings;
+        vector<vector<size_t>> converted_term_mapping_indices;
+        vector<size_t> e_t_source_ordinals;
+        TentativeDoubleRandAuthenticationReceipt receipt;
+
+        uint64_t verification_batch_serial = 0;
+        size_t dealer_count = 0;
+        size_t operation_count = 0;
+        size_t mapping_count = 0;
+        size_t combined_king_source_count = 0;
+        size_t x_verify_coordinate_count = 0;
+        size_t partial_transcript_count = 0;
     };
 
     struct OptimisticCheckpointRecord
@@ -743,8 +803,13 @@ private:
     struct GlobalAuthenticationWorkingMember
     {
         uint64_t batch_id = 0;
+        size_t dealer_batch_index = 0;
         vector<BaseFieldFTagSourceChunk> source_chunks;
         vector<T> base_sharing;
+        size_t ordinary_nu_begin = 0;
+        size_t ordinary_tag_begin = 0;
+        size_t base_nu_begin = 0;
+        size_t base_tag_begin = 0;
     };
 
     struct GlobalAuthenticationWorkingSet
@@ -776,11 +841,16 @@ private:
         bool base_field_ftag_chunk_width_agreed = false;
         size_t base_field_ftag_chunk_width_agreement_communication = 0;
         size_t key_establishment_runs = 0;
+        size_t check_key_runs = 0;
         size_t key_establishment_communication = 0;
         size_t check_key_masking_equation_checks = 0;
+        size_t verify_sharing_invocations = 0;
         size_t verify_sharing_communication = 0;
+        size_t base_sharing_checks = 0;
         size_t base_sharing_communication = 0;
         size_t tag_generation_communication = 0;
+        size_t ordinary_tag_generation_communication = 0;
+        size_t base_tag_generation_communication = 0;
         size_t tag_checking_communication = 0;
         size_t total_ftag_chunks = 0;
         size_t global_check_tag_challenges = 0;
@@ -800,6 +870,153 @@ private:
         vector<HolderTagRecord> holder_tags;
         vector<OptimisticCheckpointRecord> checkpoints;
         vector<GlobalAuthenticationInvocationRecord> global_invocations;
+    };
+
+    enum class OrdinaryBatchLifecycle
+    {
+        idle,
+        capturing_ordinary,
+        checking_gs20,
+        authenticating_sources,
+        failed,
+    };
+
+    enum class VerificationBatchFlushReason
+    {
+        none,
+        threshold,
+        eligibility_boundary,
+        explicit_test_residual,
+        destructor,
+    };
+
+    struct OrdinaryBatchOperationShape
+    {
+        OrdinaryDoubleRandOperationKind kind =
+                OrdinaryDoubleRandOperationKind::noneligible;
+        size_t length = 0;
+    };
+
+    struct IntegratedBatchReport
+    {
+        bool valid = false;
+        uint64_t verification_batch_serial = 0;
+        VerificationBatchFlushReason flush_reason =
+                VerificationBatchFlushReason::none;
+        size_t ordinary_scalar_operations = 0;
+        size_t ordinary_dot_operations = 0;
+        size_t x_verify_coordinates = 0;
+        size_t partial_transcripts = 0;
+        vector<OrdinaryBatchOperationShape> operation_shapes;
+        vector<size_t> per_dealer_source_counts;
+        vector<size_t> per_dealer_ftag_chunk_counts;
+        size_t committed_handles = 0;
+        size_t r_t_derivations = 0;
+        size_t direct_e_t_handles = 0;
+        size_t z_t_derivations = 0;
+        size_t r_t_local_evaluations = 0;
+        size_t e_t_local_evaluations = 0;
+        size_t z_t_local_evaluations = 0;
+        size_t verify_sharing_invocations = 0;
+        size_t check_key_setup_runs = 0;
+        size_t check_key_runs = 0;
+        size_t checked_base_sharings = 0;
+        size_t ordinary_tag_nu_relations = 0;
+        size_t base_tag_nu_relations = 0;
+        size_t global_check_tag_challenges = 0;
+        size_t gs20_de_linearization_challenges = 0;
+        size_t gs20_dimension_reduction_challenges = 0;
+        size_t gs20_randomization_logical_challenges = 0;
+        size_t gs20_randomization_raw_samples = 0;
+        size_t gs20_communication = 0;
+        size_t verify_sharing_communication = 0;
+        size_t key_check_communication = 0;
+        size_t base_sharing_communication = 0;
+        size_t ordinary_tag_communication = 0;
+        size_t base_tag_communication = 0;
+        size_t check_tag_communication = 0;
+        size_t total_authentication_communication = 0;
+        size_t total_integrated_communication = 0;
+        size_t authentication_invocations_started = 0;
+        size_t authentication_invocations_completed = 0;
+        size_t authentication_invocations_accepted = 0;
+        size_t post_cleanup_x_verify = 0;
+        size_t post_cleanup_y_verify = 0;
+        size_t post_cleanup_z_verify = 0;
+        size_t post_cleanup_partial_transcripts = 0;
+        size_t post_cleanup_virtual_transcripts = 0;
+        size_t post_cleanup_virtual_king_evidence = 0;
+        size_t post_cleanup_capture_active = 0;
+        size_t post_cleanup_capture_finalized = 0;
+        size_t post_cleanup_capture_producers = 0;
+        size_t post_cleanup_capture_consumptions = 0;
+        size_t post_cleanup_capture_producer_indices = 0;
+        size_t post_cleanup_capture_output_indices = 0;
+        size_t post_cleanup_frozen_batches = 0;
+        size_t post_cleanup_receipt_dealer_batches = 0;
+        size_t post_cleanup_receipt_source_handles = 0;
+        size_t post_cleanup_receipt_r_t = 0;
+        size_t post_cleanup_receipt_e_t = 0;
+        size_t post_cleanup_receipt_z_t = 0;
+        size_t post_cleanup_dealer_batches = 0;
+        size_t post_cleanup_nu_material = 0;
+        size_t post_cleanup_holder_tags = 0;
+        size_t post_cleanup_global_invocations = 0;
+        size_t retained_dealer_batches = 0;
+        size_t retained_nu_material = 0;
+        size_t retained_holder_tags = 0;
+        size_t retained_global_invocations = 0;
+        size_t persistent_reusable_keys = 0;
+        uint64_t persistent_key_epoch = 0;
+    };
+
+    struct IntegratedOrdinaryBatchState
+    {
+        OrdinaryBatchLifecycle lifecycle = OrdinaryBatchLifecycle::idle;
+        uint64_t next_verification_batch_serial = 1;
+        uint64_t current_verification_batch_serial = 0;
+        bool wrapper_operation_active = false;
+        OrdinaryDoubleRandOperationKind wrapper_operation_kind =
+                OrdinaryDoubleRandOperationKind::noneligible;
+        size_t wrapper_operation_coordinate_start = 0;
+        size_t wrapper_pending_results = 0;
+        size_t preprocessing_initialization_wrappers_replaced = 0;
+        size_t preprocessing_mul_public_records = 0;
+        bool preprocessing_mul_public_test_reported = false;
+        bool inject_unsupported_gs20_failure = false;
+        VerificationBatchFlushReason pending_flush_reason =
+                VerificationBatchFlushReason::none;
+        unique_ptr<FrozenOrdinaryBatch> frozen_batch;
+        TentativeDoubleRandAuthenticationReceipt adapter_receipt;
+
+        size_t ordinary_scalar_operations = 0;
+        size_t ordinary_dot_operations = 0;
+        size_t ordinary_operations = 0;
+        size_t x_verify_coordinates = 0;
+        size_t partial_transcripts = 0;
+        size_t threshold_batches = 0;
+        size_t eligibility_boundary_batches = 0;
+        size_t explicit_residual_batches = 0;
+        size_t gs20_checks = 0;
+        // A started invocation is counted immediately before entering the
+        // source authenticator. Completed and accepted remain separate.
+        size_t authentication_invocations = 0;
+        size_t authentication_invocations_completed = 0;
+        size_t authentication_invocations_accepted = 0;
+        size_t gs20_de_linearization_challenges = 0;
+        size_t gs20_dimension_reduction_challenges = 0;
+        size_t gs20_randomization_logical_challenges = 0;
+        size_t gs20_randomization_raw_samples = 0;
+        size_t gs20_communication = 0;
+        size_t total_authentication_communication = 0;
+        size_t total_integrated_communication = 0;
+        size_t committed_handles = 0;
+        size_t r_t_derivations = 0;
+        size_t direct_e_t_handles = 0;
+        size_t z_t_derivations = 0;
+        size_t ordinary_tag_nu_relations = 0;
+        size_t base_tag_nu_relations = 0;
+        IntegratedBatchReport latest_batch;
     };
 
     enum class AuthenticationPlanStatus
@@ -1779,6 +1996,7 @@ private:
     PendingAnalyzeSharingState pending_analyze_sharing_state;
 
     OptimisticAuthenticationState optimistic_authentication_state;
+    IntegratedOrdinaryBatchState integrated_ordinary_batch_state;
     bool producer_provenance_test_hook_ran = false;
     bool consumed_provenance_transfer_test_hook_ran = false;
     bool special_e_t_test_enabled = false;
@@ -1788,6 +2006,8 @@ private:
     bool tentative_double_rand_capture_test_checked_first_output = false;
     bool tentative_double_rand_capture_test_hook_ran = false;
     string tentative_double_rand_adapter_test_mode;
+    string honest_batch_integration_test_mode;
+    bool honest_batch_integration_test_hook_ran = false;
     SeededPRNG optimistic_authentication_prng;
     ShamirInput<T> optimistic_authentication_input;
 
@@ -1830,6 +2050,10 @@ private:
                 producer) const;
     bool validate_tentative_double_rand_candidate(
             const TentativeDoubleRandCaptureCandidate& candidate) const;
+    bool validate_exact_ordinary_batch_correspondence(
+            const TentativeDoubleRandCaptureCandidate& candidate) const;
+    unique_ptr<FrozenOrdinaryBatch>
+        freeze_finalized_tentative_double_rand_candidate();
     void maybe_complete_tentative_double_rand_capture_test();
     bool no_authentication_or_checkpoint_artifacts() const;
     void run_special_e_t_malformed_support_test();
@@ -1922,7 +2146,9 @@ private:
     bool compute_and_deliver_batch_tags(
             DealerSourceBatchRecord& batch,
             const vector<BaseFieldFTagSourceChunk>& source_chunks,
-            bool check_mask);
+            bool check_mask,
+            size_t& nu_begin,
+            size_t& tag_begin);
     bool prepare_global_authentication(
             GlobalAuthenticationInvocationRecord& invocation,
             const vector<uint64_t>& requested_batch_ids,
@@ -1954,11 +2180,37 @@ private:
             int inject_bad_verify_sharing_dealer = -1,
             int inject_bad_base_sharing_dealer = -1);
     TentativeDoubleRandAuthenticationReceipt
+        authenticate_frozen_tentative_double_rand_candidate(
+                FrozenOrdinaryBatch& frozen,
+                GlobalAuthenticationTestFault test_fault =
+                        GlobalAuthenticationTestFault::none,
+                int inject_bad_verify_sharing_dealer = -1);
+    TentativeDoubleRandAuthenticationReceipt
         adapt_finalized_tentative_double_rand_candidate(
                 GlobalAuthenticationTestFault test_fault =
                         GlobalAuthenticationTestFault::none,
                 int inject_bad_verify_sharing_dealer = -1);
     void run_tentative_double_rand_adapter_test_hook(const string& mode);
+    size_t effective_max_before_check() const;
+    bool automatic_ordinary_integration_enabled() const;
+    void ensure_wrapper_entry_allowed(const char* operation);
+    bool replace_empty_preprocessing_initialization_wrapper();
+    void enter_verification_operation(
+            OrdinaryDoubleRandOperationKind operation_kind);
+    void finish_verification_operation(
+            OrdinaryDoubleRandOperationKind operation_kind,
+            size_t coordinate_count);
+    bool verification_batch_is_eligible_ordinary() const;
+    void request_check(VerificationBatchFlushReason reason);
+    void cleanup_successful_integrated_batch(
+            size_t dealer_batch_start,
+            size_t nu_material_start,
+            size_t holder_tag_start,
+            size_t global_invocation_start,
+            IntegratedBatchReport& report);
+    void print_integrated_batch_report(
+            const IntegratedBatchReport& report) const;
+    void maybe_flush_honest_batch_integration_residual();
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
             bool inject_bad_presentation = false,

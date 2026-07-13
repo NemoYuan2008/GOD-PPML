@@ -116,7 +116,9 @@ bool AtlasGsz<T>::begin_tentative_double_rand_capture()
     auto& state = tentative_double_rand_capture_state;
     if (state.active || state.finalized_candidate
             || not state.producer_records.empty()
-            || not state.consumptions.empty())
+            || not state.consumptions.empty()
+            || not state.producer_record_ordinals.empty()
+            || not state.consumed_outputs_by_producer.empty())
         return false;
     state.active = true;
     return true;
@@ -243,32 +245,34 @@ bool AtlasGsz<T>::capture_completed_ordinary_double_rand(
         return false;
     }
 
-    auto same_producer_record = [] (const auto& left, const auto& right) {
-        return left == right && not left.owner_before(right)
-                && not right.owner_before(left);
-    };
-    size_t producer_record_ordinal = state.producer_records.size();
-    for (size_t ordinal = 0; ordinal < state.producer_records.size();
-            ordinal++)
-        if (same_producer_record(state.producer_records.at(ordinal),
-                reference.producer_provenance))
-        {
-            producer_record_ordinal = ordinal;
-            break;
-        }
-    if (producer_record_ordinal == state.producer_records.size())
+    const void* producer_identity = reference.producer_provenance.get();
+    auto producer_position =
+            state.producer_record_ordinals.find(producer_identity);
+    size_t producer_record_ordinal = 0;
+    if (producer_position == state.producer_record_ordinals.end())
+    {
+        producer_record_ordinal = state.producer_records.size();
+        state.producer_record_ordinals.emplace(
+                producer_identity, producer_record_ordinal);
         state.producer_records.push_back(reference.producer_provenance);
-
-    for (const auto& existing : state.consumptions)
-        if (existing.producer_record_ordinal == producer_record_ordinal
-                && existing.producer_reference.producer_output_ordinal
-                        == reference.producer_output_ordinal)
-        {
-            // A repeated exact material key is a failed round, never a
-            // second source or an idempotent capture.
-            discard_tentative_double_rand_capture();
-            return false;
-        }
+        state.consumed_outputs_by_producer.emplace_back();
+    }
+    else
+        producer_record_ordinal = producer_position->second;
+    if (producer_record_ordinal >= state.producer_records.size()
+            || producer_record_ordinal
+                    >= state.consumed_outputs_by_producer.size()
+            || state.producer_records.at(producer_record_ordinal)
+                    != reference.producer_provenance
+            || not state.consumed_outputs_by_producer.at(
+                    producer_record_ordinal).emplace(
+                            reference.producer_output_ordinal, true).second)
+    {
+        // A repeated exact material key is a failed round, never a second
+        // source or an idempotent capture.
+        discard_tentative_double_rand_capture();
+        return false;
+    }
 
     TentativeCapturedConsumption consumption{};
     consumption.capture_order_ordinal = state.consumptions.size();
@@ -394,20 +398,17 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
             || candidate.dealer_sources.size() != n)
         return false;
 
-    auto same_producer_record = [] (const auto& left, const auto& right) {
-        return left == right && not left.owner_before(right)
-                && not right.owner_before(left);
-    };
+    unordered_map<const void*, size_t> producer_ordinals;
+    producer_ordinals.reserve(candidate.producer_records.size());
     for (size_t i = 0; i < candidate.producer_records.size(); i++)
     {
         if (not candidate.producer_records.at(i)
                 || not validate_tentative_paired_producer_record(
                         *candidate.producer_records.at(i)))
             return false;
-        for (size_t j = 0; j < i; j++)
-            if (same_producer_record(candidate.producer_records.at(i),
-                    candidate.producer_records.at(j)))
-                return false;
+        if (not producer_ordinals.emplace(
+                candidate.producer_records.at(i).get(), i).second)
+            return false;
     }
 
     auto group_less = [] (const TentativeSourceGroupReference& left,
@@ -419,6 +420,12 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
         return left.input_generation_group_ordinal
                 < right.input_generation_group_ordinal;
     };
+    vector<vector<size_t>> source_group_positions;
+    source_group_positions.reserve(candidate.producer_records.size());
+    for (const auto& producer : candidate.producer_records)
+        source_group_positions.emplace_back(
+                producer->degree_t.source_groups.size(),
+                numeric_limits<size_t>::max());
     for (size_t i = 0; i < candidate.source_groups.size(); i++)
     {
         const auto& group = candidate.source_groups.at(i);
@@ -431,6 +438,12 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
                 || (i > 0 && not group_less(
                         candidate.source_groups.at(i - 1), group)))
             return false;
+        auto& position = source_group_positions.at(
+                group.producer_record_ordinal).at(
+                        group.input_generation_group_ordinal);
+        if (position != numeric_limits<size_t>::max())
+            return false;
+        position = i;
     }
 
     // Validate the complete per-dealer table before resolving any temporary
@@ -472,8 +485,13 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
     vector<bool> seen_producer_records(candidate.producer_records.size(),
             false);
     size_t next_producer_record_ordinal = 0;
-    vector<TentativeSourceGroupReference> expected_groups;
-    vector<pair<size_t, size_t>> exact_output_keys;
+    vector<vector<bool>> expected_group_seen;
+    vector<unordered_map<size_t, bool>> exact_outputs;
+    expected_group_seen.reserve(candidate.producer_records.size());
+    exact_outputs.resize(candidate.producer_records.size());
+    for (const auto& producer : candidate.producer_records)
+        expected_group_seen.emplace_back(
+                producer->degree_t.source_groups.size(), false);
     for (size_t consumption_ordinal = 0;
             consumption_ordinal < candidate.consumed_outputs.size();
             consumption_ordinal++)
@@ -517,13 +535,10 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
             next_producer_record_ordinal++;
         }
 
-        pair<size_t, size_t> exact_key(
-                consumption.producer_record_ordinal,
-                consumption.producer_output_ordinal);
-        if (find(exact_output_keys.begin(), exact_output_keys.end(),
-                exact_key) != exact_output_keys.end())
+        if (not exact_outputs.at(
+                consumption.producer_record_ordinal).emplace(
+                        consumption.producer_output_ordinal, true).second)
             return false;
-        exact_output_keys.push_back(exact_key);
 
         const auto& producer = *candidate.producer_records.at(
                 consumption.producer_record_ordinal);
@@ -553,9 +568,10 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
                 consumption.producer_record_ordinal;
         group_reference.input_generation_group_ordinal =
                 consumption.input_generation_group_ordinal;
-        if (find(expected_groups.begin(), expected_groups.end(),
-                group_reference) == expected_groups.end())
-            expected_groups.push_back(group_reference);
+        expected_group_seen.at(
+                group_reference.producer_record_ordinal).at(
+                        group_reference.input_generation_group_ordinal) =
+                true;
 
         const auto& t_sources = producer.degree_t.source_groups.at(
                 consumption.input_generation_group_ordinal).sources;
@@ -573,12 +589,13 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
                 || decomposition.validated_residual.r_2t != T{0})
             return false;
 
-        auto group_position = find(candidate.source_groups.begin(),
-                candidate.source_groups.end(), group_reference);
-        if (group_position == candidate.source_groups.end())
-            return false;
         const size_t tentative_source_ordinal =
-                group_position - candidate.source_groups.begin();
+                source_group_positions.at(
+                        group_reference.producer_record_ordinal).at(
+                                group_reference
+                                        .input_generation_group_ordinal);
+        if (tentative_source_ordinal == numeric_limits<size_t>::max())
+            return false;
         T evaluated_t{};
         T evaluated_2t{};
         for (size_t dealer = 0; dealer < n; dealer++)
@@ -628,13 +645,303 @@ bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
     if (next_producer_record_ordinal != candidate.producer_records.size())
         return false;
 
-    sort(expected_groups.begin(), expected_groups.end(), group_less);
-    expected_groups.erase(unique(expected_groups.begin(),
-            expected_groups.end()), expected_groups.end());
-    if (expected_groups != candidate.source_groups)
+    size_t expected_group_count = 0;
+    for (size_t producer = 0; producer < expected_group_seen.size();
+            producer++)
+        for (size_t group = 0;
+                group < expected_group_seen.at(producer).size(); group++)
+            if (expected_group_seen.at(producer).at(group))
+            {
+                if (expected_group_count >= candidate.source_groups.size()
+                        || candidate.source_groups.at(expected_group_count)
+                                    .producer_record_ordinal != producer
+                        || candidate.source_groups.at(expected_group_count)
+                                    .input_generation_group_ordinal != group)
+                    return false;
+                expected_group_count++;
+            }
+    if (expected_group_count != candidate.source_groups.size())
         return false;
 
     return true;
+}
+
+template<class T>
+bool AtlasGsz<T>::validate_exact_ordinary_batch_correspondence(
+        const TentativeDoubleRandCaptureCandidate& candidate) const
+{
+    if (x_verify.empty() || x_verify.size() != y_verify.size()
+            || x_verify.size() != z_verify.size()
+            || partial_mult_transcripts.empty()
+            || candidate.consumed_outputs.size()
+                    != partial_mult_transcripts.size()
+            || integrated_ordinary_batch_state
+                    .current_verification_batch_serial == 0)
+        return false;
+
+    size_t expected_offset = 0;
+    for (size_t ordinal = 0;
+            ordinal < partial_mult_transcripts.size(); ordinal++)
+    {
+        const auto& record = partial_mult_transcripts.at(ordinal);
+        const auto& consumed = candidate.consumed_outputs.at(ordinal);
+        if ((record.operation_kind
+                        != OrdinaryDoubleRandOperationKind::
+                                scalar_multiplication
+                    && record.operation_kind
+                        != OrdinaryDoubleRandOperationKind::dot_product)
+                || record.verification_batch_serial
+                        != integrated_ordinary_batch_state
+                                .current_verification_batch_serial
+                || record.offset != expected_offset || record.length <= 0
+                || record.offset > x_verify.size()
+                || size_t(record.length) > x_verify.size() - record.offset
+                || consumed.capture_order_ordinal != ordinal
+                || consumed.partial_mult_transcript_record_ordinal
+                        != ordinal
+                || consumed.operation_kind != record.operation_kind
+                || consumed.producer_record_ordinal
+                        >= candidate.producer_records.size()
+                || record.producer_reference.producer_provenance
+                        != candidate.producer_records.at(
+                                consumed.producer_record_ordinal)
+                || record.producer_reference.producer_output_ordinal
+                        != consumed.producer_output_ordinal
+                || record.transcript.r_t != consumed.actual_r_t
+                || record.transcript.r_2t != consumed.actual_r_2t
+                || record.transcript.e_t
+                        != consumed.concrete_e_t_source.local_share
+                || z_verify.at(record.offset)
+                        != record.transcript.e_t - record.transcript.r_t)
+            return false;
+        if (record.operation_kind
+                        == OrdinaryDoubleRandOperationKind::
+                                scalar_multiplication
+                && record.length != 1)
+            return false;
+        if (record.operation_kind
+                == OrdinaryDoubleRandOperationKind::dot_product)
+            for (size_t padding = 1;
+                    padding < size_t(record.length); padding++)
+                if (z_verify.at(record.offset + padding) != T{})
+                    return false;
+
+        T product{};
+        for (size_t coordinate = 0;
+                coordinate < size_t(record.length); coordinate++)
+            product += x_verify.at(record.offset + coordinate)
+                    * y_verify.at(record.offset + coordinate);
+        if (record.transcript.e_2t
+                != product + record.transcript.r_2t)
+            return false;
+        expected_offset += size_t(record.length);
+    }
+    return expected_offset == x_verify.size()
+            && validate_tentative_double_rand_candidate(candidate);
+}
+
+template<class T>
+unique_ptr<typename AtlasGsz<T>::FrozenOrdinaryBatch>
+AtlasGsz<T>::freeze_finalized_tentative_double_rand_candidate()
+{
+    auto& capture = tentative_double_rand_capture_state;
+    const auto* candidate = capture.finalized_candidate.get();
+    if (capture.active || candidate == 0
+            || optimistic_authentication_state.status
+                    != OptimisticAuthenticationStatus::ready
+            || not validate_exact_ordinary_batch_correspondence(*candidate))
+        return nullptr;
+
+    auto frozen = make_unique<FrozenOrdinaryBatch>();
+    frozen->verification_batch_serial = integrated_ordinary_batch_state
+            .current_verification_batch_serial;
+    frozen->dealer_count = size_t(P.num_players());
+    frozen->operation_count = candidate->consumed_outputs.size();
+    frozen->x_verify_coordinate_count = x_verify.size();
+    frozen->partial_transcript_count = partial_mult_transcripts.size();
+    frozen->mapping_count = checked_size_product(frozen->dealer_count,
+            candidate->source_count,
+            "AtlasGsz: frozen ordinary mapping count overflow");
+    frozen->combined_king_source_count = checked_size_sum(
+            candidate->source_count, frozen->operation_count,
+            "AtlasGsz: frozen ordinary king source count overflow");
+    if (frozen->dealer_count == 0 || candidate->source_count == 0
+            || frozen->combined_king_source_count
+                    > uint64_t(numeric_limits<uint64_t>::max()))
+        return nullptr;
+
+    vector<vector<size_t>> source_group_positions;
+    source_group_positions.reserve(candidate->producer_records.size());
+    for (const auto& producer : candidate->producer_records)
+        source_group_positions.emplace_back(
+                producer->degree_t.source_groups.size(),
+                numeric_limits<size_t>::max());
+    for (size_t source_ordinal = 0;
+            source_ordinal < candidate->source_groups.size();
+            source_ordinal++)
+    {
+        const auto& group = candidate->source_groups.at(source_ordinal);
+        auto& position = source_group_positions.at(
+                group.producer_record_ordinal).at(
+                        group.input_generation_group_ordinal);
+        if (position != numeric_limits<size_t>::max())
+            return nullptr;
+        position = source_ordinal;
+    }
+
+    auto& receipt = frozen->receipt;
+    frozen->prospective_batches.reserve(frozen->dealer_count);
+    frozen->prospective_mappings.resize(frozen->mapping_count);
+    frozen->converted_term_mapping_indices.resize(
+            frozen->operation_count);
+    frozen->e_t_source_ordinals.resize(frozen->operation_count);
+    receipt.dealer_batches.resize(frozen->dealer_count);
+    receipt.source_handles.reserve(frozen->mapping_count);
+    receipt.converted_r_t_derivations.resize(frozen->operation_count);
+    receipt.authenticated_e_t_sources.resize(frozen->operation_count);
+    receipt.converted_z_t_derivations.resize(frozen->operation_count);
+
+    for (size_t dealer = 0; dealer < frozen->dealer_count; dealer++)
+    {
+        DealerSourceBatchRecord batch{};
+        batch.dealer = int(dealer);
+        const size_t source_count = dealer == 0
+                ? frozen->combined_king_source_count
+                : candidate->source_count;
+        batch.source_ordinals.reserve(source_count);
+        batch.local_source_shares.reserve(source_count);
+        for (size_t source_ordinal = 0;
+                source_ordinal < candidate->source_count; source_ordinal++)
+        {
+            batch.source_ordinals.push_back(source_ordinal);
+            batch.local_source_shares.push_back(
+                    candidate->dealer_sources.at(dealer).sources.at(
+                            source_ordinal).local_share);
+            const size_t mapping_index = checked_size_sum(
+                    checked_size_product(source_ordinal,
+                            frozen->dealer_count,
+                            "AtlasGsz: frozen mapping offset overflow"),
+                    dealer, "AtlasGsz: frozen mapping index overflow");
+            const auto& source = candidate->dealer_sources.at(dealer)
+                    .sources.at(source_ordinal);
+            auto& mapping = frozen->prospective_mappings.at(mapping_index);
+            mapping.producer_record_ordinal =
+                    source.reference.producer_record_ordinal;
+            mapping.input_generation_group_ordinal =
+                    source.reference.input_generation_group_ordinal;
+            mapping.dealer = int(dealer);
+            mapping.source_ordinal = source_ordinal;
+        }
+        if (dealer == 0)
+            for (size_t operation = 0;
+                    operation < frozen->operation_count; operation++)
+            {
+                const size_t source_ordinal = checked_size_sum(
+                        candidate->source_count, operation,
+                        "AtlasGsz: frozen e_t source ordinal overflow");
+                batch.source_ordinals.push_back(source_ordinal);
+                batch.local_source_shares.push_back(
+                        candidate->consumed_outputs.at(operation)
+                                .concrete_e_t_source.local_share);
+            }
+        if (batch.source_ordinals.size() != source_count
+                || batch.local_source_shares.size() != source_count)
+            return nullptr;
+        frozen->prospective_batches.push_back(std::move(batch));
+    }
+
+    vector<bool> used_mappings(frozen->mapping_count, false);
+    for (size_t operation = 0;
+            operation < frozen->operation_count; operation++)
+    {
+        const auto& tentative = candidate->consumed_outputs.at(operation);
+        auto& converted = receipt.converted_r_t_derivations.at(operation);
+        auto& authenticated_e =
+                receipt.authenticated_e_t_sources.at(operation);
+        auto& converted_z = receipt.converted_z_t_derivations.at(operation);
+        converted.capture_order_ordinal = tentative.capture_order_ordinal;
+        converted.producer_record_ordinal = tentative.producer_record_ordinal;
+        converted.producer_output_ordinal = tentative.producer_output_ordinal;
+        converted.input_generation_group_ordinal =
+                tentative.input_generation_group_ordinal;
+        converted.operation_kind = tentative.operation_kind;
+        authenticated_e.capture_order_ordinal =
+                tentative.capture_order_ordinal;
+        authenticated_e.producer_record_ordinal =
+                tentative.producer_record_ordinal;
+        authenticated_e.producer_output_ordinal =
+                tentative.producer_output_ordinal;
+        authenticated_e.input_generation_group_ordinal =
+                tentative.input_generation_group_ordinal;
+        authenticated_e.operation_kind = tentative.operation_kind;
+        authenticated_e.king = tentative.concrete_e_t_source.king;
+        authenticated_e.special_sharing_support =
+                tentative.concrete_e_t_source.special_sharing_support;
+        converted_z.capture_order_ordinal = tentative.capture_order_ordinal;
+        converted_z.producer_record_ordinal =
+                tentative.producer_record_ordinal;
+        converted_z.producer_output_ordinal =
+                tentative.producer_output_ordinal;
+        converted_z.input_generation_group_ordinal =
+                tentative.input_generation_group_ordinal;
+        converted_z.operation_kind = tentative.operation_kind;
+
+        const size_t term_count = tentative.degree_t_derivation.terms.size();
+        if (term_count != frozen->dealer_count)
+            return nullptr;
+        converted.derivation.terms.resize(term_count);
+        converted_z.derivation.terms.resize(checked_size_sum(term_count, 1,
+                "AtlasGsz: frozen z_t term count overflow"));
+        converted_z.derivation.terms.at(0).coefficient =
+                typename T::open_type(1);
+        auto& indices =
+                frozen->converted_term_mapping_indices.at(operation);
+        indices.resize(term_count);
+        frozen->e_t_source_ordinals.at(operation) = checked_size_sum(
+                candidate->source_count, tentative.capture_order_ordinal,
+                "AtlasGsz: frozen e_t suffix ordinal overflow");
+        for (size_t dealer = 0; dealer < term_count; dealer++)
+        {
+            const auto& term = tentative.degree_t_derivation.terms.at(dealer);
+            if (term.source.dealer != int(dealer)
+                    || term.source.producer_record_ordinal
+                            >= source_group_positions.size()
+                    || term.source.input_generation_group_ordinal
+                            >= source_group_positions.at(
+                                    term.source.producer_record_ordinal).size())
+                return nullptr;
+            const size_t source_ordinal = source_group_positions.at(
+                    term.source.producer_record_ordinal).at(
+                            term.source.input_generation_group_ordinal);
+            if (source_ordinal == numeric_limits<size_t>::max())
+                return nullptr;
+            const size_t mapping_index = checked_size_sum(
+                    checked_size_product(source_ordinal,
+                            frozen->dealer_count,
+                            "AtlasGsz: frozen derivation mapping offset overflow"),
+                    dealer,
+                    "AtlasGsz: frozen derivation mapping index overflow");
+            if (mapping_index >= frozen->mapping_count)
+                return nullptr;
+            indices.at(dealer) = mapping_index;
+            used_mappings.at(mapping_index) = true;
+            converted.derivation.terms.at(dealer).coefficient =
+                    term.coefficient;
+            converted_z.derivation.terms.at(dealer + 1).coefficient =
+                    typename T::open_type{} - term.coefficient;
+        }
+    }
+    if (find(used_mappings.begin(), used_mappings.end(), false)
+            != used_mappings.end())
+        return nullptr;
+
+    frozen->candidate = std::move(capture.finalized_candidate);
+    if (not frozen->candidate || capture.active
+            || not capture.producer_records.empty()
+            || not capture.consumptions.empty())
+        throw logic_error(
+                "AtlasGsz: pure ordinary freeze did not claim exactly one finalized candidate");
+    return frozen;
 }
 
 template<class T>
@@ -650,6 +957,8 @@ bool AtlasGsz<T>::finalize_tentative_double_rand_capture()
 
     TentativeDoubleRandCaptureCandidate candidate{};
     candidate.producer_records = state.producer_records;
+    vector<vector<bool>> seen_source_groups;
+    seen_source_groups.reserve(candidate.producer_records.size());
     for (const auto& producer : candidate.producer_records)
         if (not producer
                 || not validate_tentative_paired_producer_record(*producer))
@@ -657,6 +966,9 @@ bool AtlasGsz<T>::finalize_tentative_double_rand_capture()
             discard_tentative_double_rand_capture();
             return false;
         }
+        else
+            seen_source_groups.emplace_back(
+                    producer->degree_t.source_groups.size(), false);
 
     for (const auto& captured : state.consumptions)
     {
@@ -700,10 +1012,16 @@ bool AtlasGsz<T>::finalize_tentative_double_rand_capture()
                 captured.producer_record_ordinal;
         group_reference.input_generation_group_ordinal =
                 t_derivation.input_batch_ordinal;
-        if (find(candidate.source_groups.begin(),
-                candidate.source_groups.end(), group_reference)
-                == candidate.source_groups.end())
+        if (not seen_source_groups.at(
+                group_reference.producer_record_ordinal).at(
+                        group_reference.input_generation_group_ordinal))
+        {
+            seen_source_groups.at(
+                    group_reference.producer_record_ordinal).at(
+                            group_reference.input_generation_group_ordinal) =
+                    true;
             candidate.source_groups.push_back(group_reference);
+        }
 
         TentativeConsumedOutputEvidence output{};
         output.capture_order_ordinal = captured.capture_order_ordinal;
@@ -785,6 +1103,8 @@ bool AtlasGsz<T>::finalize_tentative_double_rand_capture()
     state.active = false;
     state.producer_records.clear();
     state.consumptions.clear();
+    state.producer_record_ordinals.clear();
+    state.consumed_outputs_by_producer.clear();
     return true;
 }
 
@@ -1184,7 +1504,8 @@ bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
     if (state.base_field_ftag_chunk_width_agreed)
         return true;
 
-    const size_t communication_before = P.total_comm().sent;
+    SentCommunicationAccumulator communication(
+            P, state.base_field_ftag_chunk_width_agreement_communication);
     vector<octetStream> width_streams(P.num_players());
     const uint64_t selected_width = base_field_ftag_chunk_width_;
     width_streams.at(P.my_num()).store(selected_width);
@@ -1202,8 +1523,6 @@ bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
         if (received_width != base_field_ftag_chunk_width_)
             agreed = false;
     }
-    state.base_field_ftag_chunk_width_agreement_communication +=
-            P.total_comm().sent - communication_before;
     if (not agreed)
         throw invalid_argument(
                 "AtlasGsz: parties selected different base-field FTag chunk widths");
@@ -1215,15 +1534,216 @@ bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
 template<class T>
 AtlasGsz<T>::~AtlasGsz()
 {
-    check();
+    if (not x_verify.empty())
+        request_check(VerificationBatchFlushReason::destructor);
+    else
+        check();
     check_opened_values();
+}
+
+template<class T>
+size_t AtlasGsz<T>::effective_max_before_check() const
+{
+    if (not honest_batch_integration_test_mode.empty())
+        return 4;
+    return AtlasConfig::max_before_check;
+}
+
+template<class T>
+bool AtlasGsz<T>::automatic_ordinary_integration_enabled() const
+{
+    // The pre-existing tentative-capture/one-shot-adapter modes remain
+    // isolated characterization hooks. Their adapter still uses the same
+    // freeze and authenticate phases consecutively.
+    return not tentative_double_rand_capture_test_enabled;
+}
+
+template<class T>
+bool AtlasGsz<T>::replace_empty_preprocessing_initialization_wrapper()
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    if (not integrated.wrapper_operation_active
+            || integrated.wrapper_operation_kind
+                    != OrdinaryDoubleRandOperationKind::
+                            scalar_multiplication
+            || integrated.wrapper_pending_results != 0
+            || integrated.wrapper_operation_coordinate_start != 0
+            || not x_verify.empty() || not y_verify.empty()
+            || not z_verify.empty() || not partial_mult_transcripts.empty()
+            || integrated.frozen_batch)
+        return false;
+
+    // BitPrep::set_protocol() initializes its independently owned protocol
+    // branch with init_mul() but does not prepare an operation. AtlasPrep's
+    // later mul-public callback is therefore allowed to replace only this
+    // exact empty prelude. A real prepared operation can never take this
+    // path. The callback then enters the normal noneligible record/check
+    // lifecycle on that same independently checked branch.
+    if (tentative_double_rand_capture_state.active)
+        discard_tentative_double_rand_capture();
+    if (tentative_double_rand_capture_state.active
+            || tentative_double_rand_capture_state.finalized_candidate
+            || not tentative_double_rand_capture_state
+                    .producer_records.empty()
+            || not tentative_double_rand_capture_state
+                    .consumptions.empty())
+        throw logic_error(
+                "AtlasGsz: empty preprocessing initialization wrapper retained capture evidence");
+
+    integrated.wrapper_operation_active = false;
+    integrated.wrapper_operation_kind =
+            OrdinaryDoubleRandOperationKind::noneligible;
+    integrated.wrapper_operation_coordinate_start = 0;
+    integrated.wrapper_pending_results = 0;
+    integrated.lifecycle = OrdinaryBatchLifecycle::idle;
+    integrated.current_verification_batch_serial = 0;
+    integrated.pending_flush_reason = VerificationBatchFlushReason::none;
+    integrated.preprocessing_initialization_wrappers_replaced++;
+    return true;
+}
+
+template<class T>
+void AtlasGsz<T>::ensure_wrapper_entry_allowed(const char* operation)
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    if (integrated.lifecycle == OrdinaryBatchLifecycle::checking_gs20
+            || integrated.lifecycle
+                    == OrdinaryBatchLifecycle::authenticating_sources
+            || integrated.lifecycle == OrdinaryBatchLifecycle::failed)
+        throw logic_error(string("AtlasGsz: wrapper entry during fatal or internal phase: ")
+                + operation);
+}
+
+template<class T>
+void AtlasGsz<T>::enter_verification_operation(
+        OrdinaryDoubleRandOperationKind operation_kind)
+{
+    ensure_wrapper_entry_allowed("verification operation");
+    maybe_check();
+    auto& integrated = integrated_ordinary_batch_state;
+    if (integrated.wrapper_operation_active)
+        throw logic_error(
+                "AtlasGsz: overlapping verification wrapper operations");
+    const bool eligible = operation_kind
+                    == OrdinaryDoubleRandOperationKind::scalar_multiplication
+            || operation_kind
+                    == OrdinaryDoubleRandOperationKind::dot_product;
+
+    if (automatic_ordinary_integration_enabled())
+    {
+        if (eligible && not x_verify.empty()
+                && integrated.lifecycle !=
+                        OrdinaryBatchLifecycle::capturing_ordinary)
+            request_check(VerificationBatchFlushReason::eligibility_boundary);
+        else if (not eligible && not x_verify.empty()
+                && integrated.lifecycle ==
+                        OrdinaryBatchLifecycle::capturing_ordinary)
+            request_check(VerificationBatchFlushReason::eligibility_boundary);
+    }
+
+    if (x_verify.empty())
+    {
+        if (integrated.next_verification_batch_serial == 0)
+            throw overflow_error(
+                    "AtlasGsz: verification-batch serial exhausted");
+        integrated.current_verification_batch_serial =
+                integrated.next_verification_batch_serial++;
+        integrated.pending_flush_reason =
+                VerificationBatchFlushReason::none;
+        if (eligible && automatic_ordinary_integration_enabled())
+        {
+            if (not begin_tentative_double_rand_capture())
+                throw logic_error(
+                        "AtlasGsz: automatic ordinary capture could not begin");
+            integrated.lifecycle =
+                    OrdinaryBatchLifecycle::capturing_ordinary;
+        }
+        else if (automatic_ordinary_integration_enabled())
+            integrated.lifecycle = OrdinaryBatchLifecycle::idle;
+    }
+    else if (eligible && automatic_ordinary_integration_enabled()
+            && (integrated.lifecycle
+                            != OrdinaryBatchLifecycle::capturing_ordinary
+                    || not tentative_double_rand_capture_state.active))
+        throw logic_error(
+                "AtlasGsz: eligible operation entered without active capture");
+
+    integrated.wrapper_operation_active = true;
+    integrated.wrapper_operation_kind = operation_kind;
+    integrated.wrapper_operation_coordinate_start = x_verify.size();
+    integrated.wrapper_pending_results = 0;
+}
+
+template<class T>
+void AtlasGsz<T>::finish_verification_operation(
+        OrdinaryDoubleRandOperationKind operation_kind,
+        size_t coordinate_count)
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    if (not integrated.wrapper_operation_active
+            || integrated.wrapper_operation_kind != operation_kind
+            || coordinate_count == 0
+            || integrated.wrapper_pending_results == 0)
+        throw logic_error(
+                "AtlasGsz: wrapper operation completed with inconsistent coordinate coverage");
+    if (automatic_ordinary_integration_enabled()
+            && (operation_kind
+                        == OrdinaryDoubleRandOperationKind::
+                                scalar_multiplication
+                    || operation_kind
+                        == OrdinaryDoubleRandOperationKind::dot_product))
+    {
+        if (operation_kind
+                == OrdinaryDoubleRandOperationKind::scalar_multiplication)
+            integrated.ordinary_scalar_operations++;
+        else
+            integrated.ordinary_dot_operations++;
+        integrated.ordinary_operations++;
+        integrated.x_verify_coordinates += coordinate_count;
+        integrated.partial_transcripts++;
+    }
+    integrated.wrapper_pending_results--;
+    if (integrated.wrapper_pending_results == 0)
+    {
+        integrated.wrapper_operation_active = false;
+        integrated.wrapper_operation_kind =
+                OrdinaryDoubleRandOperationKind::noneligible;
+        integrated.wrapper_operation_coordinate_start = 0;
+    }
+}
+
+template<class T>
+bool AtlasGsz<T>::verification_batch_is_eligible_ordinary() const
+{
+    if (partial_mult_transcripts.empty())
+        return false;
+    for (const auto& record : partial_mult_transcripts)
+        if ((record.operation_kind
+                        != OrdinaryDoubleRandOperationKind::
+                                scalar_multiplication
+                    && record.operation_kind
+                        != OrdinaryDoubleRandOperationKind::dot_product)
+                || record.verification_batch_serial
+                        != integrated_ordinary_batch_state
+                                .current_verification_batch_serial)
+            return false;
+    return true;
+}
+
+template<class T>
+void AtlasGsz<T>::request_check(VerificationBatchFlushReason reason)
+{
+    if (x_verify.empty())
+        return;
+    integrated_ordinary_batch_state.pending_flush_reason = reason;
+    check();
 }
 
 template <class T>
 inline void AtlasGsz<T>::maybe_check()
 {
-    if (x_verify.size() >= AtlasConfig::max_before_check) {
-        check();
+    if (x_verify.size() >= effective_max_before_check()) {
+        request_check(VerificationBatchFlushReason::threshold);
         x_verify.reserve(AtlasConfig::max_before_check);
         y_verify.reserve(AtlasConfig::max_before_check);
     }
@@ -1646,7 +2166,8 @@ bool AtlasGsz<T>::establish_optimistic_authentication_keys()
     if (state.keys_established)
         return state.keys_checked;
 
-    const size_t communication_before = P.total_comm().sent;
+    SentCommunicationAccumulator communication(
+            P, state.key_establishment_communication);
     const size_t width = base_field_ftag_chunk_width();
     state.keys.clear();
     const size_t player_count = size_t(P.num_players());
@@ -1734,13 +2255,8 @@ bool AtlasGsz<T>::establish_optimistic_authentication_keys()
                 RecoveryNotImplemented;
         state.failure_class =
                 OptimisticAuthenticationFailureClass::key_check;
-        state.key_establishment_communication +=
-                P.total_comm().sent - communication_before;
         return false;
     }
-
-    state.key_establishment_communication +=
-            P.total_comm().sent - communication_before;
     return true;
 }
 
@@ -1752,6 +2268,7 @@ bool AtlasGsz<T>::check_optimistic_authentication_keys()
     assert(state.base_field_ftag_chunk_width_agreed);
     const int t = ShamirMachine::s().threshold;
     const size_t width = base_field_ftag_chunk_width();
+    state.check_key_runs++;
 
     // Restricted e=1 Check-Key: a fresh twisted sharing of random rho masks
     // every public reusable-key combination. The clear rho values exist only
@@ -2004,15 +2521,15 @@ bool AtlasGsz<T>::verify_dealer_source_batch(
     assert(not batch.verify_sharing_completed);
     assert(not batch.verify_sharing_failure_evidence);
 
-    const size_t communication_before = P.total_comm().sent;
+    SentCommunicationAccumulator communication(
+            P, optimistic_authentication_state
+                    .verify_sharing_communication);
+    optimistic_authentication_state.verify_sharing_invocations++;
     typename T::open_type challenge{};
     vector<typename T::open_type> published_shares;
     bool consistent = masked_degree_t_consistency_check(
             batch.local_source_shares, inject_bad_published_share,
             challenge, published_shares);
-    optimistic_authentication_state.verify_sharing_communication +=
-            P.total_comm().sent - communication_before;
-
     batch.verify_sharing_completed = true;
     batch.verify_sharing_passed = consistent;
     if (consistent)
@@ -2037,7 +2554,10 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
     assert(not batch.base_sharing_failure_evidence);
     assert(base_sharing.empty());
 
-    const size_t communication_before = P.total_comm().sent;
+    SentCommunicationAccumulator communication(
+            P, optimistic_authentication_state
+                    .base_sharing_communication);
+    optimistic_authentication_state.base_sharing_checks++;
     const size_t width = base_field_ftag_chunk_width();
     vector<typename T::open_type> dealer_values;
     if (P.my_num() == batch.dealer)
@@ -2060,9 +2580,6 @@ bool AtlasGsz<T>::prepare_and_verify_base_sharing(
     bool consistent = masked_degree_t_consistency_check(
             base_sharing, inject_bad_published_share,
             challenge, published_shares);
-    optimistic_authentication_state.base_sharing_communication +=
-            P.total_comm().sent - communication_before;
-
     batch.base_sharing_check_completed = true;
     batch.base_sharing_check_passed = consistent;
     if (consistent)
@@ -2133,7 +2650,9 @@ template<class T>
 bool AtlasGsz<T>::compute_and_deliver_batch_tags(
         DealerSourceBatchRecord& batch,
         const vector<BaseFieldFTagSourceChunk>& source_chunks,
-        bool check_mask)
+        bool check_mask,
+        size_t& nu_begin,
+        size_t& tag_begin)
 {
     auto& state = optimistic_authentication_state;
     const int degree_2t = 2 * ShamirMachine::s().threshold;
@@ -2183,6 +2702,8 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
                 "AtlasGsz: FTag record count exceeds vector capacity");
     state.nu_material.reserve(expected_nu_records);
     state.holder_tags.reserve(expected_tag_records);
+    nu_begin = state.nu_material.size();
+    tag_begin = state.holder_tags.size();
     vector<octetStream> outgoing(P.num_players());
 
     for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
@@ -2196,13 +2717,6 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
                             source_chunks.size(),
                             "AtlasGsz: FTag record index overflow"),
                     chunk, "AtlasGsz: FTag record index overflow");
-            assert(find_batch_nu_material(batch.batch_id, chunk,
-                    check_mask, state.key_epoch,
-                    key.verifier, key.holder) == 0);
-            assert(find_holder_tag(batch.batch_id, chunk,
-                    check_mask, state.key_epoch,
-                    key.verifier, key.holder) == 0);
-
             BatchNuMaterialRecord nu_record{};
             nu_record.batch_id = batch.batch_id;
             nu_record.chunk_ordinal = chunk;
@@ -2340,11 +2854,15 @@ bool AtlasGsz<T>::compute_and_deliver_batch_tags(
                 if (sender != key.holder)
                     tag_shares.at(sender).unpack(
                             tag_incoming.at(sender));
-            auto* tag = find_holder_tag(batch.batch_id, chunk,
-                    check_mask, state.key_epoch,
-                    key.verifier, key.holder);
-            assert(tag != 0 && tag->owns_tag);
-            tag->tag = reconstruct_twisted_at_holder(
+            auto& tag = state.holder_tags.at(tag_begin
+                    + key_index * source_chunks.size() + chunk);
+            assert(tag.batch_id == batch.batch_id
+                    && tag.chunk_ordinal == chunk
+                    && tag.check_mask == check_mask
+                    && tag.key_epoch == state.key_epoch
+                    && tag.verifier == key.verifier
+                    && tag.holder == key.holder && tag.owns_tag);
+            tag.tag = reconstruct_twisted_at_holder(
                     tag_shares, key.holder);
         }
     }
@@ -2377,11 +2895,18 @@ void AtlasGsz<T>::fail_global_authentication(
         invocation->failure_class = failure_class;
         invocation->failed_verifier = verifier;
         invocation->failed_holder = holder;
+        unordered_map<uint64_t, size_t> batch_indices;
+        batch_indices.reserve(state.dealer_batches.size());
+        for (size_t index = 0; index < state.dealer_batches.size(); index++)
+            batch_indices.emplace(
+                    state.dealer_batches.at(index).batch_id, index);
         for (const auto& member : invocation->members)
         {
+            auto position = batch_indices.find(member.batch_id);
             auto* participating_batch =
-                    find_dealer_source_batch(member.batch_id);
-            if (participating_batch != 0
+                    position == batch_indices.end() ? nullptr
+                    : &state.dealer_batches.at(position->second);
+            if (participating_batch
                     && participating_batch->authentication_state
                             == DealerBatchAuthenticationState::pending)
             {
@@ -2432,9 +2957,23 @@ bool AtlasGsz<T>::prepare_global_authentication(
         return false;
     }
 
+    unordered_map<uint64_t, size_t> batch_indices;
+    batch_indices.reserve(state.dealer_batches.size());
+    for (size_t index = 0; index < state.dealer_batches.size(); index++)
+        if (not batch_indices.emplace(
+                state.dealer_batches.at(index).batch_id, index).second)
+        {
+            fail_global_authentication(&invocation, 0,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
+
     for (auto batch_id : requested_batch_ids)
     {
-        const auto* batch = find_dealer_source_batch(batch_id);
+        auto position = batch_indices.find(batch_id);
+        const auto* batch = position == batch_indices.end() ? nullptr
+                : &state.dealer_batches.at(position->second);
         GlobalAuthenticationInvocationMember member{};
         member.batch_id = batch_id;
         member.dealer = batch == 0 ? -1 : batch->dealer;
@@ -2459,15 +2998,17 @@ bool AtlasGsz<T>::prepare_global_authentication(
                         invocation_validation);
             return false;
         }
-        for (size_t j = i + 1; j < invocation.members.size(); j++)
-            if (member.batch_id == invocation.members.at(j).batch_id
-                    || member.dealer == invocation.members.at(j).dealer)
-            {
-                fail_global_authentication(&invocation, 0,
-                        OptimisticAuthenticationFailureClass::
-                            invocation_validation);
-                return false;
-            }
+        if (i > 0
+                && (member.batch_id
+                            == invocation.members.at(i - 1).batch_id
+                        || member.dealer
+                            == invocation.members.at(i - 1).dealer))
+        {
+            fail_global_authentication(&invocation, 0,
+                    OptimisticAuthenticationFailureClass::
+                        invocation_validation);
+            return false;
+        }
     }
 
     if (not source_only)
@@ -2539,7 +3080,9 @@ bool AtlasGsz<T>::prepare_global_authentication(
             member_index < invocation.members.size(); member_index++)
     {
         auto& member = invocation.members.at(member_index);
-        auto* batch = find_dealer_source_batch(member.batch_id);
+        auto position = batch_indices.find(member.batch_id);
+        auto* batch = position == batch_indices.end() ? nullptr
+                : &state.dealer_batches.at(position->second);
         if (batch == 0
                 || batch->authentication_state
                         != DealerBatchAuthenticationState::pending
@@ -2584,11 +3127,12 @@ bool AtlasGsz<T>::prepare_global_authentication(
 
     for (const auto& invocation_member : invocation.members)
     {
-        const auto* batch =
-                find_dealer_source_batch(invocation_member.batch_id);
-        assert(batch != 0);
+        auto position = batch_indices.find(invocation_member.batch_id);
+        assert(position != batch_indices.end());
+        const auto* batch = &state.dealer_batches.at(position->second);
         GlobalAuthenticationWorkingMember working_member{};
         working_member.batch_id = batch->batch_id;
+        working_member.dealer_batch_index = position->second;
         working_member.source_chunks = source_chunks_for_batch(*batch);
         working.members.push_back(working_member);
     }
@@ -2609,8 +3153,9 @@ bool AtlasGsz<T>::prepare_global_authentication(
     {
         auto& working_member = working.members.at(member_index);
         auto& invocation_member = invocation.members.at(member_index);
-        auto* batch = find_dealer_source_batch(working_member.batch_id);
-        assert(batch != 0);
+        auto* batch = &state.dealer_batches.at(
+                working_member.dealer_batch_index);
+        assert(batch->batch_id == working_member.batch_id);
         const size_t expected_chunk_count =
                 base_field_ftag_chunk_count(
                         batch->local_source_shares.size());
@@ -2662,28 +3207,32 @@ bool AtlasGsz<T>::prepare_global_authentication(
             invocation_chunk_count,
             "AtlasGsz: total FTag chunk count overflow");
 
-    size_t communication_before = P.total_comm().sent;
-    for (auto& working_member : working.members)
     {
-        auto* batch = find_dealer_source_batch(working_member.batch_id);
-        assert(batch != 0);
-        if (not compute_and_deliver_batch_tags(*batch,
-                working_member.source_chunks, false))
+        SentCommunicationAccumulator communication(P,
+                state.tag_generation_communication,
+                &state.ordinary_tag_generation_communication);
+        for (auto& working_member : working.members)
         {
-            state.tag_generation_communication +=
-                    P.total_comm().sent - communication_before;
-            fail_global_authentication(&invocation, batch,
-                    OptimisticAuthenticationFailureClass::tag_generation);
-            return false;
+            auto* batch = &state.dealer_batches.at(
+                    working_member.dealer_batch_index);
+            assert(batch->batch_id == working_member.batch_id);
+            if (not compute_and_deliver_batch_tags(*batch,
+                    working_member.source_chunks, false,
+                    working_member.ordinary_nu_begin,
+                    working_member.ordinary_tag_begin))
+            {
+                fail_global_authentication(&invocation, batch,
+                        OptimisticAuthenticationFailureClass::tag_generation);
+                return false;
+            }
         }
     }
-    state.tag_generation_communication +=
-            P.total_comm().sent - communication_before;
 
     for (auto& working_member : working.members)
     {
-        auto* batch = find_dealer_source_batch(working_member.batch_id);
-        assert(batch != 0);
+        auto* batch = &state.dealer_batches.at(
+                working_member.dealer_batch_index);
+        assert(batch->batch_id == working_member.batch_id);
         if (not prepare_and_verify_base_sharing(*batch,
                 working_member.base_sharing,
                 batch->dealer == inject_bad_base_sharing_dealer))
@@ -2694,35 +3243,38 @@ bool AtlasGsz<T>::prepare_global_authentication(
         }
     }
 
-    communication_before = P.total_comm().sent;
-    for (auto& working_member : working.members)
     {
-        auto* batch = find_dealer_source_batch(working_member.batch_id);
-        assert(batch != 0);
-        if (working_member.base_sharing.size() != width)
+        SentCommunicationAccumulator communication(P,
+                state.tag_generation_communication,
+                &state.base_tag_generation_communication);
+        for (auto& working_member : working.members)
         {
-            fail_global_authentication(&invocation, batch,
-                    OptimisticAuthenticationFailureClass::
-                        invocation_validation);
-            return false;
-        }
-        BaseFieldFTagSourceChunk base_chunk{};
-        base_chunk.chunk_ordinal = 0;
-        base_chunk.original_source_offset = 0;
-        base_chunk.original_source_count = width;
-        base_chunk.components = working_member.base_sharing;
-        if (not compute_and_deliver_batch_tags(*batch,
-                vector<BaseFieldFTagSourceChunk>(1, base_chunk), true))
-        {
-            state.tag_generation_communication +=
-                    P.total_comm().sent - communication_before;
-            fail_global_authentication(&invocation, batch,
-                    OptimisticAuthenticationFailureClass::tag_generation);
-            return false;
+            auto* batch = &state.dealer_batches.at(
+                    working_member.dealer_batch_index);
+            assert(batch->batch_id == working_member.batch_id);
+            if (working_member.base_sharing.size() != width)
+            {
+                fail_global_authentication(&invocation, batch,
+                        OptimisticAuthenticationFailureClass::
+                            invocation_validation);
+                return false;
+            }
+            BaseFieldFTagSourceChunk base_chunk{};
+            base_chunk.chunk_ordinal = 0;
+            base_chunk.original_source_offset = 0;
+            base_chunk.original_source_count = width;
+            base_chunk.components = working_member.base_sharing;
+            if (not compute_and_deliver_batch_tags(*batch,
+                    vector<BaseFieldFTagSourceChunk>(1, base_chunk), true,
+                    working_member.base_nu_begin,
+                    working_member.base_tag_begin))
+            {
+                fail_global_authentication(&invocation, batch,
+                        OptimisticAuthenticationFailureClass::tag_generation);
+                return false;
+            }
         }
     }
-    state.tag_generation_communication +=
-            P.total_comm().sent - communication_before;
 
     if (test_fault == GlobalAuthenticationTestFault::key_epoch_mismatch
             && not state.holder_tags.empty())
@@ -2756,6 +3308,8 @@ bool AtlasGsz<T>::validate_global_authentication_material(
             || state.keys.size() != expected_key_count)
         return false;
 
+    vector<bool> seen_key_pairs(checked_size_product(player_count,
+            player_count, "AtlasGsz: key-pair table overflow"), false);
     for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
     {
         const auto& key = state.keys.at(key_index);
@@ -2770,11 +3324,11 @@ bool AtlasGsz<T>::validate_global_authentication_material(
                 || (key.has_local_twisted_share
                         && key.local_twisted_share.size() != width))
             return false;
-        for (size_t other = key_index + 1;
-                other < state.keys.size(); other++)
-            if (key.verifier == state.keys.at(other).verifier
-                    && key.holder == state.keys.at(other).holder)
-                return false;
+        const size_t pair_index = size_t(key.verifier) * player_count
+                + size_t(key.holder);
+        if (seen_key_pairs.at(pair_index))
+            return false;
+        seen_key_pairs.at(pair_index) = true;
     }
 
     for (size_t member_index = 0;
@@ -2783,98 +3337,96 @@ bool AtlasGsz<T>::validate_global_authentication_material(
         const auto& member = invocation.members.at(member_index);
         const auto& working_member = working.members.at(member_index);
         if (member.batch_id != working_member.batch_id
+                || working_member.dealer_batch_index
+                        >= state.dealer_batches.size()
+                || state.dealer_batches.at(
+                        working_member.dealer_batch_index).batch_id
+                        != member.batch_id
                 || member.ftag_chunk_count
                         != working_member.source_chunks.size()
                 || working_member.base_sharing.size() != width)
             return false;
-
-        size_t batch_nu_count = 0;
-        size_t batch_tag_count = 0;
-        for (const auto& material : state.nu_material)
-            if (material.batch_id == member.batch_id)
-            {
-                batch_nu_count++;
-                if (material.key_epoch != invocation.key_epoch
-                        || (material.check_mask
-                                ? material.chunk_ordinal != 0
-                                : material.chunk_ordinal
-                                        >= member.ftag_chunk_count)
-                        || material.verifier < 0
-                        || material.verifier >= P.num_players()
-                        || material.holder < 0
-                        || material.holder >= P.num_players()
-                        || material.verifier == material.holder
-                        || material.owns_nu
-                                != (P.my_num() == material.verifier))
-                    return false;
-            }
-        for (const auto& tag : state.holder_tags)
-            if (tag.batch_id == member.batch_id)
-            {
-                batch_tag_count++;
-                if (tag.key_epoch != invocation.key_epoch
-                        || (tag.check_mask
-                                ? tag.chunk_ordinal != 0
-                                : tag.chunk_ordinal
-                                        >= member.ftag_chunk_count)
-                        || tag.verifier < 0
-                        || tag.verifier >= P.num_players()
-                        || tag.holder < 0
-                        || tag.holder >= P.num_players()
-                        || tag.verifier == tag.holder
-                        || tag.owns_tag
-                                != (P.my_num() == tag.holder))
-                    return false;
-            }
-        const size_t expected_records = checked_size_product(
-                state.keys.size(),
-                checked_size_sum(member.ftag_chunk_count, 1,
-                        "AtlasGsz: global member record count overflow"),
-                "AtlasGsz: global member record count overflow");
-        if (batch_nu_count != expected_records
-                || batch_tag_count != expected_records)
+        const size_t ordinary_count = checked_size_product(
+                state.keys.size(), member.ftag_chunk_count,
+                "AtlasGsz: ordinary material range overflow");
+        const size_t ordinary_nu_end = checked_size_sum(
+                working_member.ordinary_nu_begin, ordinary_count,
+                "AtlasGsz: ordinary nu range overflow");
+        const size_t ordinary_tag_end = checked_size_sum(
+                working_member.ordinary_tag_begin, ordinary_count,
+                "AtlasGsz: ordinary tag range overflow");
+        const size_t base_nu_end = checked_size_sum(
+                working_member.base_nu_begin, state.keys.size(),
+                "AtlasGsz: base nu range overflow");
+        const size_t base_tag_end = checked_size_sum(
+                working_member.base_tag_begin, state.keys.size(),
+                "AtlasGsz: base tag range overflow");
+        if (ordinary_nu_end > state.nu_material.size()
+                || ordinary_tag_end > state.holder_tags.size()
+                || base_nu_end > state.nu_material.size()
+                || base_tag_end > state.holder_tags.size())
             return false;
 
-        for (const auto& key : state.keys)
-            for (size_t position = 0;
-                    position <= member.ftag_chunk_count; position++)
+        auto valid_nu = [&] (const BatchNuMaterialRecord& material,
+                const LongTermMuKeyRecord& key, size_t chunk,
+                bool check_mask) {
+            return material.batch_id == member.batch_id
+                    && material.chunk_ordinal == chunk
+                    && material.check_mask == check_mask
+                    && material.key_epoch == invocation.key_epoch
+                    && material.verifier == key.verifier
+                    && material.holder == key.holder
+                    && material.owns_nu
+                            == (P.my_num() == material.verifier);
+        };
+        auto valid_tag = [&] (const HolderTagRecord& tag,
+                const LongTermMuKeyRecord& key, size_t chunk,
+                bool check_mask) {
+            return tag.batch_id == member.batch_id
+                    && tag.chunk_ordinal == chunk
+                    && tag.check_mask == check_mask
+                    && tag.key_epoch == invocation.key_epoch
+                    && tag.verifier == key.verifier
+                    && tag.holder == key.holder
+                    && tag.owns_tag == (P.my_num() == tag.holder);
+        };
+        for (size_t key_index = 0;
+                key_index < state.keys.size(); key_index++)
+        {
+            const auto& key = state.keys.at(key_index);
+            for (size_t chunk = 0;
+                    chunk < member.ftag_chunk_count; chunk++)
             {
-                const bool check_mask = position == 0;
-                const size_t chunk_ordinal =
-                        check_mask ? 0 : position - 1;
-                size_t matching_nu = 0;
-                size_t matching_tags = 0;
-                for (const auto& material : state.nu_material)
-                    if (material.batch_id == member.batch_id
-                            && material.chunk_ordinal == chunk_ordinal
-                            && material.check_mask == check_mask
-                            && material.key_epoch == invocation.key_epoch
-                            && material.verifier == key.verifier
-                            && material.holder == key.holder)
-                        matching_nu++;
-                for (const auto& tag : state.holder_tags)
-                    if (tag.batch_id == member.batch_id
-                            && tag.chunk_ordinal == chunk_ordinal
-                            && tag.check_mask == check_mask
-                            && tag.key_epoch == invocation.key_epoch
-                            && tag.verifier == key.verifier
-                            && tag.holder == key.holder)
-                        matching_tags++;
-                if (matching_nu != 1 || matching_tags != 1)
+                const size_t offset =
+                        key_index * member.ftag_chunk_count + chunk;
+                if (not valid_nu(state.nu_material.at(
+                                working_member.ordinary_nu_begin + offset),
+                            key, chunk, false)
+                        || not valid_tag(state.holder_tags.at(
+                                working_member.ordinary_tag_begin + offset),
+                            key, chunk, false))
                     return false;
             }
+            if (not valid_nu(state.nu_material.at(
+                            working_member.base_nu_begin + key_index),
+                        key, 0, true)
+                    || not valid_tag(state.holder_tags.at(
+                            working_member.base_tag_begin + key_index),
+                        key, 0, true))
+                return false;
+        }
     }
     return true;
 }
-
 template<class T>
 bool AtlasGsz<T>::check_global_authentication(
         GlobalAuthenticationInvocationRecord& invocation,
         const GlobalAuthenticationWorkingSet& working,
-        GlobalAuthenticationTestFault test_fault)
+    GlobalAuthenticationTestFault test_fault)
 {
     auto& state = optimistic_authentication_state;
-    const size_t communication_before = P.total_comm().sent;
+    SentCommunicationAccumulator communication(
+            P, state.tag_checking_communication);
     const size_t width = base_field_ftag_chunk_width();
     const size_t dealer_block_width = checked_size_sum(
             invocation.max_ftag_chunk_count, 1,
@@ -2910,7 +3462,9 @@ bool AtlasGsz<T>::check_global_authentication(
     }
 
     vector<octetStream> presentations(P.num_players());
-    for (const auto& key : state.keys)
+    for (size_t key_index = 0; key_index < state.keys.size(); key_index++)
+    {
+        const auto& key = state.keys.at(key_index);
         if (P.my_num() == key.holder)
         {
             vector<typename T::open_type> sigma(width);
@@ -2945,11 +3499,16 @@ bool AtlasGsz<T>::check_global_authentication(
                     assert(aggregate_tag == tag_before);
                     injected_base_sigma = true;
                 }
-                const auto* base_tag = find_holder_tag(member.batch_id,
-                        0, true, invocation.key_epoch,
-                        key.verifier, key.holder);
-                assert(base_tag != 0 && base_tag->owns_tag);
-                aggregate_tag += base_coefficient * base_tag->tag;
+                const auto& base_tag = state.holder_tags.at(
+                        working_member.base_tag_begin + key_index);
+                assert(base_tag.batch_id == member.batch_id
+                        && base_tag.chunk_ordinal == 0
+                        && base_tag.check_mask
+                        && base_tag.key_epoch == invocation.key_epoch
+                        && base_tag.verifier == key.verifier
+                        && base_tag.holder == key.holder
+                        && base_tag.owns_tag);
+                aggregate_tag += base_coefficient * base_tag.tag;
 
                 for (size_t chunk = 0;
                         chunk < member.ftag_chunk_count; chunk++)
@@ -2977,11 +3536,17 @@ bool AtlasGsz<T>::check_global_authentication(
                         assert(aggregate_tag == tag_before);
                         injected_ordinary_sigma = true;
                     }
-                    const auto* tag = find_holder_tag(member.batch_id,
-                            chunk, false, invocation.key_epoch,
-                            key.verifier, key.holder);
-                    assert(tag != 0 && tag->owns_tag);
-                    aggregate_tag += coefficient * tag->tag;
+                    const auto& tag = state.holder_tags.at(
+                            working_member.ordinary_tag_begin
+                                    + key_index * member.ftag_chunk_count
+                                    + chunk);
+                    assert(tag.batch_id == member.batch_id
+                            && tag.chunk_ordinal == chunk
+                            && not tag.check_mask
+                            && tag.key_epoch == invocation.key_epoch
+                            && tag.verifier == key.verifier
+                            && tag.holder == key.holder && tag.owns_tag);
+                    aggregate_tag += coefficient * tag.tag;
                 }
             }
 
@@ -3016,6 +3581,7 @@ bool AtlasGsz<T>::check_global_authentication(
                 component.pack(presentations.at(key.verifier));
             aggregate_tag.pack(presentations.at(key.verifier));
         }
+    }
 
     vector<octetStream> received_presentations;
     P.send_receive_all(presentations, received_presentations);
@@ -3042,21 +3608,29 @@ bool AtlasGsz<T>::check_global_authentication(
             const size_t block_start = checked_size_product(
                     member_index, dealer_block_width,
                     "AtlasGsz: global Check-Tag block offset overflow");
-            const auto* base_nu = find_batch_nu_material(
-                    member.batch_id, 0, true, invocation.key_epoch,
-                    key.verifier, key.holder);
-            assert(base_nu != 0 && base_nu->owns_nu);
-            aggregate_nu += powers.at(block_start) * base_nu->nu;
+            const auto& working_member = working.members.at(member_index);
+            const auto& base_nu = state.nu_material.at(
+                    working_member.base_nu_begin + key_index);
+            assert(base_nu.batch_id == member.batch_id
+                    && base_nu.chunk_ordinal == 0 && base_nu.check_mask
+                    && base_nu.key_epoch == invocation.key_epoch
+                    && base_nu.verifier == key.verifier
+                    && base_nu.holder == key.holder && base_nu.owns_nu);
+            aggregate_nu += powers.at(block_start) * base_nu.nu;
             for (size_t chunk = 0;
                     chunk < member.ftag_chunk_count; chunk++)
             {
-                const auto* nu = find_batch_nu_material(
-                        member.batch_id, chunk, false,
-                        invocation.key_epoch,
-                        key.verifier, key.holder);
-                assert(nu != 0 && nu->owns_nu);
+                const auto& nu = state.nu_material.at(
+                        working_member.ordinary_nu_begin
+                                + key_index * member.ftag_chunk_count
+                                + chunk);
+                assert(nu.batch_id == member.batch_id
+                        && nu.chunk_ordinal == chunk && not nu.check_mask
+                        && nu.key_epoch == invocation.key_epoch
+                        && nu.verifier == key.verifier
+                        && nu.holder == key.holder && nu.owns_nu);
                 aggregate_nu += powers.at(block_start + chunk + 1)
-                        * nu->nu;
+                        * nu.nu;
             }
         }
         typename T::open_type expected = aggregate_nu;
@@ -3115,8 +3689,6 @@ bool AtlasGsz<T>::check_global_authentication(
         if (not valid_encoding && first_malformed_verifier < 0)
             first_malformed_verifier = verifier;
     }
-    state.tag_checking_communication +=
-            P.total_comm().sent - communication_before;
     if (first_malformed_verifier >= 0)
     {
         invocation.completed = true;
@@ -3185,8 +3757,14 @@ bool AtlasGsz<T>::commit_global_authentication(
             member_index < invocation.members.size(); member_index++)
     {
         const auto& member = invocation.members.at(member_index);
-        auto* batch = find_dealer_source_batch(member.batch_id);
-        if (batch == 0 || batch->dealer != member.dealer
+        const auto& working_member = working.members.at(member_index);
+        if (working_member.dealer_batch_index
+                    >= optimistic_authentication_state.dealer_batches.size())
+            return false;
+        auto* batch = &optimistic_authentication_state.dealer_batches.at(
+                working_member.dealer_batch_index);
+        if (batch->batch_id != member.batch_id
+                || batch->dealer != member.dealer
                 || batch->authentication_state
                         != DealerBatchAuthenticationState::pending
                 || batch->source_ordinals.size()
@@ -3240,9 +3818,11 @@ bool AtlasGsz<T>::commit_global_authentication(
     for (size_t member_index = 0;
             member_index < invocation.members.size(); member_index++)
     {
-        auto* batch = find_dealer_source_batch(
-                invocation.members.at(member_index).batch_id);
-        assert(batch != 0);
+        const auto& working_member = working.members.at(member_index);
+        auto* batch = &optimistic_authentication_state.dealer_batches.at(
+                working_member.dealer_batch_index);
+        assert(batch->batch_id
+                == invocation.members.at(member_index).batch_id);
         batch->authenticated_handles =
                 std::move(candidate_handles.at(member_index));
         batch->authentication_state =
@@ -3294,871 +3874,159 @@ bool AtlasGsz<T>::authenticate_source_batches(
 
 template<class T>
 typename AtlasGsz<T>::TentativeDoubleRandAuthenticationReceipt
-AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
+AtlasGsz<T>::authenticate_frozen_tentative_double_rand_candidate(
+        FrozenOrdinaryBatch& frozen,
         GlobalAuthenticationTestFault test_fault,
         int inject_bad_verify_sharing_dealer)
 {
-    TentativeDoubleRandAuthenticationReceipt receipt{};
-    auto& capture = tentative_double_rand_capture_state;
+    TentativeDoubleRandAuthenticationReceipt empty{};
     auto& auth = optimistic_authentication_state;
+    const auto* candidate = frozen.candidate.get();
+    if (candidate == 0 || frozen.dealer_count != size_t(P.num_players())
+            || frozen.operation_count != candidate->consumed_outputs.size()
+            || frozen.mapping_count
+                    != frozen.dealer_count * candidate->source_count
+            || frozen.prospective_batches.size() != frozen.dealer_count
+            || frozen.prospective_mappings.size() != frozen.mapping_count
+            || frozen.converted_term_mapping_indices.size()
+                    != frozen.operation_count
+            || frozen.e_t_source_ordinals.size()
+                    != frozen.operation_count
+            || auth.status != OptimisticAuthenticationStatus::ready)
+        return empty;
 
-    // Active capture and absence of a finalized candidate are non-consuming
-    // rejections. In particular, the active round remains available to its
-    // producer and no authentication state is inspected or changed.
-    if (capture.active)
-        return receipt;
-    const auto* candidate = capture.finalized_candidate.get();
-    if (candidate == 0)
-        return receipt;
-
-    struct ProspectiveSourceMapping
-    {
-        size_t producer_record_ordinal = 0;
-        size_t input_generation_group_ordinal = 0;
-        int dealer = -1;
-        uint64_t batch_id = 0;
-        uint64_t source_ordinal = 0;
-    };
-
-    struct NumericOrdinalPair
-    {
-        size_t first = 0;
-        size_t second = 0;
-
-        bool operator==(const NumericOrdinalPair& other) const
-        {
-            return first == other.first && second == other.second;
-        }
-    };
-
-    struct NumericOrdinalPairHash
-    {
-        size_t operator()(const NumericOrdinalPair& value) const
-        {
-            return value.first ^ (value.second + size_t(0x9e3779b9U)
-                    + (value.first << 6) + (value.first >> 2));
-        }
-    };
-
-    bool preflight_ok = auth.status == OptimisticAuthenticationStatus::ready
-            && validate_tentative_double_rand_candidate(*candidate)
-            && candidate->source_count != 0
-            && candidate->source_count
-                    <= uint64_t(numeric_limits<uint64_t>::max())
-            && candidate->dealer_sources.size()
-                    == size_t(P.num_players());
-    const size_t dealer_count = size_t(P.num_players());
-    const size_t operation_count = candidate->consumed_outputs.size();
-    size_t mapping_count = 0;
-    size_t combined_king_source_count = 0;
-    if (preflight_ok)
-        try
-        {
-            mapping_count = checked_size_product(dealer_count,
-                    candidate->source_count,
-                    "AtlasGsz: tentative adapter mapping count overflow");
-            combined_king_source_count = checked_size_sum(
-                    candidate->source_count, operation_count,
-                    "AtlasGsz: tentative adapter king source count overflow");
-            if (combined_king_source_count
-                    > uint64_t(numeric_limits<uint64_t>::max()))
-                preflight_ok = false;
-        }
-        catch (const overflow_error&)
-        {
-            preflight_ok = false;
-        }
-
-    vector<bool> seen_dealers;
-    vector<ProspectiveSourceMapping> prospective_mappings;
-    vector<DealerSourceBatchRecord> prospective_batches;
-    vector<uint64_t> requested_batch_ids;
-    unordered_map<NumericOrdinalPair, size_t, NumericOrdinalPairHash>
-            source_group_lookup;
-    unordered_map<NumericOrdinalPair, size_t, NumericOrdinalPairHash>
-            exact_output_lookup;
-    vector<bool> seen_capture_ordinals;
-    vector<bool> used_mapping_indices;
-    vector<size_t> mapping_last_seen_in_derivation;
-    vector<vector<size_t>> converted_term_mapping_indices;
-    vector<size_t> e_t_source_ordinals;
-    if (preflight_ok)
-    {
-        const size_t converted_count = candidate->consumed_outputs.size();
-        if (dealer_count > seen_dealers.max_size()
-                || dealer_count > prospective_batches.max_size()
-                || dealer_count > requested_batch_ids.max_size()
-                || dealer_count > receipt.dealer_batches.max_size()
-                || mapping_count > prospective_mappings.max_size()
-                || mapping_count > receipt.source_handles.max_size()
-                || candidate->source_count > source_group_lookup.max_size()
-                || converted_count > exact_output_lookup.max_size()
-                || converted_count > seen_capture_ordinals.max_size()
-                || mapping_count > used_mapping_indices.max_size()
-                || mapping_count
-                        > mapping_last_seen_in_derivation.max_size()
-                || converted_count
-                        > converted_term_mapping_indices.max_size()
-                || converted_count
-                        > receipt.converted_r_t_derivations.max_size()
-                || converted_count
-                        > receipt.authenticated_e_t_sources.max_size()
-                || converted_count > e_t_source_ordinals.max_size()
-                || converted_count
-                        > receipt.converted_z_t_derivations.max_size())
-            preflight_ok = false;
-        else
-        {
-            seen_dealers.resize(dealer_count, false);
-            source_group_lookup.reserve(candidate->source_count);
-            exact_output_lookup.reserve(converted_count);
-            seen_capture_ordinals.resize(converted_count, false);
-            used_mapping_indices.resize(mapping_count, false);
-            mapping_last_seen_in_derivation.resize(mapping_count,
-                    converted_count);
-            converted_term_mapping_indices.resize(converted_count);
-            receipt.converted_r_t_derivations.resize(converted_count);
-            receipt.authenticated_e_t_sources.resize(converted_count);
-            e_t_source_ordinals.resize(converted_count);
-            receipt.converted_z_t_derivations.resize(converted_count);
-            if (seen_dealers.capacity() < dealer_count
-                    || seen_capture_ordinals.capacity() < converted_count
-                    || used_mapping_indices.capacity() < mapping_count
-                    || mapping_last_seen_in_derivation.capacity()
-                            < mapping_count
-                    || converted_term_mapping_indices.capacity()
-                            < converted_count
-                    || receipt.converted_r_t_derivations.capacity()
-                            < converted_count
-                    || receipt.authenticated_e_t_sources.capacity()
-                            < converted_count
-                    || e_t_source_ordinals.capacity() < converted_count
-                    || receipt.converted_z_t_derivations.capacity()
-                            < converted_count)
-                preflight_ok = false;
-        }
-    }
-
-    auto group_less = [] (const TentativeSourceGroupReference& left,
-            const TentativeSourceGroupReference& right) {
-        if (left.producer_record_ordinal
-                != right.producer_record_ordinal)
-            return left.producer_record_ordinal
-                    < right.producer_record_ordinal;
-        return left.input_generation_group_ordinal
-                < right.input_generation_group_ordinal;
-    };
-    if (preflight_ok)
-        for (size_t source_ordinal = 0;
-                source_ordinal < candidate->source_groups.size();
-                source_ordinal++)
-        {
-            const auto& group = candidate->source_groups.at(source_ordinal);
-            if ((source_ordinal > 0 && not group_less(
-                            candidate->source_groups.at(source_ordinal - 1),
-                            group))
-                    || group.producer_record_ordinal
-                            >= candidate->producer_records.size()
-                    || not candidate->producer_records.at(
-                            group.producer_record_ordinal)
-                    || group.input_generation_group_ordinal
-                            >= candidate->producer_records.at(
-                                    group.producer_record_ordinal)
-                                    ->degree_t.source_groups.size())
-            {
-                preflight_ok = false;
-                break;
-            }
-            NumericOrdinalPair key{};
-            key.first = group.producer_record_ordinal;
-            key.second = group.input_generation_group_ordinal;
-            if (not source_group_lookup.emplace(key, source_ordinal).second)
-            {
-                preflight_ok = false;
-                break;
-            }
-        }
-
-    if (preflight_ok)
-        for (size_t dealer = 0; dealer < dealer_count; dealer++)
-        {
-            const auto& sequence = candidate->dealer_sources.at(dealer);
-            if (sequence.dealer < 0
-                    || size_t(sequence.dealer) >= dealer_count
-                    || sequence.dealer != int(dealer)
-                    || seen_dealers.at(sequence.dealer)
-                    || sequence.sources.size() != candidate->source_count)
-            {
-                preflight_ok = false;
-                break;
-            }
-            seen_dealers.at(sequence.dealer) = true;
-            if (candidate->source_count > sequence.sources.max_size())
-            {
-                preflight_ok = false;
-                break;
-            }
-            for (size_t source_ordinal = 0;
-                    source_ordinal < candidate->source_count;
-                    source_ordinal++)
-            {
-                const auto& source = sequence.sources.at(source_ordinal);
-                const auto& group =
-                        candidate->source_groups.at(source_ordinal);
-                TentativeSourceReference expected_reference{};
-                expected_reference.producer_record_ordinal =
-                        group.producer_record_ordinal;
-                expected_reference.input_generation_group_ordinal =
-                        group.input_generation_group_ordinal;
-                expected_reference.dealer = int(dealer);
-                const auto& original = candidate->producer_records.at(
-                        group.producer_record_ordinal)
-                        ->degree_t.source_groups.at(
-                                group.input_generation_group_ordinal)
-                        .sources.at(dealer);
-                if (source.tentative_source_ordinal != source_ordinal
-                        || not (source.reference == expected_reference)
-                        || original.dealer != int(dealer)
-                        || original.input_batch_ordinal
-                                != group.input_generation_group_ordinal
-                        || source.local_share != original.local_share)
-                {
-                    preflight_ok = false;
-                    break;
-                }
-            }
-            if (not preflight_ok)
-                break;
-        }
-    if (preflight_ok
-            && find(seen_dealers.begin(), seen_dealers.end(), false)
-                    != seen_dealers.end())
-        preflight_ok = false;
-
-    // Build the complete public conversion result and its numeric binding
-    // sidecar before any protocol identity, authoritative record, or
-    // authentication work exists. Handles remain default values until the
-    // source-only authentication commit succeeds.
-    if (preflight_ok)
-        for (size_t output_index = 0;
-                output_index < candidate->consumed_outputs.size();
-                output_index++)
-        {
-            const auto& tentative =
-                    candidate->consumed_outputs.at(output_index);
-            const bool transcript_ordinal_valid = tentative
-                    .partial_mult_transcript_record_ordinal
-                    < partial_mult_transcripts.size();
-            const PartialMultTranscriptRecord* transcript_record =
-                    transcript_ordinal_valid
-                    ? &partial_mult_transcripts.at(tentative
-                            .partial_mult_transcript_record_ordinal)
-                    : 0;
-            if (tentative.capture_order_ordinal
-                            >= seen_capture_ordinals.size()
-                    || tentative.capture_order_ordinal != output_index
-                    || seen_capture_ordinals.at(
-                            tentative.capture_order_ordinal)
-                    || (tentative.operation_kind
-                                != OrdinaryDoubleRandOperationKind::
-                                        scalar_multiplication
-                            && tentative.operation_kind
-                                != OrdinaryDoubleRandOperationKind::
-                                        dot_product)
-                    || tentative.degree_t_derivation.terms.empty()
-                    || tentative.degree_t_derivation.terms.size()
-                            != dealer_count
-                    || transcript_record == 0
-                    || transcript_record->operation_kind
-                            != tentative.operation_kind
-                    || transcript_record->producer_reference
-                            .producer_provenance
-                            != candidate->producer_records.at(
-                                    tentative.producer_record_ordinal)
-                    || transcript_record->producer_reference
-                            .producer_output_ordinal
-                            != tentative.producer_output_ordinal
-                    || transcript_record->transcript.r_t
-                            != tentative.actual_r_t
-                    || transcript_record->transcript.e_t
-                            != tentative.concrete_e_t_source.local_share
-                    || transcript_record->offset >= z_verify.size()
-                    || transcript_record->length <= 0
-                    || size_t(transcript_record->length)
-                            > z_verify.size() - transcript_record->offset
-                    || z_verify.at(transcript_record->offset)
-                            != transcript_record->transcript.e_t
-                                    - transcript_record->transcript.r_t)
-            {
-                preflight_ok = false;
-                break;
-            }
-            if (tentative.operation_kind
-                            == OrdinaryDoubleRandOperationKind::
-                                    scalar_multiplication
-                    && transcript_record->length != 1)
-            {
-                preflight_ok = false;
-                break;
-            }
-            if (tentative.operation_kind
-                    == OrdinaryDoubleRandOperationKind::dot_product)
-                for (size_t padding = 1;
-                        padding < size_t(transcript_record->length);
-                        padding++)
-                    if (z_verify.at(transcript_record->offset + padding)
-                            != T{})
-                    {
-                        preflight_ok = false;
-                        break;
-                    }
-            if (not preflight_ok)
-                break;
-            seen_capture_ordinals.at(
-                    tentative.capture_order_ordinal) = true;
-
-            NumericOrdinalPair output_key{};
-            output_key.first = tentative.producer_record_ordinal;
-            output_key.second = tentative.producer_output_ordinal;
-            if (not exact_output_lookup.emplace(
-                    output_key, output_index).second)
-            {
-                preflight_ok = false;
-                break;
-            }
-
-            auto& converted =
-                    receipt.converted_r_t_derivations.at(output_index);
-            converted.capture_order_ordinal =
-                    tentative.capture_order_ordinal;
-            converted.producer_record_ordinal =
-                    tentative.producer_record_ordinal;
-            converted.producer_output_ordinal =
-                    tentative.producer_output_ordinal;
-            converted.input_generation_group_ordinal =
-                    tentative.input_generation_group_ordinal;
-            converted.operation_kind = tentative.operation_kind;
-            auto& authenticated_e_t =
-                    receipt.authenticated_e_t_sources.at(output_index);
-            authenticated_e_t.capture_order_ordinal =
-                    tentative.capture_order_ordinal;
-            authenticated_e_t.producer_record_ordinal =
-                    tentative.producer_record_ordinal;
-            authenticated_e_t.producer_output_ordinal =
-                    tentative.producer_output_ordinal;
-            authenticated_e_t.input_generation_group_ordinal =
-                    tentative.input_generation_group_ordinal;
-            authenticated_e_t.operation_kind = tentative.operation_kind;
-            authenticated_e_t.king = tentative.concrete_e_t_source.king;
-            authenticated_e_t.special_sharing_support =
-                    tentative.concrete_e_t_source.special_sharing_support;
-            auto& converted_z =
-                    receipt.converted_z_t_derivations.at(output_index);
-            converted_z.capture_order_ordinal =
-                    tentative.capture_order_ordinal;
-            converted_z.producer_record_ordinal =
-                    tentative.producer_record_ordinal;
-            converted_z.producer_output_ordinal =
-                    tentative.producer_output_ordinal;
-            converted_z.input_generation_group_ordinal =
-                    tentative.input_generation_group_ordinal;
-            converted_z.operation_kind = tentative.operation_kind;
-            auto& mapping_indices =
-                    converted_term_mapping_indices.at(output_index);
-            size_t z_term_count = 0;
-            try
-            {
-                z_term_count = checked_size_sum(
-                        tentative.degree_t_derivation.terms.size(), 1,
-                        "AtlasGsz: converted z_t term count overflow");
-                e_t_source_ordinals.at(output_index) = checked_size_sum(
-                        candidate->source_count,
-                        tentative.capture_order_ordinal,
-                        "AtlasGsz: tentative adapter e_t suffix ordinal overflow");
-            }
-            catch (const overflow_error&)
-            {
-                preflight_ok = false;
-                break;
-            }
-            if (dealer_count > converted.derivation.terms.max_size()
-                    || dealer_count > mapping_indices.max_size())
-            {
-                preflight_ok = false;
-                break;
-            }
-            if (z_term_count > converted_z.derivation.terms.max_size())
-            {
-                preflight_ok = false;
-                break;
-            }
-            converted.derivation.terms.resize(dealer_count);
-            mapping_indices.resize(dealer_count);
-            converted_z.derivation.terms.resize(z_term_count);
-            if (converted.derivation.terms.capacity() < dealer_count
-                    || mapping_indices.capacity() < dealer_count
-                    || converted_z.derivation.terms.capacity()
-                            < z_term_count)
-            {
-                preflight_ok = false;
-                break;
-            }
-            converted_z.derivation.terms.at(0).coefficient =
-                    typename T::open_type(1);
-
-            for (size_t dealer = 0; dealer < dealer_count; dealer++)
-            {
-                const auto& temporary_term =
-                        tentative.degree_t_derivation.terms.at(dealer);
-                if (temporary_term.source.dealer < 0
-                        || size_t(temporary_term.source.dealer)
-                                >= dealer_count
-                        || temporary_term.source.dealer != int(dealer)
-                        || temporary_term.source.producer_record_ordinal
-                                != tentative.producer_record_ordinal
-                        || temporary_term.source
-                                        .input_generation_group_ordinal
-                                != tentative
-                                        .input_generation_group_ordinal)
-                {
-                    preflight_ok = false;
-                    break;
-                }
-
-                NumericOrdinalPair group_key{};
-                group_key.first = temporary_term.source
-                        .producer_record_ordinal;
-                group_key.second = temporary_term.source
-                        .input_generation_group_ordinal;
-                const auto group_position =
-                        source_group_lookup.find(group_key);
-                if (group_position == source_group_lookup.end())
-                {
-                    preflight_ok = false;
-                    break;
-                }
-
-                size_t mapping_index = 0;
-                try
-                {
-                    mapping_index = checked_size_sum(
-                            checked_size_product(group_position->second,
-                                    dealer_count,
-                                    "AtlasGsz: converted r_t mapping offset overflow"),
-                            dealer,
-                            "AtlasGsz: converted r_t mapping index overflow");
-                }
-                catch (const overflow_error&)
-                {
-                    preflight_ok = false;
-                    break;
-                }
-                if (mapping_index >= mapping_count
-                        || mapping_last_seen_in_derivation.at(mapping_index)
-                                == output_index)
-                {
-                    preflight_ok = false;
-                    break;
-                }
-                mapping_last_seen_in_derivation.at(mapping_index) =
-                        output_index;
-                used_mapping_indices.at(mapping_index) = true;
-                mapping_indices.at(dealer) = mapping_index;
-                converted.derivation.terms.at(dealer).coefficient =
-                        temporary_term.coefficient;
-                converted_z.derivation.terms.at(dealer + 1).coefficient =
-                        typename T::open_type{}
-                                - temporary_term.coefficient;
-            }
-            if (not preflight_ok)
-                break;
-            const bool complete_identity_matches =
-                    converted.capture_order_ordinal
-                            == tentative.capture_order_ordinal
-                    && converted.producer_record_ordinal
-                            == tentative.producer_record_ordinal
-                    && converted.producer_output_ordinal
-                            == tentative.producer_output_ordinal
-                    && converted.input_generation_group_ordinal
-                            == tentative.input_generation_group_ordinal
-                    && converted.operation_kind
-                            == tentative.operation_kind
-                    && authenticated_e_t.capture_order_ordinal
-                            == tentative.capture_order_ordinal
-                    && authenticated_e_t.producer_record_ordinal
-                            == tentative.producer_record_ordinal
-                    && authenticated_e_t.producer_output_ordinal
-                            == tentative.producer_output_ordinal
-                    && authenticated_e_t.input_generation_group_ordinal
-                            == tentative.input_generation_group_ordinal
-                    && authenticated_e_t.operation_kind
-                            == tentative.operation_kind
-                    && converted_z.capture_order_ordinal
-                            == tentative.capture_order_ordinal
-                    && converted_z.producer_record_ordinal
-                            == tentative.producer_record_ordinal
-                    && converted_z.producer_output_ordinal
-                            == tentative.producer_output_ordinal
-                    && converted_z.input_generation_group_ordinal
-                            == tentative.input_generation_group_ordinal
-                    && converted_z.operation_kind
-                            == tentative.operation_kind;
-            if (not complete_identity_matches
-                    || converted_z.derivation.terms.empty()
-                    || converted_z.derivation.terms.size() - 1
-                            != converted.derivation.terms.size()
-                    || converted_z.derivation.terms.at(0).coefficient
-                            != typename T::open_type(1))
-            {
-                preflight_ok = false;
-                break;
-            }
-            for (size_t term_index = 0;
-                    term_index < converted.derivation.terms.size();
-                    term_index++)
-                if (converted_z.derivation.terms.at(term_index + 1)
-                            .coefficient
-                        != typename T::open_type{}
-                                - converted.derivation.terms.at(term_index)
-                                        .coefficient)
-                {
-                    preflight_ok = false;
-                    break;
-                }
-            if (not preflight_ok)
-                break;
-        }
-
-    if (preflight_ok
-            && (find(seen_capture_ordinals.begin(),
-                        seen_capture_ordinals.end(), false)
-                            != seen_capture_ordinals.end()
-                    || find(used_mapping_indices.begin(),
-                            used_mapping_indices.end(), false)
-                            != used_mapping_indices.end()))
-        preflight_ok = false;
-
-    // A malformed finalized candidate is one-shot input: discard it without
-    // allocating an ID, registering a batch, retaining an invocation, or
-    // entering any communication/randomness path.
-    if (not preflight_ok)
-    {
-        discard_tentative_double_rand_capture();
-        return TentativeDoubleRandAuthenticationReceipt{};
-    }
-
-    // Complete every adapter-owned allocation before taking the batch-ID
-    // snapshot. The prospective records carry no protocol identity yet.
-    prospective_batches.reserve(dealer_count);
-    requested_batch_ids.resize(dealer_count);
-    receipt.dealer_batches.resize(dealer_count);
-    prospective_mappings.resize(mapping_count);
-    receipt.source_handles.reserve(mapping_count);
-    for (size_t dealer = 0; dealer < dealer_count; dealer++)
-    {
-        DealerSourceBatchRecord batch{};
-        batch.dealer = int(dealer);
-        const size_t dealer_source_count = dealer == 0
-                ? combined_king_source_count : candidate->source_count;
-        if (dealer_source_count > batch.source_ordinals.max_size()
-                || dealer_source_count
-                        > batch.local_source_shares.max_size())
-        {
-            discard_tentative_double_rand_capture();
-            return TentativeDoubleRandAuthenticationReceipt{};
-        }
-        batch.source_ordinals.reserve(dealer_source_count);
-        batch.local_source_shares.reserve(dealer_source_count);
-        for (size_t source_ordinal = 0;
-                source_ordinal < candidate->source_count; source_ordinal++)
-        {
-            batch.source_ordinals.push_back(source_ordinal);
-            // Copy from the const candidate. No source vector is partially
-            // moved out of the one-shot object.
-            batch.local_source_shares.push_back(
-                    candidate->dealer_sources.at(dealer).sources.at(
-                            source_ordinal).local_share);
-        }
-        if (dealer == 0)
-            for (size_t output_index = 0;
-                    output_index < operation_count; output_index++)
-            {
-                const size_t source_ordinal = checked_size_sum(
-                        candidate->source_count, output_index,
-                        "AtlasGsz: tentative adapter e_t source ordinal overflow");
-                batch.source_ordinals.push_back(source_ordinal);
-                batch.local_source_shares.push_back(
-                        candidate->consumed_outputs.at(output_index)
-                                .concrete_e_t_source.local_share);
-            }
-        if (batch.source_ordinals.size() != dealer_source_count
-                || batch.local_source_shares.size()
-                        != dealer_source_count)
-        {
-            discard_tentative_double_rand_capture();
-            return TentativeDoubleRandAuthenticationReceipt{};
-        }
-        prospective_batches.push_back(std::move(batch));
-    }
-    if (prospective_batches.capacity() < dealer_count
-            || requested_batch_ids.capacity() < dealer_count
-            || receipt.dealer_batches.capacity() < dealer_count
-            || prospective_mappings.capacity() < mapping_count
-            || receipt.source_handles.capacity() < mapping_count)
-    {
-        discard_tentative_double_rand_capture();
-        return TentativeDoubleRandAuthenticationReceipt{};
-    }
-    if (prospective_batches.size()
-                    > auth.dealer_batches.max_size()
-                            - auth.dealer_batches.size()
-            || auth.global_invocations.size()
-                    == auth.global_invocations.max_size())
-    {
-        discard_tentative_double_rand_capture();
-        return TentativeDoubleRandAuthenticationReceipt{};
-    }
-    const size_t registered_count_after = checked_size_sum(
-            auth.dealer_batches.size(), prospective_batches.size(),
-            "AtlasGsz: tentative adapter registered batch count overflow");
-    const size_t invocation_count_after = checked_size_sum(
-            auth.global_invocations.size(), 1,
-            "AtlasGsz: tentative adapter invocation count overflow");
+    auto& receipt = frozen.receipt;
     const size_t batch_start_index = auth.dealer_batches.size();
-    const size_t receipt_source_handles_capacity =
-            receipt.source_handles.capacity();
-    const size_t receipt_converted_capacity =
-            receipt.converted_r_t_derivations.capacity();
-    const size_t receipt_e_t_capacity =
-            receipt.authenticated_e_t_sources.capacity();
-    const size_t receipt_z_t_capacity =
-            receipt.converted_z_t_derivations.capacity();
+    const size_t invocation_count_before = auth.global_invocations.size();
+    const size_t checkpoint_count_before = auth.checkpoints.size();
+    const uint64_t next_checkpoint_id_before = auth.next_checkpoint_id;
+    auth.dealer_batches.reserve(checked_size_sum(
+            batch_start_index, frozen.dealer_count,
+            "AtlasGsz: frozen adapter registered batch count overflow"));
+    auth.global_invocations.reserve(checked_size_sum(
+            invocation_count_before, 1,
+            "AtlasGsz: frozen adapter invocation count overflow"));
 
-    // Reserve all adapter-owned authoritative container growth before any
-    // protocol ID is selected. Capacity changes carry no protocol identity.
-    auth.dealer_batches.reserve(registered_count_after);
-    auth.global_invocations.reserve(invocation_count_after);
-
-    // The batch-ID snapshot follows the complete structural preflight and all
-    // potentially throwing local allocation. IDs are advanced only by the
-    // later atomic registration.
     const uint64_t first_batch_id = auth.next_batch_id;
-    const uint64_t dealer_count_u64 = uint64_t(dealer_count);
     if (first_batch_id == 0
-            || dealer_count_u64
+            || frozen.dealer_count
                     > numeric_limits<uint64_t>::max() - first_batch_id)
-    {
-        discard_tentative_double_rand_capture();
-        return TentativeDoubleRandAuthenticationReceipt{};
-    }
+        return empty;
     const uint64_t next_batch_id_after =
-            first_batch_id + dealer_count_u64;
-    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+            first_batch_id + uint64_t(frozen.dealer_count);
+    unordered_map<uint64_t, bool> existing_batch_ids;
+    existing_batch_ids.reserve(auth.dealer_batches.size());
+    for (const auto& existing : auth.dealer_batches)
+        if (not existing_batch_ids.emplace(
+                existing.batch_id, true).second)
+            return empty;
+    vector<uint64_t> requested_batch_ids(frozen.dealer_count);
+    for (size_t dealer = 0; dealer < frozen.dealer_count; dealer++)
     {
         const uint64_t batch_id = first_batch_id + uint64_t(dealer);
-        if (find_dealer_source_batch(batch_id) != 0)
-        {
-            discard_tentative_double_rand_capture();
-            return TentativeDoubleRandAuthenticationReceipt{};
-        }
-        prospective_batches.at(dealer).batch_id = batch_id;
+        if (existing_batch_ids.find(batch_id)
+                != existing_batch_ids.end())
+            return empty;
+        auto& batch = frozen.prospective_batches.at(dealer);
+        const size_t expected_source_count = dealer == 0
+                ? frozen.combined_king_source_count
+                : candidate->source_count;
+        if (batch.dealer != int(dealer) || batch.batch_id != 0
+                || batch.source_ordinals.size() != expected_source_count
+                || batch.local_source_shares.size()
+                        != expected_source_count)
+            return empty;
+        batch.batch_id = batch_id;
         requested_batch_ids.at(dealer) = batch_id;
         auto& summary = receipt.dealer_batches.at(dealer);
         summary.dealer = int(dealer);
         summary.batch_id = batch_id;
-        summary.source_count = dealer == 0
-                ? combined_king_source_count : candidate->source_count;
+        summary.source_count = expected_source_count;
     }
 
-    // Validate the complete public mapping prospectively using raw numeric
-    // identities. AuthenticatedSourceHandle objects are created only after
-    // the existing authentication commit has succeeded.
-    for (size_t source_ordinal = 0;
-            source_ordinal < candidate->source_count; source_ordinal++)
-        for (size_t dealer = 0; dealer < dealer_count; dealer++)
-        {
-            const auto& source = candidate->dealer_sources.at(dealer)
-                    .sources.at(source_ordinal);
-            ProspectiveSourceMapping mapping{};
-            mapping.producer_record_ordinal =
-                    source.reference.producer_record_ordinal;
-            mapping.input_generation_group_ordinal =
-                    source.reference.input_generation_group_ordinal;
-            mapping.dealer = int(dealer);
-            mapping.batch_id = first_batch_id + uint64_t(dealer);
-            mapping.source_ordinal = source_ordinal;
-            const size_t mapping_index = checked_size_sum(
-                    checked_size_product(source_ordinal, dealer_count,
-                            "AtlasGsz: prospective mapping offset overflow"),
-                    dealer,
-                    "AtlasGsz: prospective mapping index overflow");
-            prospective_mappings.at(mapping_index) = mapping;
-        }
-    if (prospective_mappings.size() != mapping_count)
-    {
-        discard_tentative_double_rand_capture();
-        return TentativeDoubleRandAuthenticationReceipt{};
-    }
-
-    unique_ptr<TentativeDoubleRandCaptureCandidate> claimed_candidate =
-            std::move(capture.finalized_candidate);
-    assert(claimed_candidate != 0);
-    assert(inspect_tentative_double_rand_capture() == 0);
     register_tentative_double_rand_batches_atomically(
-            prospective_batches, next_batch_id_after);
-
-    const size_t invocation_count_before = auth.global_invocations.size();
-    const size_t checkpoint_count_before = auth.checkpoints.size();
-    const uint64_t next_checkpoint_id_before = auth.next_checkpoint_id;
+            frozen.prospective_batches, next_batch_id_after);
     const bool accepted = authenticate_source_batches(requested_batch_ids,
             test_fault, inject_bad_verify_sharing_dealer, -1);
     if (auth.global_invocations.size() != invocation_count_before + 1
             || auth.checkpoints.size() != checkpoint_count_before
             || auth.next_checkpoint_id != next_checkpoint_id_before)
         throw logic_error(
-                "AtlasGsz: tentative adapter authentication boundary changed unexpectedly");
+                "AtlasGsz: frozen adapter authentication boundary changed unexpectedly");
     const auto& invocation = auth.global_invocations.back();
     receipt.authentication_invocation_id = invocation.invocation_id;
     if (invocation.checkpoint_id != 0
-            || invocation.members.size() != dealer_count)
+            || invocation.members.size() != frozen.dealer_count)
         throw logic_error(
-                "AtlasGsz: tentative adapter did not retain one source-only all-dealer invocation");
-    for (size_t dealer = 0; dealer < dealer_count; dealer++)
-        if (invocation.members.at(dealer).dealer != int(dealer)
-                || invocation.members.at(dealer).batch_id
-                        != first_batch_id + uint64_t(dealer))
-            throw logic_error(
-                    "AtlasGsz: tentative adapter invocation lost canonical dealer order");
+                "AtlasGsz: frozen adapter did not retain one source-only all-dealer invocation");
 
-    if (not accepted)
+    for (size_t dealer = 0; dealer < frozen.dealer_count; dealer++)
     {
-        for (size_t dealer = 0; dealer < dealer_count; dealer++)
+        const auto& member = invocation.members.at(dealer);
+        const auto& batch = auth.dealer_batches.at(
+                batch_start_index + dealer);
+        if (member.dealer != int(dealer)
+                || member.batch_id != first_batch_id + uint64_t(dealer)
+                || batch.batch_id != member.batch_id
+                || batch.dealer != int(dealer))
+            throw logic_error(
+                    "AtlasGsz: frozen adapter lost canonical dealer order");
+        if (not accepted)
         {
-            const auto& batch = auth.dealer_batches.at(
-                    batch_start_index + dealer);
-            if (batch.batch_id != first_batch_id + uint64_t(dealer)
-                    || batch.dealer != int(dealer)
-                    || batch.authentication_state
+            if (batch.authentication_state
                             != DealerBatchAuthenticationState::rejected
                     || not batch.authenticated_handles.empty())
                 throw logic_error(
-                        "AtlasGsz: rejected tentative adapter batch retained authenticated state");
+                        "AtlasGsz: rejected frozen adapter batch retained handles");
         }
+    }
+    if (not accepted)
+    {
         receipt.converted_r_t_derivations.clear();
         receipt.authenticated_e_t_sources.clear();
         receipt.converted_z_t_derivations.clear();
-        return receipt;
+        return std::move(receipt);
     }
     if (not invocation.completed || not invocation.passed)
         throw logic_error(
-                "AtlasGsz: accepted tentative adapter invocation is not completed and passed");
+                "AtlasGsz: accepted frozen adapter invocation is incomplete");
 
-    // Validate each newly registered authoritative batch exactly once. The
-    // direct batch range is the complete set appended by this adaptation.
-    for (size_t dealer = 0; dealer < dealer_count; dealer++)
+    receipt.source_handles.clear();
+    for (size_t mapping_index = 0;
+            mapping_index < frozen.prospective_mappings.size();
+            mapping_index++)
     {
+        const size_t source_ordinal = mapping_index / frozen.dealer_count;
+        const size_t dealer = mapping_index % frozen.dealer_count;
+        const auto& prospective =
+                frozen.prospective_mappings.at(mapping_index);
+        const auto& expected_group =
+                candidate->source_groups.at(source_ordinal);
         const auto& batch = auth.dealer_batches.at(
                 batch_start_index + dealer);
-        const auto* authoritative_batch =
-                find_dealer_source_batch(batch.batch_id);
-        const auto& expected_sources =
-                claimed_candidate->dealer_sources.at(dealer).sources;
-        const size_t expected_source_count = dealer == 0
-                ? combined_king_source_count
-                : claimed_candidate->source_count;
-        if (batch.batch_id != first_batch_id + uint64_t(dealer)
-                || batch.dealer != int(dealer)
-                || authoritative_batch != &batch
-                || batch.authentication_state
+        if (batch.authentication_state
                         != DealerBatchAuthenticationState::authenticated
                 || batch.source_ordinals.size()
-                        != expected_source_count
-                || batch.local_source_shares.size()
-                        != expected_source_count
+                        != batch.local_source_shares.size()
                 || batch.authenticated_handles.size()
-                        != expected_source_count
-                || batch.verify_sharing_failure_evidence
-                || batch.base_sharing_failure_evidence)
+                        != batch.source_ordinals.size()
+                || prospective.producer_record_ordinal
+                        != expected_group.producer_record_ordinal
+                || prospective.input_generation_group_ordinal
+                        != expected_group.input_generation_group_ordinal
+                || prospective.dealer != int(dealer)
+                || prospective.source_ordinal != source_ordinal
+                || batch.source_ordinals.at(source_ordinal)
+                        != source_ordinal)
             throw logic_error(
-                    "AtlasGsz: authenticated tentative adapter batch failed exact source validation");
-        for (size_t source_ordinal = 0;
-                source_ordinal < claimed_candidate->source_count;
-                source_ordinal++)
-        {
-            const auto& handle =
-                    batch.authenticated_handles.at(source_ordinal);
-            if (batch.source_ordinals.at(source_ordinal)
-                            != source_ordinal
-                    || batch.local_source_shares.at(source_ordinal)
-                            != expected_sources.at(source_ordinal).local_share
-                    || handle.batch_id != batch.batch_id
-                    || handle.dealer != int(dealer)
-                    || handle.source_ordinal != source_ordinal)
-                throw logic_error(
-                        "AtlasGsz: authenticated tentative adapter batch failed exact source validation");
-        }
-        if (dealer == 0)
-            for (size_t output_index = 0;
-                    output_index < operation_count; output_index++)
-            {
-                const size_t source_ordinal = claimed_candidate->source_count
-                        + output_index;
-                const auto& handle =
-                        batch.authenticated_handles.at(source_ordinal);
-                if (batch.source_ordinals.at(source_ordinal)
-                                != source_ordinal
-                        || batch.local_source_shares.at(source_ordinal)
-                                != claimed_candidate->consumed_outputs.at(
-                                        output_index)
-                                        .concrete_e_t_source.local_share
-                        || handle.batch_id != batch.batch_id
-                        || handle.dealer != 0
-                        || handle.source_ordinal != source_ordinal)
-                    throw logic_error(
-                            "AtlasGsz: authenticated tentative adapter e_t suffix failed exact source validation");
-            }
-    }
-
-    // Materialize the canonical receipt from the complete prospective numeric
-    // mapping and the exact committed handle at the corresponding direct
-    // authoritative index. Capacity was allocated before candidate claim, so
-    // this loop cannot grow the receipt vector after authentication commit.
-    if (receipt.source_handles.capacity() < mapping_count
-            || not receipt.source_handles.empty())
-        throw logic_error(
-                "AtlasGsz: tentative adapter receipt capacity was not prepared before authentication");
-    for (size_t mapping_index = 0;
-            mapping_index < prospective_mappings.size(); mapping_index++)
-    {
-        const size_t source_ordinal = mapping_index / dealer_count;
-        const size_t dealer = mapping_index % dealer_count;
-        const auto& expected_group =
-                claimed_candidate->source_groups.at(source_ordinal);
-        const auto& source = claimed_candidate->dealer_sources.at(dealer)
-                .sources.at(source_ordinal);
-        const auto& prospective = prospective_mappings.at(mapping_index);
-        const auto& batch = auth.dealer_batches.at(
-                batch_start_index + dealer);
+                    "AtlasGsz: frozen source mapping is not authoritative");
         const auto& handle =
                 batch.authenticated_handles.at(source_ordinal);
-        if (prospective.producer_record_ordinal
-                            != expected_group.producer_record_ordinal
-                || prospective.input_generation_group_ordinal
-                            != expected_group.input_generation_group_ordinal
-                || prospective.dealer != int(dealer)
-                || prospective.batch_id != batch.batch_id
-                || prospective.source_ordinal != source_ordinal
-                || source.reference.producer_record_ordinal
-                            != prospective.producer_record_ordinal
-                || source.reference.input_generation_group_ordinal
-                            != prospective.input_generation_group_ordinal
-                || source.reference.dealer != prospective.dealer
-                || handle.batch_id != prospective.batch_id
-                || handle.dealer != prospective.dealer
-                || handle.source_ordinal != prospective.source_ordinal)
+        if (handle.batch_id != batch.batch_id
+                || handle.dealer != int(dealer)
+                || handle.source_ordinal != source_ordinal)
             throw logic_error(
-                    "AtlasGsz: tentative adapter mapping did not resolve to the exact indexed authenticated handle");
-
+                    "AtlasGsz: frozen source mapping resolved the wrong handle");
         TentativeDoubleRandSourceHandleMapping mapping{};
         mapping.producer_record_ordinal =
                 prospective.producer_record_ordinal;
@@ -4168,359 +4036,113 @@ AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
         mapping.handle = handle;
         receipt.source_handles.push_back(mapping);
     }
-    if (receipt.source_handles.size() != mapping_count
-            || receipt.source_handles.capacity()
-                    != receipt_source_handles_capacity)
+    if (receipt.source_handles.size() != frozen.mapping_count)
         throw logic_error(
-                "AtlasGsz: tentative adapter receipt does not cover every candidate source");
+                "AtlasGsz: frozen receipt does not cover every source");
 
-    // Bind the exact committed handles into the preallocated result. The
-    // candidate remains stack-local and alive here, so every final term can
-    // be checked against both its temporary reference and actual consumed
-    // degree-t share without any post-adapter provenance lookup.
-    if (receipt.converted_r_t_derivations.size()
-                    != claimed_candidate->consumed_outputs.size()
-            || receipt.converted_r_t_derivations.capacity()
-                    != receipt_converted_capacity
-            || converted_term_mapping_indices.size()
-                    != claimed_candidate->consumed_outputs.size())
-        throw logic_error(
-                "AtlasGsz: converted r_t skeleton changed across authentication");
-    for (size_t output_index = 0;
-            output_index < claimed_candidate->consumed_outputs.size();
-            output_index++)
+    for (size_t operation = 0;
+            operation < frozen.operation_count; operation++)
     {
-        const auto& tentative =
-                claimed_candidate->consumed_outputs.at(output_index);
-        auto& converted =
-                receipt.converted_r_t_derivations.at(output_index);
-        const auto& mapping_indices =
-                converted_term_mapping_indices.at(output_index);
-        if (converted.capture_order_ordinal
-                            != tentative.capture_order_ordinal
-                || converted.producer_record_ordinal
-                            != tentative.producer_record_ordinal
-                || converted.producer_output_ordinal
-                            != tentative.producer_output_ordinal
-                || converted.input_generation_group_ordinal
-                            != tentative.input_generation_group_ordinal
-                || converted.operation_kind != tentative.operation_kind
-                || converted.derivation.terms.size()
-                            != tentative.degree_t_derivation.terms.size()
-                || mapping_indices.size()
-                            != converted.derivation.terms.size())
-            throw logic_error(
-                    "AtlasGsz: converted r_t identity changed across authentication");
-
-        T evaluated{};
-        for (size_t term_index = 0;
-                term_index < converted.derivation.terms.size(); term_index++)
+        const auto& tentative = candidate->consumed_outputs.at(operation);
+        auto& converted = receipt.converted_r_t_derivations.at(operation);
+        const auto& indices =
+                frozen.converted_term_mapping_indices.at(operation);
+        T local_r{};
+        for (size_t term = 0; term < indices.size(); term++)
         {
-            const auto& temporary_term =
-                    tentative.degree_t_derivation.terms.at(term_index);
-            const size_t mapping_index = mapping_indices.at(term_index);
+            const size_t mapping_index = indices.at(term);
             if (mapping_index >= receipt.source_handles.size())
                 throw logic_error(
-                        "AtlasGsz: converted r_t term lost its receipt mapping");
-            const size_t source_ordinal = mapping_index / dealer_count;
-            const size_t dealer = mapping_index % dealer_count;
-            if (dealer != term_index
-                    || source_ordinal >= claimed_candidate->source_count)
-                throw logic_error(
-                        "AtlasGsz: converted r_t term mapping is non-canonical");
-
-            NumericOrdinalPair group_key{};
-            group_key.first = temporary_term.source
-                    .producer_record_ordinal;
-            group_key.second = temporary_term.source
-                    .input_generation_group_ordinal;
-            const auto group_position = source_group_lookup.find(group_key);
+                        "AtlasGsz: frozen r_t term lost its mapping");
             const auto& mapping = receipt.source_handles.at(mapping_index);
+            const size_t dealer = mapping_index % frozen.dealer_count;
+            const size_t source_ordinal =
+                    mapping_index / frozen.dealer_count;
             const auto& batch = auth.dealer_batches.at(
                     batch_start_index + dealer);
-            if (group_position == source_group_lookup.end()
-                    || group_position->second != source_ordinal
-                    || temporary_term.source.dealer != int(dealer)
-                    || mapping.producer_record_ordinal
-                            != temporary_term.source
-                                    .producer_record_ordinal
-                    || mapping.input_generation_group_ordinal
-                            != temporary_term.source
-                                    .input_generation_group_ordinal
-                    || mapping.dealer != temporary_term.source.dealer
-                    || batch.authentication_state
-                            != DealerBatchAuthenticationState::authenticated
-                    || batch.dealer != int(dealer)
-                    || batch.source_ordinals.size()
-                            <= source_ordinal
-                    || batch.source_ordinals.at(source_ordinal)
-                            != source_ordinal
-                    || batch.local_source_shares.size()
-                            <= source_ordinal
-                    || batch.authenticated_handles.size()
-                            <= source_ordinal
-                    || not (mapping.handle
-                            == batch.authenticated_handles.at(
-                                    source_ordinal)))
+            auto& term_result = converted.derivation.terms.at(term);
+            term_result.handle = mapping.handle;
+            if (mapping.dealer != int(dealer)
+                    || term_result.coefficient
+                            != tentative.degree_t_derivation.terms.at(term)
+                                    .coefficient
+                    || source_ordinal >= batch.local_source_shares.size())
                 throw logic_error(
-                        "AtlasGsz: converted r_t term did not resolve through the exact authoritative source");
-
-            auto& final_term = converted.derivation.terms.at(term_index);
-            final_term.handle = mapping.handle;
-            if (final_term.coefficient != temporary_term.coefficient
-                    || final_term.handle.batch_id != batch.batch_id
-                    || final_term.handle.dealer != int(dealer)
-                    || final_term.handle.source_ordinal != source_ordinal)
-                throw logic_error(
-                        "AtlasGsz: converted r_t term changed its coefficient or committed handle");
-            // Duplicate handles are structurally impossible: there is one
-            // term per ascending dealer, dealer equals term_index, every
-            // dealer has a distinct batch ID, and this handle equals the
-            // exact authoritative entry at its source ordinal.
-            evaluated += final_term.coefficient
+                        "AtlasGsz: frozen r_t coefficient or source changed");
+            local_r += term_result.coefficient
                     * batch.local_source_shares.at(source_ordinal);
         }
-        if (evaluated != tentative.actual_r_t)
+        if (local_r != tentative.actual_r_t)
             throw logic_error(
-                    "AtlasGsz: converted r_t derivation does not locally evaluate to the consumed share");
-    }
+                    "AtlasGsz: frozen r_t derivation failed local evaluation");
 
-    if (receipt.authenticated_e_t_sources.size() != operation_count
-            || receipt.authenticated_e_t_sources.capacity()
-                    != receipt_e_t_capacity)
-        throw logic_error(
-                "AtlasGsz: authenticated e_t skeleton changed across authentication");
-    const auto& king_batch = auth.dealer_batches.at(batch_start_index);
-    for (size_t output_index = 0;
-            output_index < operation_count; output_index++)
-    {
-        const auto& tentative =
-                claimed_candidate->consumed_outputs.at(output_index);
-        auto& result = receipt.authenticated_e_t_sources.at(output_index);
-        const size_t source_ordinal = checked_size_sum(
-                claimed_candidate->source_count, output_index,
-                "AtlasGsz: committed e_t source ordinal overflow");
-        const auto& handle =
-                king_batch.authenticated_handles.at(source_ordinal);
-        if (result.capture_order_ordinal
-                            != tentative.capture_order_ordinal
-                || result.producer_record_ordinal
-                            != tentative.producer_record_ordinal
-                || result.producer_output_ordinal
-                            != tentative.producer_output_ordinal
-                || result.input_generation_group_ordinal
-                            != tentative.input_generation_group_ordinal
-                || result.operation_kind != tentative.operation_kind
-                || result.king != tentative.concrete_e_t_source.king
-                || result.special_sharing_support
-                            != tentative.concrete_e_t_source
-                                    .special_sharing_support
-                || result.king != 0
-                || king_batch.source_ordinals.at(source_ordinal)
-                            != source_ordinal
-                || king_batch.local_source_shares.at(source_ordinal)
-                            != tentative.concrete_e_t_source.local_share
-                || handle.batch_id != king_batch.batch_id
-                || handle.dealer != result.king
-                || handle.source_ordinal != source_ordinal)
+        auto& authenticated_e =
+                receipt.authenticated_e_t_sources.at(operation);
+        const auto& king_batch = auth.dealer_batches.at(batch_start_index);
+        const size_t e_t_ordinal = frozen.e_t_source_ordinals.at(operation);
+        if (authenticated_e.king != 0
+                || e_t_ordinal != candidate->source_count + operation
+                || e_t_ordinal >= king_batch.authenticated_handles.size()
+                || king_batch.local_source_shares.at(e_t_ordinal)
+                        != tentative.concrete_e_t_source.local_share)
             throw logic_error(
-                    "AtlasGsz: authenticated e_t result did not bind to its exact king suffix handle");
-        result.handle = handle;
-        // Preflight proves capture_order_ordinal == output_index and unique
-        // capture ordinals. Exact authoritative binding to king suffix
-        // q + output_index therefore makes all operation e_t handles unique.
-    }
+                    "AtlasGsz: frozen e_t suffix binding changed");
+        authenticated_e.handle =
+                king_batch.authenticated_handles.at(e_t_ordinal);
 
-    // Complete each preallocated z_t result only from the exact committed
-    // e_t suffix handle and the already validated r_t derivation. The
-    // candidate-private transcript ordinal is consumed only for validation
-    // and is not copied into the public receipt.
-    if (receipt.converted_z_t_derivations.size() != operation_count
-            || receipt.converted_z_t_derivations.capacity()
-                    != receipt_z_t_capacity
-            || e_t_source_ordinals.size() != operation_count)
-        throw logic_error(
-                "AtlasGsz: converted z_t skeleton changed across authentication");
-    const typename T::open_type one(1);
-    for (size_t output_index = 0;
-            output_index < operation_count; output_index++)
-    {
-        const auto& tentative =
-                claimed_candidate->consumed_outputs.at(output_index);
-        const auto& converted_r =
-                receipt.converted_r_t_derivations.at(output_index);
-        const auto& authenticated_e =
-                receipt.authenticated_e_t_sources.at(output_index);
-        auto& converted_z =
-                receipt.converted_z_t_derivations.at(output_index);
-
-        const bool full_identity_matches =
-                converted_r.capture_order_ordinal
-                        == tentative.capture_order_ordinal
-                && converted_r.producer_record_ordinal
-                        == tentative.producer_record_ordinal
-                && converted_r.producer_output_ordinal
-                        == tentative.producer_output_ordinal
-                && converted_r.input_generation_group_ordinal
-                        == tentative.input_generation_group_ordinal
-                && converted_r.operation_kind == tentative.operation_kind
-                && authenticated_e.capture_order_ordinal
-                        == tentative.capture_order_ordinal
-                && authenticated_e.producer_record_ordinal
-                        == tentative.producer_record_ordinal
-                && authenticated_e.producer_output_ordinal
-                        == tentative.producer_output_ordinal
-                && authenticated_e.input_generation_group_ordinal
-                        == tentative.input_generation_group_ordinal
-                && authenticated_e.operation_kind
-                        == tentative.operation_kind
-                && converted_z.capture_order_ordinal
-                        == tentative.capture_order_ordinal
-                && converted_z.producer_record_ordinal
-                        == tentative.producer_record_ordinal
-                && converted_z.producer_output_ordinal
-                        == tentative.producer_output_ordinal
-                && converted_z.input_generation_group_ordinal
-                        == tentative.input_generation_group_ordinal
-                && converted_z.operation_kind == tentative.operation_kind;
-        if (not full_identity_matches)
-            throw logic_error(
-                    "AtlasGsz: r_t, e_t, and z_t results lost their exact operation identity");
-
-        if (tentative.partial_mult_transcript_record_ordinal
-                    >= partial_mult_transcripts.size())
-            throw logic_error(
-                    "AtlasGsz: converted z_t lost its private transcript binding");
-        const auto& transcript_record = partial_mult_transcripts.at(
-                tentative.partial_mult_transcript_record_ordinal);
-        const auto& transcript = transcript_record.transcript;
-        if (transcript_record.operation_kind != tentative.operation_kind
-                || transcript_record.producer_reference.producer_provenance
-                        != claimed_candidate->producer_records.at(
-                                tentative.producer_record_ordinal)
-                || transcript_record.producer_reference
-                        .producer_output_ordinal
-                        != tentative.producer_output_ordinal
-                || transcript.r_t != tentative.actual_r_t
-                || transcript.e_t
-                        != tentative.concrete_e_t_source.local_share
-                || transcript_record.offset >= z_verify.size()
-                || transcript_record.length <= 0
-                || size_t(transcript_record.length)
-                        > z_verify.size() - transcript_record.offset
-                || z_verify.at(transcript_record.offset)
-                        != transcript.e_t - transcript.r_t
-                || (tentative.operation_kind
-                            == OrdinaryDoubleRandOperationKind::
-                                    scalar_multiplication
-                        && transcript_record.length != 1))
-            throw logic_error(
-                    "AtlasGsz: converted z_t transcript binding is inconsistent");
-        if (tentative.operation_kind
-                == OrdinaryDoubleRandOperationKind::dot_product)
-            for (size_t padding = 1;
-                    padding < size_t(transcript_record.length); padding++)
-                if (z_verify.at(transcript_record.offset + padding) != T{})
-                    throw logic_error(
-                            "AtlasGsz: converted dot-product z_t transcript has nonzero padding");
-
-        const size_t expected_e_t_source_ordinal = checked_size_sum(
-                claimed_candidate->source_count,
-                tentative.capture_order_ordinal,
-                "AtlasGsz: committed z_t e_t suffix ordinal overflow");
-        if (e_t_source_ordinals.at(output_index)
-                        != expected_e_t_source_ordinal
-                || authenticated_e.king != 0
-                || authenticated_e.handle.dealer != 0
-                || authenticated_e.handle.batch_id != king_batch.batch_id
-                || authenticated_e.handle.source_ordinal
-                        != expected_e_t_source_ordinal
-                || expected_e_t_source_ordinal
-                        >= king_batch.source_ordinals.size()
-                || king_batch.source_ordinals.at(
-                        expected_e_t_source_ordinal)
-                        != expected_e_t_source_ordinal
-                || expected_e_t_source_ordinal
-                        >= king_batch.authenticated_handles.size()
-                || not (authenticated_e.handle
-                        == king_batch.authenticated_handles.at(
-                                expected_e_t_source_ordinal))
-                || king_batch.authentication_state
-                        != DealerBatchAuthenticationState::authenticated)
-            throw logic_error(
-                    "AtlasGsz: converted z_t e_t handle is not the exact authoritative king suffix");
-
+        auto& converted_z = receipt.converted_z_t_derivations.at(operation);
         if (converted_z.derivation.terms.size()
-                    != converted_r.derivation.terms.size() + 1
-                || converted_z.derivation.terms.at(0).coefficient != one)
+                    != converted.derivation.terms.size() + 1
+                || converted_z.derivation.terms.at(0).coefficient
+                        != typename T::open_type(1))
             throw logic_error(
-                    "AtlasGsz: converted z_t has a non-canonical term shape");
+                    "AtlasGsz: frozen z_t derivation has the wrong shape");
         converted_z.derivation.terms.at(0).handle =
                 authenticated_e.handle;
-
-        const T& local_e = king_batch.local_source_shares.at(
-                expected_e_t_source_ordinal);
-        if (local_e != tentative.concrete_e_t_source.local_share
-                || local_e != transcript.e_t)
-            throw logic_error(
-                    "AtlasGsz: converted z_t e_t handle has the wrong authoritative local source");
-
-        T local_r{};
-        T local_z = local_e;
-        for (size_t term_index = 0;
-                term_index < converted_r.derivation.terms.size();
-                term_index++)
+        T local_z = king_batch.local_source_shares.at(e_t_ordinal);
+        for (size_t term = 0;
+                term < converted.derivation.terms.size(); term++)
         {
-            const auto& r_term =
-                    converted_r.derivation.terms.at(term_index);
-            auto& z_term =
-                    converted_z.derivation.terms.at(term_index + 1);
-            if (r_term.handle.dealer < 0
-                    || size_t(r_term.handle.dealer) >= dealer_count)
-                throw logic_error(
-                        "AtlasGsz: converted z_t r_t handle dealer is invalid");
-            const auto& batch = auth.dealer_batches.at(
-                    batch_start_index + size_t(r_term.handle.dealer));
-            const size_t source_ordinal = r_term.handle.source_ordinal;
-            if (batch.batch_id != r_term.handle.batch_id
-                    || batch.dealer != r_term.handle.dealer
-                    || batch.authentication_state
-                            != DealerBatchAuthenticationState::authenticated
-                    || source_ordinal >= batch.source_ordinals.size()
-                    || batch.source_ordinals.at(source_ordinal)
-                            != source_ordinal
-                    || source_ordinal
-                            >= batch.authenticated_handles.size()
-                    || not (r_term.handle
-                            == batch.authenticated_handles.at(
-                                    source_ordinal))
-                    || authenticated_e.handle == r_term.handle)
-                throw logic_error(
-                        "AtlasGsz: converted z_t term did not resolve through its exact authoritative source");
+            const auto& r_term = converted.derivation.terms.at(term);
+            auto& z_term = converted_z.derivation.terms.at(term + 1);
             z_term.handle = r_term.handle;
             if (z_term.coefficient
-                            != typename T::open_type{}
-                                    - r_term.coefficient
-                    || not (z_term.handle == r_term.handle))
+                    != typename T::open_type{} - r_term.coefficient)
                 throw logic_error(
-                        "AtlasGsz: converted z_t changed canonical coefficient or handle order");
-            local_r += r_term.coefficient
-                    * batch.local_source_shares.at(source_ordinal);
+                        "AtlasGsz: frozen z_t coefficient changed");
+            const size_t dealer = size_t(r_term.handle.dealer);
+            const auto& batch = auth.dealer_batches.at(
+                    batch_start_index + dealer);
             local_z += z_term.coefficient
-                    * batch.local_source_shares.at(source_ordinal);
+                    * batch.local_source_shares.at(
+                            r_term.handle.source_ordinal);
         }
-        if (local_r != tentative.actual_r_t
-                || local_r != transcript.r_t
-                || local_z != local_e - local_r
-                || local_z != transcript.e_t - transcript.r_t
-                || local_z != z_verify.at(transcript_record.offset))
+        if (local_z != tentative.concrete_e_t_source.local_share
+                            - tentative.actual_r_t)
             throw logic_error(
-                    "AtlasGsz: converted z_t failed authoritative local r_t/e_t/z_t evaluation");
+                    "AtlasGsz: frozen z_t derivation failed local evaluation");
     }
     receipt.authenticated = true;
-    return receipt;
+    return std::move(receipt);
 }
 
+template<class T>
+typename AtlasGsz<T>::TentativeDoubleRandAuthenticationReceipt
+AtlasGsz<T>::adapt_finalized_tentative_double_rand_candidate(
+        GlobalAuthenticationTestFault test_fault,
+        int inject_bad_verify_sharing_dealer)
+{
+    auto frozen = freeze_finalized_tentative_double_rand_candidate();
+    if (not frozen)
+    {
+        if (not tentative_double_rand_capture_state.active
+                && tentative_double_rand_capture_state.finalized_candidate)
+            discard_tentative_double_rand_capture();
+        return TentativeDoubleRandAuthenticationReceipt{};
+    }
+    return authenticate_frozen_tentative_double_rand_candidate(
+            *frozen, test_fault, inject_bad_verify_sharing_dealer);
+}
 template<class T>
 void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
         const string& mode)
@@ -15529,6 +15151,38 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 // This focused check runs only after a normal wrapper record
                 // has finalized and pulled the exact Atlas reference.
             }
+            else if (mode.rfind("honest-batch-integration", 0) == 0)
+            {
+                if (not honest_batch_integration_test_mode.empty())
+                    throw logic_error(
+                        "AtlasGsz: honest batch integration mode initialized twice");
+                honest_batch_integration_test_mode = mode;
+                if (mode == "honest-batch-integration-fixed-king")
+                {
+                    const size_t communication_before =
+                            P.total_comm().sent;
+                    bool rejected = false;
+                    try
+                    {
+                        set_fixed_king(1);
+                    }
+                    catch (const invalid_argument&)
+                    {
+                        rejected = true;
+                    }
+                    set_fixed_king(0);
+                    if (not rejected
+                            || P.total_comm().sent
+                                    != communication_before)
+                        throw logic_error(
+                                "AtlasGsz: nonzero fixed king was not rejected locally");
+                    if (P.my_num() == 0)
+                        cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-fixed-king"
+                             << " PASS fixed_king_0=accepted"
+                             << " nonzero=rejected communication=0"
+                             << endl;
+                }
+            }
             else if (mode == "special-e-t")
             {
                 if (not no_authentication_or_checkpoint_artifacts())
@@ -15666,13 +15320,15 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
 template<class T>
 void AtlasGsz<T>::init_mul()
 {
-    maybe_check();
+    enter_verification_operation(
+            OrdinaryDoubleRandOperationKind::scalar_multiplication);
     honest.init_mul();
 }
 
 template<class T>
 void AtlasGsz<T>::prepare_mul(const T& x, const T& y, int)
 {
+    integrated_ordinary_batch_state.wrapper_pending_results++;
     x_verify.push_back(x);
     y_verify.push_back(y);
     honest.prepare_mul(x, y);
@@ -15696,6 +15352,9 @@ T AtlasGsz<T>::finalize_mul(int)
     record.length = 1;
     record.operation_kind =
             OrdinaryDoubleRandOperationKind::scalar_multiplication;
+    record.verification_batch_serial =
+            integrated_ordinary_batch_state
+                    .current_verification_batch_serial;
     record.transcript = honest.get_last_partial_mult_transcript();
     record.producer_reference =
             honest.get_last_double_sharing_producer_reference();
@@ -15724,12 +15383,18 @@ T AtlasGsz<T>::finalize_mul(int)
                     "AtlasGsz: completed ordinary scalar capture failed");
         maybe_complete_tentative_double_rand_capture_test();
     }
+    finish_verification_operation(
+            OrdinaryDoubleRandOperationKind::scalar_multiplication, 1);
+    maybe_flush_honest_batch_integration_residual();
     return res;
 }
 
 template<class T>
 void AtlasGsz<T>::set_fixed_king(int king)
 {
+    if (king != 0)
+        throw invalid_argument(
+                "AtlasGsz: this milestone supports only fixed king 0");
     honest.set_fixed_king(king);
 }
 
@@ -15742,7 +15407,8 @@ T AtlasGsz<T>::get_random()
 template<class T>
 void AtlasGsz<T>::init_dotprod()
 {
-    maybe_check();
+    enter_verification_operation(
+            OrdinaryDoubleRandOperationKind::dot_product);
     honest.init_dotprod();
 }
 
@@ -15757,6 +15423,7 @@ void AtlasGsz<T>::prepare_dotprod(const T& x, const T& y)
 template<class T>
 void AtlasGsz<T>::next_dotprod()
 {
+    integrated_ordinary_batch_state.wrapper_pending_results++;
     honest.next_dotprod();
 }
 
@@ -15772,6 +15439,9 @@ T AtlasGsz<T>::finalize_dotprod(int length)
     record.offset = offset;
     record.length = length;
     record.operation_kind = OrdinaryDoubleRandOperationKind::dot_product;
+    record.verification_batch_serial =
+            integrated_ordinary_batch_state
+                    .current_verification_batch_serial;
     record.transcript = honest.get_last_partial_mult_transcript();
     record.producer_reference =
             honest.get_last_double_sharing_producer_reference();
@@ -15805,19 +15475,31 @@ T AtlasGsz<T>::finalize_dotprod(int length)
                     "AtlasGsz: completed ordinary dot-product capture failed");
         maybe_complete_tentative_double_rand_capture_test();
     }
+    finish_verification_operation(
+            OrdinaryDoubleRandOperationKind::dot_product, size_t(length));
+    maybe_flush_honest_batch_integration_residual();
     return res;
 }
 
 template<class T>
 void AtlasGsz<T>::init_mul_pub()
 {
-    maybe_check();
+    ensure_wrapper_entry_allowed("mul-public operation");
+    auto& integrated = integrated_ordinary_batch_state;
+    if (integrated.wrapper_operation_active
+            && not replace_empty_preprocessing_initialization_wrapper())
+        throw logic_error(
+                "AtlasGsz: preprocessing mul-public reentry encountered a real pending operation");
+    enter_verification_operation(
+            OrdinaryDoubleRandOperationKind::noneligible);
     honest.init_mul_pub();
 }
 
 template<class T>
 void AtlasGsz<T>::prepare_mul_pub(T x, T y)
 {
+    auto& integrated = integrated_ordinary_batch_state;
+    integrated.wrapper_pending_results++;
     x_verify.push_back(x);
     y_verify.push_back(y);
     honest.prepare_mul_pub(x, y);
@@ -15832,12 +15514,17 @@ void AtlasGsz<T>::exchange_mul_pub()
 template<class T>
 T AtlasGsz<T>::finalize_mul_pub()
 {
+    auto& integrated = integrated_ordinary_batch_state;
     size_t n_records = partial_mult_transcripts.size();
     T res = honest.finalize_mul_pub();
 
     PartialMultTranscriptRecord record{};
     record.offset = z_verify.size();
     record.length = 1;
+    record.operation_kind = OrdinaryDoubleRandOperationKind::noneligible;
+    record.verification_batch_serial =
+            integrated_ordinary_batch_state
+                    .current_verification_batch_serial;
     record.transcript = honest.get_last_partial_mult_transcript();
     record.producer_reference =
             honest.get_last_double_sharing_producer_reference();
@@ -15859,8 +15546,11 @@ T AtlasGsz<T>::finalize_mul_pub()
     }
     partial_mult_transcripts.push_back(record);
     assert(partial_mult_transcripts.size() == n_records + 1);
+    integrated.preprocessing_mul_public_records++;
 
     z_verify.push_back(res);
+    finish_verification_operation(
+            OrdinaryDoubleRandOperationKind::noneligible, 1);
     return res;
 }
 
@@ -15940,13 +15630,15 @@ void AtlasGsz<T>::mul_trunc(const vector<int>& regs, int size, SubProcessor<T>& 
 template<class T>
 void AtlasGsz<T>::init_mul_trunc(int length)
 {
-    maybe_check();
+    enter_verification_operation(
+            OrdinaryDoubleRandOperationKind::noneligible);
     honest.init_mul_trunc(length);
 }
 
 template<class T>
 void AtlasGsz<T>::prepare_mul_trunc(const T& x, const T& y)
 {
+    integrated_ordinary_batch_state.wrapper_pending_results++;
     x_verify.push_back(x);
     y_verify.push_back(y);
     honest.prepare_mul_trunc(x, y);
@@ -15967,6 +15659,10 @@ T AtlasGsz<T>::finalize_mul_trunc()
     PartialMultTranscriptRecord record{};
     record.offset = z_verify.size();
     record.length = 1;
+    record.operation_kind = OrdinaryDoubleRandOperationKind::noneligible;
+    record.verification_batch_serial =
+            integrated_ordinary_batch_state
+                    .current_verification_batch_serial;
     record.transcript = honest.get_last_partial_mult_transcript();
     record.producer_reference =
             honest.get_last_double_sharing_producer_reference();
@@ -15989,13 +15685,17 @@ T AtlasGsz<T>::finalize_mul_trunc()
     assert(partial_mult_transcripts.size() == n_records + 1);
     z_verify.push_back(pre_trunc);
 
+    finish_verification_operation(
+            OrdinaryDoubleRandOperationKind::noneligible, 1);
+
     return res;
 }
 
 template<class T>
 void AtlasGsz<T>::init_dotprod_trunc()
 {
-    maybe_check();
+    enter_verification_operation(
+            OrdinaryDoubleRandOperationKind::noneligible);
     honest.init_dotprod_trunc();
 }
 
@@ -16010,6 +15710,7 @@ void AtlasGsz<T>::prepare_dotprod_trunc(const T& x, const T& y)
 template<class T>
 void AtlasGsz<T>::next_dotprod_trunc()
 {
+    integrated_ordinary_batch_state.wrapper_pending_results++;
     honest.next_dotprod_trunc();
 }
 
@@ -16031,6 +15732,10 @@ T AtlasGsz<T>::finalize_dotprod_trunc(int length)
     PartialMultTranscriptRecord record{};
     record.offset = offset;
     record.length = length;
+    record.operation_kind = OrdinaryDoubleRandOperationKind::noneligible;
+    record.verification_batch_serial =
+            integrated_ordinary_batch_state
+                    .current_verification_batch_serial;
     record.transcript = honest.get_last_partial_mult_transcript();
     record.producer_reference =
             honest.get_last_double_sharing_producer_reference();
@@ -16054,6 +15759,10 @@ T AtlasGsz<T>::finalize_dotprod_trunc(int length)
     z_verify.push_back(pre_trunc);
     z_verify.insert(z_verify.end(), length - 1, T{0});
 
+    finish_verification_operation(
+            OrdinaryDoubleRandOperationKind::noneligible,
+            size_t(length));
+
     return res;
 }
 
@@ -16061,6 +15770,324 @@ template<class T>
 void AtlasGsz<T>::prepare_with_solved_bits(const typename T::open_type& product)
 {
     honest.prepare_with_solved_bits(product);
+}
+
+template<class T>
+void AtlasGsz<T>::cleanup_successful_integrated_batch(
+        size_t dealer_batch_start,
+        size_t nu_material_start,
+        size_t holder_tag_start,
+        size_t global_invocation_start,
+        IntegratedBatchReport& report)
+{
+    auto& auth = optimistic_authentication_state;
+    if (dealer_batch_start > auth.dealer_batches.size()
+            || nu_material_start > auth.nu_material.size()
+            || holder_tag_start > auth.holder_tags.size()
+            || global_invocation_start > auth.global_invocations.size())
+        throw logic_error(
+                "AtlasGsz: integrated cleanup range is invalid");
+    auth.dealer_batches.resize(dealer_batch_start);
+    auth.nu_material.resize(nu_material_start);
+    auth.holder_tags.resize(holder_tag_start);
+    auth.global_invocations.resize(global_invocation_start);
+    report.post_cleanup_dealer_batches =
+            auth.dealer_batches.size() - dealer_batch_start;
+    report.post_cleanup_nu_material =
+            auth.nu_material.size() - nu_material_start;
+    report.post_cleanup_holder_tags =
+            auth.holder_tags.size() - holder_tag_start;
+    report.post_cleanup_global_invocations =
+            auth.global_invocations.size() - global_invocation_start;
+    report.retained_dealer_batches = auth.dealer_batches.size();
+    report.retained_nu_material = auth.nu_material.size();
+    report.retained_holder_tags = auth.holder_tags.size();
+    report.retained_global_invocations = auth.global_invocations.size();
+}
+
+template<class T>
+void AtlasGsz<T>::print_integrated_batch_report(
+        const IntegratedBatchReport& report) const
+{
+    if (P.my_num() != 0 || not report.valid)
+        return;
+    auto reason = [&] {
+        switch (report.flush_reason)
+        {
+        case VerificationBatchFlushReason::threshold:
+            return "threshold";
+        case VerificationBatchFlushReason::eligibility_boundary:
+            return "eligibility-boundary";
+        case VerificationBatchFlushReason::explicit_test_residual:
+            return "explicit-residual";
+        case VerificationBatchFlushReason::destructor:
+            return "destructor";
+        case VerificationBatchFlushReason::none:
+            return "none";
+        }
+        return "invalid";
+    };
+    cout << "ATLAS_GSZ_INTEGRATED_BATCH"
+         << " serial=" << report.verification_batch_serial
+         << " reason=" << reason()
+         << " scalar_ops=" << report.ordinary_scalar_operations
+         << " dot_ops=" << report.ordinary_dot_operations
+         << " total_ops=" << report.operation_shapes.size()
+         << " coordinates=" << report.x_verify_coordinates
+         << " transcripts=" << report.partial_transcripts
+         << " shape=";
+    for (size_t i = 0; i < report.operation_shapes.size(); i++)
+    {
+        if (i != 0)
+            cout << ',';
+        cout << (report.operation_shapes.at(i).kind
+                        == OrdinaryDoubleRandOperationKind::
+                                scalar_multiplication
+                        ? "scalar"
+                        : "dot")
+             << ':' << report.operation_shapes.at(i).length;
+    }
+    cout << " dealer_sources=";
+    for (size_t i = 0; i < report.per_dealer_source_counts.size(); i++)
+    {
+        if (i != 0)
+            cout << ',';
+        cout << report.per_dealer_source_counts.at(i);
+    }
+    cout << " dealer_chunks=";
+    for (size_t i = 0; i < report.per_dealer_ftag_chunk_counts.size(); i++)
+    {
+        if (i != 0)
+            cout << ',';
+        cout << report.per_dealer_ftag_chunk_counts.at(i);
+    }
+    cout << " handles=" << report.committed_handles
+         << " r_t=" << report.r_t_derivations
+         << " e_t=" << report.direct_e_t_handles
+         << " z_t=" << report.z_t_derivations
+         << " local_eval=" << report.r_t_local_evaluations << '/'
+         << report.e_t_local_evaluations << '/'
+         << report.z_t_local_evaluations
+         << " verify_sharing=" << report.verify_sharing_invocations
+         << " key_setup=" << report.check_key_setup_runs
+         << " check_key=" << report.check_key_runs
+         << " base_sharing=" << report.checked_base_sharings
+         << " ordinary_relations=" << report.ordinary_tag_nu_relations
+         << " base_relations=" << report.base_tag_nu_relations
+         << " check_tag_challenges="
+         << report.global_check_tag_challenges
+         << " gs20_challenges="
+         << report.gs20_de_linearization_challenges << '/'
+         << report.gs20_dimension_reduction_challenges << '/'
+         << report.gs20_randomization_logical_challenges << '/'
+         << report.gs20_randomization_raw_samples
+         << " comm_gs20=" << report.gs20_communication
+         << " comm_verify=" << report.verify_sharing_communication
+         << " comm_key=" << report.key_check_communication
+         << " comm_base=" << report.base_sharing_communication
+         << " comm_ordinary_tag=" << report.ordinary_tag_communication
+         << " comm_base_tag=" << report.base_tag_communication
+         << " comm_check_tag=" << report.check_tag_communication
+         << " comm_auth=" << report.total_authentication_communication
+         << " comm_total=" << report.total_integrated_communication
+         << " authentication="
+         << report.authentication_invocations_started << '/'
+         << report.authentication_invocations_completed << '/'
+         << report.authentication_invocations_accepted
+         << " runtime=unavailable"
+         << " cleanup_verify=" << report.post_cleanup_x_verify << '/'
+         << report.post_cleanup_y_verify << '/'
+         << report.post_cleanup_z_verify << '/'
+         << report.post_cleanup_partial_transcripts
+         << " cleanup_virtual="
+         << report.post_cleanup_virtual_transcripts << '/'
+         << report.post_cleanup_virtual_king_evidence
+         << " cleanup_capture="
+         << report.post_cleanup_capture_active << '/'
+         << report.post_cleanup_capture_finalized << '/'
+         << report.post_cleanup_capture_producers << '/'
+         << report.post_cleanup_capture_consumptions << '/'
+         << report.post_cleanup_capture_producer_indices << '/'
+         << report.post_cleanup_capture_output_indices
+         << " cleanup_frozen=" << report.post_cleanup_frozen_batches
+         << " cleanup_receipt="
+         << report.post_cleanup_receipt_dealer_batches << '/'
+         << report.post_cleanup_receipt_source_handles << '/'
+         << report.post_cleanup_receipt_r_t << '/'
+         << report.post_cleanup_receipt_e_t << '/'
+         << report.post_cleanup_receipt_z_t
+         << " cleanup_auth=" << report.post_cleanup_dealer_batches << '/'
+         << report.post_cleanup_nu_material << '/'
+         << report.post_cleanup_holder_tags << '/'
+         << report.post_cleanup_global_invocations
+         << " retained_auth=" << report.retained_dealer_batches << '/'
+         << report.retained_nu_material << '/'
+         << report.retained_holder_tags << '/'
+         << report.retained_global_invocations
+         << " persistent_keys=" << report.persistent_reusable_keys
+         << " key_epoch=" << report.persistent_key_epoch
+         << endl;
+}
+
+template<class T>
+void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    if (honest_batch_integration_test_mode.empty()
+            || honest_batch_integration_test_hook_ran)
+        return;
+    const size_t operations = integrated.ordinary_operations;
+    if (operations == 2 || operations == 12)
+        request_check(VerificationBatchFlushReason::explicit_test_residual);
+    if (operations != 12)
+        return;
+
+    auto& auth = optimistic_authentication_state;
+    const uint64_t next_batch_id = auth.next_batch_id;
+    const uint64_t next_invocation_id = auth.next_global_invocation_id;
+    const size_t communication = P.total_comm().sent;
+    const size_t gs20_checks = integrated.gs20_checks;
+    const size_t auth_invocations = integrated.authentication_invocations;
+    const size_t auth_completed =
+            integrated.authentication_invocations_completed;
+    const size_t auth_accepted =
+            integrated.authentication_invocations_accepted;
+    check();
+    if (auth.next_batch_id != next_batch_id
+            || auth.next_global_invocation_id != next_invocation_id
+            || P.total_comm().sent != communication
+            || integrated.gs20_checks != gs20_checks
+            || integrated.authentication_invocations != auth_invocations
+            || integrated.authentication_invocations_completed
+                    != auth_completed
+            || integrated.authentication_invocations_accepted
+                    != auth_accepted
+            || not x_verify.empty() || not y_verify.empty()
+            || not z_verify.empty() || not partial_mult_transcripts.empty()
+            || integrated.lifecycle != OrdinaryBatchLifecycle::idle
+            || integrated.threshold_batches != 4
+            || integrated.eligibility_boundary_batches != 1
+            || integrated.explicit_residual_batches != 2
+            || integrated.gs20_checks != 8
+            || integrated.authentication_invocations != 7
+            || integrated.authentication_invocations_completed != 7
+            || integrated.authentication_invocations_accepted != 7
+            || integrated.ordinary_scalar_operations != 7
+            || integrated.ordinary_dot_operations != 5
+            || integrated.ordinary_operations != 12
+            || integrated.x_verify_coordinates != 23
+            || integrated.partial_transcripts != 12
+            || auth.keys.size()
+                    != size_t(P.num_players() * (P.num_players() - 1))
+            || auth.key_epoch != 1
+            || auth.verify_sharing_invocations
+                    != size_t(7 * P.num_players())
+            || auth.base_sharing_checks
+                    != size_t(7 * P.num_players())
+            || auth.global_check_tag_challenges != 7
+            || integrated.committed_handles
+                    != size_t(P.num_players() == 3 ? 36 : 52)
+            || integrated.r_t_derivations != 12
+            || integrated.direct_e_t_handles != 12
+            || integrated.z_t_derivations != 12
+            || integrated.ordinary_tag_nu_relations
+                    != size_t(P.num_players() == 3 ? 126 : 700)
+            || integrated.base_tag_nu_relations
+                    != size_t(P.num_players() == 3 ? 126 : 700)
+            || auth.verify_sharing_communication == 0
+            || auth.key_establishment_communication == 0
+            || auth.base_sharing_communication == 0
+            || auth.ordinary_tag_generation_communication == 0
+            || auth.base_tag_generation_communication == 0
+            || auth.tag_checking_communication == 0
+            || not integrated.latest_batch.valid
+            || integrated.latest_batch.post_cleanup_dealer_batches != 0
+            || integrated.latest_batch.post_cleanup_nu_material != 0
+            || integrated.latest_batch.post_cleanup_holder_tags != 0
+            || integrated.latest_batch.post_cleanup_global_invocations != 0
+            || integrated.latest_batch.post_cleanup_virtual_transcripts != 0
+            || integrated.latest_batch
+                    .post_cleanup_virtual_king_evidence != 0
+            || integrated.latest_batch.post_cleanup_capture_active != 0
+            || integrated.latest_batch.post_cleanup_capture_finalized != 0
+            || integrated.latest_batch.post_cleanup_capture_producers != 0
+            || integrated.latest_batch.post_cleanup_capture_consumptions != 0
+            || integrated.latest_batch
+                    .post_cleanup_capture_producer_indices != 0
+            || integrated.latest_batch
+                    .post_cleanup_capture_output_indices != 0
+            || integrated.latest_batch.post_cleanup_frozen_batches != 0
+            || integrated.latest_batch
+                    .post_cleanup_receipt_dealer_batches != 0
+            || integrated.latest_batch
+                    .post_cleanup_receipt_source_handles != 0
+            || integrated.latest_batch.post_cleanup_receipt_r_t != 0
+            || integrated.latest_batch.post_cleanup_receipt_e_t != 0
+            || integrated.latest_batch.post_cleanup_receipt_z_t != 0)
+        throw logic_error(
+                "AtlasGsz: honest batch integration cumulative test failed");
+
+    honest_batch_integration_test_hook_ran = true;
+    if (P.my_num() == 0)
+        cout << "ATLAS_GSZ_AUTH_TEST "
+             << honest_batch_integration_test_mode
+             << " PASS production_threshold="
+             << AtlasConfig::max_before_check
+             << " effective_threshold=" << effective_max_before_check()
+             << " scalar_ops=" << integrated.ordinary_scalar_operations
+             << " dot_ops=" << integrated.ordinary_dot_operations
+             << " total_ops=" << integrated.ordinary_operations
+             << " coordinates=" << integrated.x_verify_coordinates
+             << " transcripts=" << integrated.partial_transcripts
+             << " threshold_batches=" << integrated.threshold_batches
+             << " boundary_batches="
+             << integrated.eligibility_boundary_batches
+             << " residual_batches=" << integrated.explicit_residual_batches
+             << " gs20_checks=" << integrated.gs20_checks
+             << " authentication_invocations="
+             << integrated.authentication_invocations
+             << " authentication_completed="
+             << integrated.authentication_invocations_completed
+             << " authentication_accepted="
+             << integrated.authentication_invocations_accepted
+             << " committed_handles=" << integrated.committed_handles
+             << " r_t=" << integrated.r_t_derivations
+             << " e_t=" << integrated.direct_e_t_handles
+             << " z_t=" << integrated.z_t_derivations
+             << " ordinary_relations="
+             << integrated.ordinary_tag_nu_relations
+             << " base_relations=" << integrated.base_tag_nu_relations
+             << " ftag_chunks=" << auth.total_ftag_chunks
+             << " verify_sharing=" << auth.verify_sharing_invocations
+             << " check_key_setup=" << auth.key_establishment_runs
+             << " check_key=" << auth.check_key_runs
+             << " base_sharing=" << auth.base_sharing_checks
+             << " check_tag_challenges="
+             << auth.global_check_tag_challenges
+             << " gs20_challenges="
+             << integrated.gs20_de_linearization_challenges << '/'
+             << integrated.gs20_dimension_reduction_challenges << '/'
+             << integrated.gs20_randomization_logical_challenges << '/'
+             << integrated.gs20_randomization_raw_samples
+             << " comm_gs20=" << integrated.gs20_communication
+             << " comm_verify=" << auth.verify_sharing_communication
+             << " comm_key="
+             << auth.base_field_ftag_chunk_width_agreement_communication
+                        + auth.key_establishment_communication
+             << " comm_base=" << auth.base_sharing_communication
+             << " comm_ordinary_tag="
+             << auth.ordinary_tag_generation_communication
+             << " comm_base_tag=" << auth.base_tag_generation_communication
+             << " comm_check_tag=" << auth.tag_checking_communication
+             << " comm_auth="
+             << integrated.total_authentication_communication
+             << " comm_total=" << integrated.total_integrated_communication
+             << " runtime=unavailable"
+             << " empty_check=no-op"
+             << " post_cleanup=bounded-zero"
+             << " persistent_keys=" << auth.keys.size()
+             << " key_epoch=" << auth.key_epoch
+             << endl;
 }
 
 
@@ -16076,6 +16103,17 @@ void AtlasGsz<T>::prepare_with_solved_bits(const typename T::open_type& product)
 template<class T>
 void AtlasGsz<T>::check()
 {
+    auto& integrated = integrated_ordinary_batch_state;
+    if (integrated.lifecycle == OrdinaryBatchLifecycle::checking_gs20
+            || integrated.lifecycle
+                    == OrdinaryBatchLifecycle::authenticating_sources)
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error("AtlasGsz: recursive check during GS20/authentication");
+    }
+    if (integrated.lifecycle == OrdinaryBatchLifecycle::failed)
+        throw logic_error("AtlasGsz: check attempted after fatal batch failure");
+
     assert(not have_ultimate_failure_context);
     assert(not ultimate_failure_context.valid);
     validate_dispute_control_state();
@@ -16085,6 +16123,139 @@ void AtlasGsz<T>::check()
     validate_authentication_plan();
     validate_authentication_material();
 #endif
+    if (x_verify.empty())
+        return;
+    if (integrated.wrapper_operation_active)
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: check entered with an incomplete wrapper operation");
+    }
+
+    validate_partial_mult_transcript_coverage();
+    const bool integrated_ordinary =
+            automatic_ordinary_integration_enabled()
+            && integrated.lifecycle
+                    == OrdinaryBatchLifecycle::capturing_ordinary;
+    if (integrated_ordinary)
+    {
+        try
+        {
+        if (not verification_batch_is_eligible_ordinary()
+                || not tentative_double_rand_capture_state.active
+                || tentative_double_rand_capture_state
+                        .consumptions.size()
+                        != partial_mult_transcripts.size()
+                || not finalize_tentative_double_rand_capture())
+        {
+            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            throw logic_error(
+                    "AtlasGsz: malformed ordinary batch rejected before GS20");
+        }
+        if (honest_batch_integration_test_mode
+                        == "honest-batch-integration-preflight-rejections"
+                && integrated.current_verification_batch_serial == 1)
+        {
+            const auto* valid = inspect_tentative_double_rand_capture();
+            if (valid == 0 || valid->consumed_outputs.size() < 2)
+                throw logic_error(
+                        "AtlasGsz: preflight rejection test lacks two operations");
+            const size_t communication_before = P.total_comm().sent;
+            const uint64_t batch_id_before =
+                    optimistic_authentication_state.next_batch_id;
+            const uint64_t invocation_id_before =
+                    optimistic_authentication_state
+                            .next_global_invocation_id;
+            TentativeDoubleRandCaptureCandidate missing = *valid;
+            missing.consumed_outputs.pop_back();
+            TentativeDoubleRandCaptureCandidate duplicate = *valid;
+            duplicate.consumed_outputs.at(1) =
+                    duplicate.consumed_outputs.at(0);
+            TentativeDoubleRandCaptureCandidate reordered = *valid;
+            swap(reordered.consumed_outputs.at(0),
+                    reordered.consumed_outputs.at(1));
+            TentativeDoubleRandCaptureCandidate substituted = *valid;
+            substituted.consumed_outputs.at(0)
+                    .producer_output_ordinal++;
+            TentativeDoubleRandCaptureCandidate malformed = *valid;
+            malformed.dealer_sources.front().sources.pop_back();
+            const uint64_t serial =
+                    partial_mult_transcripts.front()
+                            .verification_batch_serial;
+            partial_mult_transcripts.front().verification_batch_serial =
+                    serial + 1;
+            const bool accepted_cross_batch =
+                    validate_exact_ordinary_batch_correspondence(*valid);
+            partial_mult_transcripts.front().verification_batch_serial =
+                    serial;
+            if (validate_exact_ordinary_batch_correspondence(missing)
+                    || validate_exact_ordinary_batch_correspondence(
+                            duplicate)
+                    || validate_exact_ordinary_batch_correspondence(
+                            reordered)
+                    || validate_exact_ordinary_batch_correspondence(
+                            substituted)
+                    || validate_exact_ordinary_batch_correspondence(
+                            malformed)
+                    || accepted_cross_batch
+                    || not validate_exact_ordinary_batch_correspondence(
+                            *valid)
+                    || P.total_comm().sent != communication_before
+                    || optimistic_authentication_state.next_batch_id
+                            != batch_id_before
+                    || optimistic_authentication_state
+                            .next_global_invocation_id
+                            != invocation_id_before)
+                throw logic_error(
+                        "AtlasGsz: malformed ordinary preflight was not communication-free and atomic");
+            if (P.my_num() == 0)
+                cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-preflight-rejections"
+                     << " PASS malformed=reject missing=reject duplicate=reject"
+                     << " reordered=reject substituted=reject cross-batch=reject"
+                     << " communication=0 authentication_invocations=0"
+                     << endl;
+        }
+        integrated.frozen_batch =
+                freeze_finalized_tentative_double_rand_candidate();
+        if (not integrated.frozen_batch)
+        {
+            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            throw logic_error(
+                    "AtlasGsz: exact ordinary freeze/preflight failed before GS20");
+        }
+        integrated.lifecycle = OrdinaryBatchLifecycle::checking_gs20;
+        }
+        catch (...)
+        {
+            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            throw;
+        }
+    }
+    else if (automatic_ordinary_integration_enabled()
+            && (tentative_double_rand_capture_state.active
+                    || tentative_double_rand_capture_state
+                            .finalized_candidate
+                    || integrated.frozen_batch))
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                string("AtlasGsz: unsupported-only GS20 batch retained ordinary capture state active=")
+                + to_string(tentative_double_rand_capture_state.active)
+                + " finalized="
+                + to_string(bool(tentative_double_rand_capture_state
+                        .finalized_candidate))
+                + " frozen=" + to_string(bool(integrated.frozen_batch))
+                + " records=" + to_string(partial_mult_transcripts.size())
+                + " coordinates=" + to_string(x_verify.size()));
+    }
+
+    // Every nonempty verification batch, eligible or unsupported-only, is
+    // guarded by the same fatal GS20 lifecycle.
+    integrated.lifecycle = OrdinaryBatchLifecycle::checking_gs20;
+    integrated.inject_unsupported_gs20_failure =
+            not integrated_ordinary
+            && honest_batch_integration_test_mode
+                    == "honest-batch-integration-unsupported-gs20-failure";
 
 #ifndef NDEBUG
     bool dispute_state_was_initialized =
@@ -16093,49 +16264,132 @@ void AtlasGsz<T>::check()
     auto disp_before_check = dispute_control_state.disp;
 #endif
 
-    if (x_verify.empty()) {
-        return;
+    IntegratedBatchReport report{};
+    bool report_successful_unsupported_batch = false;
+    size_t successful_unsupported_coordinates = 0;
+    size_t successful_unsupported_transcripts = 0;
+    bool report_preprocessing_mul_public_batch = false;
+    size_t preprocessing_mul_public_transcripts = 0;
+    if (integrated_ordinary)
+    {
+        report.valid = true;
+        report.verification_batch_serial =
+                integrated.current_verification_batch_serial;
+        report.flush_reason = integrated.pending_flush_reason;
+        report.x_verify_coordinates = x_verify.size();
+        report.partial_transcripts = partial_mult_transcripts.size();
+        report.operation_shapes.reserve(partial_mult_transcripts.size());
+        for (const auto& record : partial_mult_transcripts)
+        {
+            OrdinaryBatchOperationShape shape{};
+            shape.kind = record.operation_kind;
+            shape.length = size_t(record.length);
+            report.operation_shapes.push_back(shape);
+            if (record.operation_kind
+                    == OrdinaryDoubleRandOperationKind::scalar_multiplication)
+                report.ordinary_scalar_operations++;
+            else if (record.operation_kind
+                    == OrdinaryDoubleRandOperationKind::dot_product)
+                report.ordinary_dot_operations++;
+        }
+        if (report.flush_reason == VerificationBatchFlushReason::threshold)
+            integrated.threshold_batches++;
+        else if (report.flush_reason
+                == VerificationBatchFlushReason::eligibility_boundary)
+            integrated.eligibility_boundary_batches++;
+        else if (report.flush_reason
+                == VerificationBatchFlushReason::explicit_test_residual)
+            integrated.explicit_residual_batches++;
     }
 
-    validate_partial_mult_transcript_coverage();
-
-#ifdef DEBUG_CHECK
-    cerr << "check()\n"
-         << "x_verify.size() = " << x_verify.size() << '\n'
-         << "x_verify.capacity() = " << x_verify.capacity() << '\n';
-#endif
-
-#ifdef DEBUG_CHECK_OPENED_VALUES
-    typename T::MAC_Check debug_mc;
-    vector<typename T::open_type> x_open, y_open, z_open;
-    
-    debug_mc.POpen(x_open, x_verify, this->P);
-    debug_mc.POpen(y_open, y_verify, this->P);
-    debug_mc.POpen(z_open, z_verify, this->P);
-
-    cerr << "\nCheck\n" << "x_verify: ";
-    for (auto x: x_open) {
-        cerr << x << " ";
+    const size_t gs20_communication_before = P.total_comm().sent;
+    const size_t de_linearization_before =
+            integrated.gs20_de_linearization_challenges;
+    const size_t dimension_reduction_before =
+            integrated.gs20_dimension_reduction_challenges;
+    const size_t randomization_logical_before =
+            integrated.gs20_randomization_logical_challenges;
+    const size_t randomization_raw_before =
+            integrated.gs20_randomization_raw_samples;
+    const size_t gs20_checks_before = integrated.gs20_checks;
+    const size_t authentication_invocations_before =
+            integrated.authentication_invocations;
+    try
+    {
+        integrated.gs20_checks++;
+        integrated.gs20_de_linearization_challenges++;
+        de_linearization();
+        while (x_verify.size() > 1)
+        {
+            integrated.gs20_dimension_reduction_challenges++;
+            dimension_reduction();
+        }
+        integrated.gs20_randomization_logical_challenges++;
+        randomization();
     }
-    cerr << '\n' << "y_verify: ";
-    for (auto y: y_open) {
-        cerr << y << " ";
+    catch (...)
+    {
+        const size_t gs20_communication =
+                P.total_comm().sent - gs20_communication_before;
+        integrated.gs20_communication += gs20_communication;
+        if (integrated_ordinary)
+            integrated.total_integrated_communication +=
+                    gs20_communication;
+        integrated.inject_unsupported_gs20_failure = false;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        if (integrated_ordinary
+                && honest_batch_integration_test_mode
+                        == "honest-batch-integration-gs20-failure"
+                && P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-gs20-failure"
+                 << " PASS gs20_checks=1 authentication_invocations=0"
+                 << " gs20_comm=" << gs20_communication
+                 << " handles=0 frozen_batch=retained lifecycle=failed"
+                 << endl;
+        if (not integrated_ordinary
+                && honest_batch_integration_test_mode
+                        == "honest-batch-integration-unsupported-gs20-failure")
+        {
+            const size_t second_check_communication_before =
+                    P.total_comm().sent;
+            const size_t second_check_count_before = integrated.gs20_checks;
+            bool second_check_rejected = false;
+            try
+            {
+                check();
+            }
+            catch (const logic_error&)
+            {
+                second_check_rejected = true;
+            }
+            if (not second_check_rejected
+                    || integrated.gs20_checks - gs20_checks_before != 1
+                    || integrated.authentication_invocations
+                            != authentication_invocations_before
+                    || integrated.gs20_checks != second_check_count_before
+                    || P.total_comm().sent
+                            != second_check_communication_before
+                    || gs20_communication == 0
+                    || integrated.lifecycle
+                            != OrdinaryBatchLifecycle::failed)
+                throw logic_error(
+                        "AtlasGsz: unsupported GS20 failure did not remain communication-free and fatal");
+            if (P.my_num() == 0)
+                cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-unsupported-gs20-failure"
+                     << " PASS current_batch_gs20_checks=1"
+                     << " current_batch_authentication_started=0"
+                     << " gs20_comm=" << gs20_communication
+                     << " second_check_comm=0 lifecycle=failed"
+                     << endl;
+        }
+        throw;
     }
-    cerr << '\n' << "z_verify: ";
-    for (auto z: z_open) {
-        cerr << z << " ";
-    }
-    cerr << '\n';
-#endif
-
-    // Not sure if this will increase performance
-    // BufferScope _(honest, 2 * x_verify.size());
-
-    de_linearization();
-    while (x_verify.size() > 1) {
-        dimension_reduction();
-    }
-    randomization();
+    const size_t gs20_communication =
+            P.total_comm().sent - gs20_communication_before;
+    integrated.gs20_communication += gs20_communication;
+    if (integrated_ordinary)
+        integrated.total_integrated_communication += gs20_communication;
+    integrated.inject_unsupported_gs20_failure = false;
 
 #ifndef NDEBUG
     assert(dispute_control_state.initialized
@@ -16150,7 +16404,234 @@ void AtlasGsz<T>::check()
     validate_authentication_plan();
     validate_authentication_material();
 #endif
-    
+
+    const char* selected_test_mode = getenv("ATLAS_GSZ_AUTH_TEST");
+    if (not integrated_ordinary
+            && selected_test_mode != 0
+            && string(selected_test_mode)
+                    == "honest-batch-integration-nested-preprocessing"
+            && integrated.preprocessing_initialization_wrappers_replaced > 0
+            && not integrated.preprocessing_mul_public_test_reported)
+    {
+        bool all_mul_public_records = not partial_mult_transcripts.empty();
+        for (const auto& record : partial_mult_transcripts)
+            all_mul_public_records &= record.operation_kind
+                    == OrdinaryDoubleRandOperationKind::noneligible
+                    && record.length == 1;
+        if (not all_mul_public_records
+                || integrated.preprocessing_mul_public_records
+                        < partial_mult_transcripts.size()
+                || integrated.authentication_invocations
+                        != authentication_invocations_before)
+            throw logic_error(
+                    "AtlasGsz: real preprocessing mul-public branch was not GS20-only verified");
+        integrated.preprocessing_mul_public_test_reported = true;
+        report_preprocessing_mul_public_batch = true;
+        preprocessing_mul_public_transcripts =
+                partial_mult_transcripts.size();
+    }
+    if (not integrated_ordinary
+            && not honest_batch_integration_test_mode.empty())
+    {
+        if (integrated.authentication_invocations
+                != authentication_invocations_before)
+            throw logic_error(
+                    "AtlasGsz: unsupported-only GS20 batch started authentication");
+        report_successful_unsupported_batch = true;
+        successful_unsupported_coordinates = x_verify.size();
+        successful_unsupported_transcripts =
+                partial_mult_transcripts.size();
+    }
+
+    if (integrated_ordinary)
+    {
+        try
+        {
+        auto& auth = optimistic_authentication_state;
+        report.gs20_communication = gs20_communication;
+        report.gs20_de_linearization_challenges =
+                integrated.gs20_de_linearization_challenges
+                - de_linearization_before;
+        report.gs20_dimension_reduction_challenges =
+                integrated.gs20_dimension_reduction_challenges
+                - dimension_reduction_before;
+        report.gs20_randomization_logical_challenges =
+                integrated.gs20_randomization_logical_challenges
+                - randomization_logical_before;
+        report.gs20_randomization_raw_samples =
+                integrated.gs20_randomization_raw_samples
+                - randomization_raw_before;
+
+        const size_t dealer_batch_start = auth.dealer_batches.size();
+        const size_t nu_material_start = auth.nu_material.size();
+        const size_t holder_tag_start = auth.holder_tags.size();
+        const size_t global_invocation_start =
+                auth.global_invocations.size();
+        const size_t auth_communication_before = P.total_comm().sent;
+        const size_t verify_invocations_before =
+                auth.verify_sharing_invocations;
+        const size_t key_setup_before = auth.key_establishment_runs;
+        const size_t check_key_before = auth.check_key_runs;
+        const size_t base_checks_before = auth.base_sharing_checks;
+        const size_t verify_comm_before =
+                auth.verify_sharing_communication;
+        const size_t width_comm_before =
+                auth.base_field_ftag_chunk_width_agreement_communication;
+        const size_t key_comm_before =
+                auth.key_establishment_communication;
+        const size_t base_comm_before = auth.base_sharing_communication;
+        const size_t ordinary_tag_comm_before =
+                auth.ordinary_tag_generation_communication;
+        const size_t base_tag_comm_before =
+                auth.base_tag_generation_communication;
+        const size_t check_tag_comm_before =
+                auth.tag_checking_communication;
+        const size_t challenge_before =
+                auth.global_check_tag_challenges;
+
+        integrated.lifecycle =
+                OrdinaryBatchLifecycle::authenticating_sources;
+        GlobalAuthenticationTestFault test_fault =
+                GlobalAuthenticationTestFault::none;
+        int bad_verify_dealer = -1;
+        if (honest_batch_integration_test_mode
+                == "honest-batch-integration-auth-rejection")
+            bad_verify_dealer = 0;
+        bool authentication_communication_recorded = false;
+        size_t auth_communication = 0;
+        auto record_authentication_communication = [&] {
+            if (authentication_communication_recorded)
+                return;
+            auth_communication =
+                    P.total_comm().sent - auth_communication_before;
+            integrated.total_authentication_communication +=
+                    auth_communication;
+            integrated.total_integrated_communication +=
+                    auth_communication;
+            authentication_communication_recorded = true;
+        };
+        integrated.authentication_invocations++;
+        report.authentication_invocations_started = 1;
+        try
+        {
+            integrated.adapter_receipt =
+                    authenticate_frozen_tentative_double_rand_candidate(
+                            *integrated.frozen_batch, test_fault,
+                            bad_verify_dealer);
+        }
+        catch (...)
+        {
+            record_authentication_communication();
+            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            throw;
+        }
+        integrated.authentication_invocations_completed++;
+        report.authentication_invocations_completed = 1;
+        record_authentication_communication();
+
+        if (not integrated.adapter_receipt.authenticated)
+        {
+            if (honest_batch_integration_test_mode
+                    == "honest-batch-integration-auth-rejection"
+                    && P.my_num() == 0)
+                cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-auth-rejection"
+                     << " PASS gs20_checks=1 authentication_started=1"
+                     << " authentication_completed=1 authentication_accepted=0"
+                     << " auth_comm=" << auth_communication
+                     << " handles=0 lifecycle=failed"
+                     << endl;
+            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            throw mac_fail(
+                    "AtlasGsz: RecoveryNotImplemented after integrated ordinary-source authentication failure");
+        }
+        integrated.authentication_invocations_accepted++;
+        report.authentication_invocations_accepted = 1;
+
+        report.verify_sharing_invocations =
+                auth.verify_sharing_invocations - verify_invocations_before;
+        report.check_key_setup_runs =
+                auth.key_establishment_runs - key_setup_before;
+        report.check_key_runs = auth.check_key_runs - check_key_before;
+        report.checked_base_sharings =
+                auth.base_sharing_checks - base_checks_before;
+        report.verify_sharing_communication =
+                auth.verify_sharing_communication - verify_comm_before;
+        report.key_check_communication =
+                auth.base_field_ftag_chunk_width_agreement_communication
+                        - width_comm_before
+                + auth.key_establishment_communication - key_comm_before;
+        report.base_sharing_communication =
+                auth.base_sharing_communication - base_comm_before;
+        report.ordinary_tag_communication =
+                auth.ordinary_tag_generation_communication
+                        - ordinary_tag_comm_before;
+        report.base_tag_communication =
+                auth.base_tag_generation_communication
+                        - base_tag_comm_before;
+        report.check_tag_communication =
+                auth.tag_checking_communication - check_tag_comm_before;
+        report.global_check_tag_challenges =
+                auth.global_check_tag_challenges - challenge_before;
+        report.total_authentication_communication = auth_communication;
+        report.total_integrated_communication =
+                gs20_communication + auth_communication;
+        report.r_t_derivations =
+                integrated.adapter_receipt
+                        .converted_r_t_derivations.size();
+        report.direct_e_t_handles =
+                integrated.adapter_receipt
+                        .authenticated_e_t_sources.size();
+        report.z_t_derivations =
+                integrated.adapter_receipt
+                        .converted_z_t_derivations.size();
+        report.r_t_local_evaluations = report.r_t_derivations;
+        report.e_t_local_evaluations = report.direct_e_t_handles;
+        report.z_t_local_evaluations = report.z_t_derivations;
+
+        const size_t integrated_batch_count =
+                auth.dealer_batches.size() - dealer_batch_start;
+        report.per_dealer_source_counts.reserve(integrated_batch_count);
+        report.per_dealer_ftag_chunk_counts.reserve(
+                integrated_batch_count);
+        for (size_t index = dealer_batch_start;
+                index < auth.dealer_batches.size(); index++)
+        {
+            const auto& batch = auth.dealer_batches.at(index);
+            report.per_dealer_source_counts.push_back(
+                    batch.local_source_shares.size());
+            report.per_dealer_ftag_chunk_counts.push_back(
+                    batch.ftag_chunk_count);
+            report.committed_handles +=
+                    batch.authenticated_handles.size();
+        }
+        report.ordinary_tag_nu_relations = 0;
+        report.base_tag_nu_relations = 0;
+        for (size_t index = nu_material_start;
+                index < auth.nu_material.size(); index++)
+            if (auth.nu_material.at(index).check_mask)
+                report.base_tag_nu_relations++;
+            else
+                report.ordinary_tag_nu_relations++;
+        integrated.committed_handles += report.committed_handles;
+        integrated.r_t_derivations += report.r_t_derivations;
+        integrated.direct_e_t_handles += report.direct_e_t_handles;
+        integrated.z_t_derivations += report.z_t_derivations;
+        integrated.ordinary_tag_nu_relations +=
+                report.ordinary_tag_nu_relations;
+        integrated.base_tag_nu_relations +=
+                report.base_tag_nu_relations;
+
+        cleanup_successful_integrated_batch(
+                dealer_batch_start, nu_material_start, holder_tag_start,
+                global_invocation_start, report);
+        }
+        catch (...)
+        {
+            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            throw;
+        }
+    }
+
     x_verify.clear();
     y_verify.clear();
     z_verify.clear();
@@ -16164,7 +16645,93 @@ void AtlasGsz<T>::check()
     ultimate_failure_context = UltimateFailureContext{};
     have_ultimate_failure_context = false;
 
-    if (x_verify.capacity() > AtlasConfig::max_before_shrink) {
+    if (integrated_ordinary)
+    {
+        integrated.adapter_receipt =
+                TentativeDoubleRandAuthenticationReceipt{};
+        integrated.frozen_batch.reset();
+        integrated.lifecycle = OrdinaryBatchLifecycle::idle;
+        integrated.current_verification_batch_serial = 0;
+        integrated.pending_flush_reason =
+                VerificationBatchFlushReason::none;
+        report.post_cleanup_x_verify = x_verify.size();
+        report.post_cleanup_y_verify = y_verify.size();
+        report.post_cleanup_z_verify = z_verify.size();
+        report.post_cleanup_partial_transcripts =
+                partial_mult_transcripts.size();
+        report.post_cleanup_virtual_transcripts =
+                have_current_virtual_transcript ? 1 : 0;
+        report.post_cleanup_virtual_king_evidence =
+                have_current_virtual_king_evidence ? 1 : 0;
+        report.post_cleanup_capture_active =
+                tentative_double_rand_capture_state.active ? 1 : 0;
+        report.post_cleanup_capture_finalized =
+                tentative_double_rand_capture_state.finalized_candidate
+                        ? 1 : 0;
+        report.post_cleanup_capture_producers =
+                tentative_double_rand_capture_state.producer_records.size();
+        report.post_cleanup_capture_consumptions =
+                tentative_double_rand_capture_state.consumptions.size();
+        report.post_cleanup_capture_producer_indices =
+                tentative_double_rand_capture_state
+                        .producer_record_ordinals.size();
+        for (const auto& output_indices :
+                tentative_double_rand_capture_state
+                        .consumed_outputs_by_producer)
+            report.post_cleanup_capture_output_indices +=
+                    output_indices.size();
+        report.post_cleanup_frozen_batches =
+                integrated.frozen_batch ? 1 : 0;
+        report.post_cleanup_receipt_dealer_batches =
+                integrated.adapter_receipt.dealer_batches.size();
+        report.post_cleanup_receipt_source_handles =
+                integrated.adapter_receipt.source_handles.size();
+        report.post_cleanup_receipt_r_t = integrated.adapter_receipt
+                .converted_r_t_derivations.size();
+        report.post_cleanup_receipt_e_t = integrated.adapter_receipt
+                .authenticated_e_t_sources.size();
+        report.post_cleanup_receipt_z_t = integrated.adapter_receipt
+                .converted_z_t_derivations.size();
+        report.persistent_reusable_keys =
+                optimistic_authentication_state.keys.size();
+        report.persistent_key_epoch =
+                optimistic_authentication_state.key_epoch;
+        integrated.latest_batch = report;
+        if (not honest_batch_integration_test_mode.empty())
+            print_integrated_batch_report(report);
+    }
+    else
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::idle;
+        integrated.current_verification_batch_serial = 0;
+        integrated.pending_flush_reason =
+                VerificationBatchFlushReason::none;
+        if (report_successful_unsupported_batch && P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-unsupported-boundary"
+                 << " PASS coordinates="
+                 << successful_unsupported_coordinates
+                 << " transcripts="
+                 << successful_unsupported_transcripts
+                 << " gs20_checks=1 authentication_started=0"
+                 << " gs20_comm=" << gs20_communication
+                 << " lifecycle=idle cleanup=complete"
+                 << endl;
+        if (report_preprocessing_mul_public_batch && P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-nested-preprocessing"
+                 << " PASS empty_init_wrappers_replaced="
+                 << integrated.preprocessing_initialization_wrappers_replaced
+                 << " real_mul_public_records="
+                 << preprocessing_mul_public_transcripts
+                 << " gs20_checks="
+                 << integrated.gs20_checks - gs20_checks_before
+                 << " authentication_started=0"
+                 << " gs20_comm=" << gs20_communication
+                 << " lifecycle=idle cleanup=complete"
+                 << endl;
+    }
+
+    if (x_verify.capacity() > AtlasConfig::max_before_shrink)
+    {
         x_verify.shrink_to_fit();
         y_verify.shrink_to_fit();
         z_verify.shrink_to_fit();
@@ -16175,7 +16742,6 @@ void AtlasGsz<T>::check()
         partial_mult_transcripts.reserve(AtlasConfig::max_before_check);
     }
 }
-
 template<class T>
 void AtlasGsz<T>::de_linearization()
 {
@@ -16776,9 +17342,13 @@ void AtlasGsz<T>::randomization()
     typename T::open_type zero(0);
     typename T::open_type one(1);
     typename T::open_type two(2);
+    integrated_ordinary_batch_state.gs20_randomization_raw_samples++;
     typename T::open_type q = sample_agreed_challenge();
     while (q == zero || q == one)
+    {
+        integrated_ordinary_batch_state.gs20_randomization_raw_samples++;
         q = sample_agreed_challenge();
+    }
 
     static const typename T::open_type two_inverse =
             (typename T::open_type(2)).invert();
@@ -16869,6 +17439,12 @@ void AtlasGsz<T>::randomization()
     y_verify.assign(1, ultimate_y);
     z_de_linearized = ultimate_z;
     validate_current_virtual_transcript();
+
+    if (honest_batch_integration_test_mode
+                    == "honest-batch-integration-gs20-failure"
+            || integrated_ordinary_batch_state
+                    .inject_unsupported_gs20_failure)
+        ultimate_z += typename T::open_type(1);
 
     vector<T> ultimate_tuple;
     ultimate_tuple.reserve(3);
