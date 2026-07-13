@@ -371,8 +371,7 @@ The following are not frozen to an invented answer:
    verifier quorum.
 2. **Public affine constants.** VShare's displayed `Delta` is homogeneous,
    while preprocessing records derivations such as
-   `[d]_t = c[a]_t + 1/2`. A future representation must choose an explicit
-   public constant field or a distinguished public-sharing convention.
+   `[d]_t = c[a]_t + 1/2`. Publicly determined sharing terms are handled by residual normalization: each party subtracts its public local share before invoking `Analyze`. `LinearDerivation` therefore remains homogeneous and contains only coefficient–authenticated-handle terms.
 3. **Key epochs and rotation.** The precise event that invalidates reusable
    `mu` material after a dispute-state change must follow the chosen real FTag
    proof and is not selected here.
