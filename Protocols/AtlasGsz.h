@@ -9,6 +9,7 @@
 #include "Atlas.h"
 #include "MaliciousShamirMC.h"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -53,7 +54,71 @@ private:
         }
     };
 
+    class RuntimeAuditTimer
+    {
+        bool enabled;
+        uint64_t& elapsed_nanoseconds;
+        std::chrono::steady_clock::time_point started;
+
+    public:
+        RuntimeAuditTimer(bool enabled, uint64_t& elapsed_nanoseconds) :
+                enabled(enabled), elapsed_nanoseconds(elapsed_nanoseconds)
+        {
+            if (enabled)
+                started = std::chrono::steady_clock::now();
+        }
+
+        ~RuntimeAuditTimer()
+        {
+            if (enabled)
+                elapsed_nanoseconds += uint64_t(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count());
+        }
+    };
+
+    struct RuntimeAuditState
+    {
+        bool ordinary_online_started = false;
+        std::chrono::steady_clock::time_point ordinary_online_start;
+
+        uint64_t ordinary_online_before_close_nanoseconds = 0;
+        uint64_t merge_candidates_nanoseconds = 0;
+        uint64_t build_merged_candidate_nanoseconds = 0;
+        uint64_t width_agreement_nanoseconds = 0;
+        uint64_t authenticate_frozen_nanoseconds = 0;
+        uint64_t source_batch_registration_nanoseconds = 0;
+        uint64_t verify_sharing_nanoseconds = 0;
+        uint64_t key_establishment_and_check_nanoseconds = 0;
+        uint64_t base_sharing_nanoseconds = 0;
+        uint64_t ordinary_ftag_nanoseconds = 0;
+        uint64_t base_ftag_nanoseconds = 0;
+        uint64_t check_tag_nanoseconds = 0;
+        uint64_t handle_and_derivation_conversion_nanoseconds = 0;
+        uint64_t create_checkpoint_nanoseconds = 0;
+        uint64_t promote_checkpoint_nanoseconds = 0;
+        uint64_t memory_estimation_nanoseconds = 0;
+        uint64_t cleanup_nanoseconds = 0;
+
+        uint64_t authenticated_handle_exists_calls = 0;
+        uint64_t authenticated_handle_linear_comparisons = 0;
+        uint64_t producer_output_derivation_entries_scanned = 0;
+        uint64_t live_out_derivations_copied = 0;
+        uint64_t live_out_terms_copied = 0;
+        uint64_t live_out_bytes_copied = 0;
+        uint64_t checkpoint_derivations_copied = 0;
+        uint64_t checkpoint_terms_copied = 0;
+        uint64_t checkpoint_bytes_copied = 0;
+        uint64_t memory_estimation_calls = 0;
+        uint64_t memory_estimation_elements_traversed = 0;
+        size_t memory_estimation_depth = 0;
+    };
+
     const uint64_t base_field_ftag_chunk_width_;
+    const bool runtime_audit_enabled_;
+    const bool memory_audit_enabled_;
+    mutable RuntimeAuditState runtime_audit_state;
     Atlas<T> honest;
 
     CheckedIndirectShamirMC_2t<T> local_mc_2t;
@@ -2242,6 +2307,10 @@ private:
     size_t effective_max_before_check() const;
     bool automatic_ordinary_integration_enabled() const;
     bool communication_audit_enabled() const;
+    static bool audit_environment_flag_enabled(const char* name);
+    bool runtime_audit_enabled() const;
+    bool memory_audit_enabled() const;
+    void print_runtime_audit_summary() const;
     void ensure_wrapper_entry_allowed(const char* operation);
     bool replace_empty_preprocessing_initialization_wrapper();
     void enter_verification_operation(
