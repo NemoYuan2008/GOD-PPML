@@ -1539,6 +1539,7 @@ AtlasGsz<T>::~AtlasGsz()
     else
         check();
     check_opened_values();
+    print_communication_audit_summary();
 }
 
 template<class T>
@@ -1556,6 +1557,13 @@ bool AtlasGsz<T>::automatic_ordinary_integration_enabled() const
     // isolated characterization hooks. Their adapter still uses the same
     // freeze and authenticate phases consecutively.
     return not tentative_double_rand_capture_test_enabled;
+}
+
+template<class T>
+bool AtlasGsz<T>::communication_audit_enabled() const
+{
+    const char* audit = getenv("ATLAS_GSZ_COMM_AUDIT");
+    return audit != 0 && string(audit) == "1";
 }
 
 template<class T>
@@ -15930,6 +15938,166 @@ void AtlasGsz<T>::print_integrated_batch_report(
 }
 
 template<class T>
+void AtlasGsz<T>::print_communication_audit_batch(
+        const IntegratedBatchReport& report) const
+{
+    if (not communication_audit_enabled() || not report.valid)
+        return;
+
+    auto reason = [&] {
+        switch (report.flush_reason)
+        {
+        case VerificationBatchFlushReason::threshold:
+            return "threshold";
+        case VerificationBatchFlushReason::eligibility_boundary:
+            return "eligibility-boundary";
+        case VerificationBatchFlushReason::explicit_test_residual:
+            return "explicit-residual";
+        case VerificationBatchFlushReason::destructor:
+            return "destructor";
+        case VerificationBatchFlushReason::none:
+            return "direct-check";
+        }
+        return "invalid";
+    };
+    const size_t total_source_chunks = accumulate(
+            report.per_dealer_ftag_chunk_counts.begin(),
+            report.per_dealer_ftag_chunk_counts.end(), size_t(0));
+
+    cout << "ATLAS_GSZ_COMM_AUDIT_BATCH"
+         << " party=" << P.my_num()
+         << " communication_scope=party-local-sent-bytes"
+         << " serial=" << report.verification_batch_serial
+         << " reason=" << reason()
+         << " operations=" << report.operation_shapes.size()
+         << " scalar_operations=" << report.ordinary_scalar_operations
+         << " dot_operations=" << report.ordinary_dot_operations
+         << " x_verify_coordinates=" << report.x_verify_coordinates
+         << " transcripts=" << report.partial_transcripts
+         << " contributing_dealers="
+         << report.per_dealer_source_counts.size()
+         << " dealer_sources=";
+    for (size_t dealer = 0;
+            dealer < report.per_dealer_source_counts.size(); dealer++)
+    {
+        if (dealer != 0)
+            cout << ',';
+        cout << dealer << ':'
+             << report.per_dealer_source_counts.at(dealer);
+    }
+    cout << " dealer_chunks=";
+    for (size_t dealer = 0;
+            dealer < report.per_dealer_ftag_chunk_counts.size(); dealer++)
+    {
+        if (dealer != 0)
+            cout << ',';
+        cout << dealer << ':'
+             << report.per_dealer_ftag_chunk_counts.at(dealer);
+    }
+    cout << " total_source_chunks=" << total_source_chunks
+         << " persistent_verifier_holder_keys="
+         << report.persistent_reusable_keys
+         << " ordinary_key_chunk_relations="
+         << report.ordinary_tag_nu_relations
+         << " base_key_chunk_relations="
+         << report.base_tag_nu_relations
+         << " comm_gs20=" << report.gs20_communication
+         << " comm_verify_sharing="
+         << report.verify_sharing_communication
+         << " comm_width_and_check_key="
+         << report.key_check_communication
+         << " comm_base_sharing="
+         << report.base_sharing_communication
+         << " comm_ordinary_tags="
+         << report.ordinary_tag_communication
+         << " comm_base_tags=" << report.base_tag_communication
+         << " comm_check_tag=" << report.check_tag_communication
+         << " comm_authentication="
+         << report.total_authentication_communication
+         << endl;
+}
+
+template<class T>
+void AtlasGsz<T>::print_communication_audit_summary() const
+{
+    if (not communication_audit_enabled())
+        return;
+
+    const auto& integrated = integrated_ordinary_batch_state;
+    const auto& auth = optimistic_authentication_state;
+    const size_t accounted_authentication_communication =
+            auth.verify_sharing_communication
+            + auth.base_field_ftag_chunk_width_agreement_communication
+            + auth.key_establishment_communication
+            + auth.base_sharing_communication
+            + auth.ordinary_tag_generation_communication
+            + auth.base_tag_generation_communication
+            + auth.tag_checking_communication;
+    const bool accounting_consistent =
+            integrated.total_authentication_communication
+                    >= accounted_authentication_communication;
+    const size_t unattributed_authentication_communication =
+            accounting_consistent
+            ? integrated.total_authentication_communication
+                    - accounted_authentication_communication
+            : 0;
+
+    cout << "ATLAS_GSZ_COMM_AUDIT_TOTAL"
+         << " party=" << P.my_num()
+         << " communication_scope=party-local-sent-bytes"
+         << " chunk_width=" << base_field_ftag_chunk_width()
+         << " batches=" << integrated.authentication_invocations
+         << " reason_threshold=" << integrated.threshold_batches
+         << " reason_eligibility_boundary="
+         << integrated.eligibility_boundary_batches
+         << " reason_explicit_residual="
+         << integrated.explicit_residual_batches
+         << " reason_destructor=" << integrated.destructor_batches
+         << " reason_direct_check=" << integrated.direct_check_batches
+         << " operations=" << integrated.ordinary_operations
+         << " scalar_operations="
+         << integrated.ordinary_scalar_operations
+         << " dot_operations=" << integrated.ordinary_dot_operations
+         << " x_verify_coordinates="
+         << integrated.x_verify_coordinates
+         << " transcripts=" << integrated.partial_transcripts
+         << " persistent_verifier_holder_keys=" << auth.keys.size()
+         << " total_source_chunks=" << auth.total_ftag_chunks
+         << " ordinary_key_chunk_relations="
+         << integrated.ordinary_tag_nu_relations
+         << " base_key_chunk_relations="
+         << integrated.base_tag_nu_relations
+         << " authentication_started="
+         << integrated.authentication_invocations
+         << " authentication_completed="
+         << integrated.authentication_invocations_completed
+         << " authentication_accepted="
+         << integrated.authentication_invocations_accepted
+         << " comm_gs20=" << integrated.gs20_communication
+         << " comm_verify_sharing="
+         << auth.verify_sharing_communication
+         << " comm_width_and_check_key="
+         << auth.base_field_ftag_chunk_width_agreement_communication
+                    + auth.key_establishment_communication
+         << " comm_base_sharing=" << auth.base_sharing_communication
+         << " comm_ordinary_tags="
+         << auth.ordinary_tag_generation_communication
+         << " comm_base_tags="
+         << auth.base_tag_generation_communication
+         << " comm_check_tag=" << auth.tag_checking_communication
+         << " comm_authentication="
+         << integrated.total_authentication_communication
+         << " comm_authentication_accounted="
+         << accounted_authentication_communication
+         << " comm_authentication_unattributed="
+         << unattributed_authentication_communication
+         << " authentication_accounting_consistent="
+         << accounting_consistent
+         << " comm_player_total=" << P.total_comm().sent
+         << endl;
+}
+
+template<class T>
 void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
 {
     auto& integrated = integrated_ordinary_batch_state;
@@ -16300,6 +16468,11 @@ void AtlasGsz<T>::check()
         else if (report.flush_reason
                 == VerificationBatchFlushReason::explicit_test_residual)
             integrated.explicit_residual_batches++;
+        else if (report.flush_reason
+                == VerificationBatchFlushReason::destructor)
+            integrated.destructor_batches++;
+        else
+            integrated.direct_check_batches++;
     }
 
     const size_t gs20_communication_before = P.total_comm().sent;
@@ -16697,6 +16870,7 @@ void AtlasGsz<T>::check()
         report.persistent_key_epoch =
                 optimistic_authentication_state.key_epoch;
         integrated.latest_batch = report;
+        print_communication_audit_batch(report);
         if (not honest_batch_integration_test_mode.empty())
             print_integrated_batch_report(report);
     }

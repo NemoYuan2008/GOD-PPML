@@ -997,6 +997,8 @@ private:
         size_t threshold_batches = 0;
         size_t eligibility_boundary_batches = 0;
         size_t explicit_residual_batches = 0;
+        size_t destructor_batches = 0;
+        size_t direct_check_batches = 0;
         size_t gs20_checks = 0;
         // A started invocation is counted immediately before entering the
         // source authenticator. Completed and accepted remain separate.
@@ -2193,6 +2195,7 @@ private:
     void run_tentative_double_rand_adapter_test_hook(const string& mode);
     size_t effective_max_before_check() const;
     bool automatic_ordinary_integration_enabled() const;
+    bool communication_audit_enabled() const;
     void ensure_wrapper_entry_allowed(const char* operation);
     bool replace_empty_preprocessing_initialization_wrapper();
     void enter_verification_operation(
@@ -2210,6 +2213,9 @@ private:
             IntegratedBatchReport& report);
     void print_integrated_batch_report(
             const IntegratedBatchReport& report) const;
+    void print_communication_audit_batch(
+            const IntegratedBatchReport& report) const;
+    void print_communication_audit_summary() const;
     void maybe_flush_honest_batch_integration_residual();
     bool authenticate_dealer_source_batch(
             uint64_t batch_id,
