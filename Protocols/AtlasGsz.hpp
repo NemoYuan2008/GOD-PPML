@@ -1532,13 +1532,11 @@ bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
 }
 
 template<class T>
-AtlasGsz<T>::~AtlasGsz()
+AtlasGsz<T>::~AtlasGsz() noexcept
 {
-    if (not x_verify.empty())
-        request_check(VerificationBatchFlushReason::destructor);
-    else
-        check();
-    check_opened_values();
+    // Security-critical checking is owned by explicit release/check paths.
+    // Destruction is deliberately communication-free and never retries a
+    // failed or incomplete lifecycle.
 }
 
 template<class T>
@@ -1737,6 +1735,443 @@ void AtlasGsz<T>::request_check(VerificationBatchFlushReason reason)
         return;
     integrated_ordinary_batch_state.pending_flush_reason = reason;
     check();
+}
+
+template<class T>
+void AtlasGsz<T>::validate_preprocessing_release_state(
+        bool after_release) const
+{
+    const auto& integrated = integrated_ordinary_batch_state;
+    auto malformed = [] (const char* reason) {
+        throw logic_error(
+                string("AtlasGsz: malformed preprocessing-release state: ")
+                + reason);
+    };
+
+    if (integrated.wrapper_operation_active
+            || integrated.wrapper_pending_results != 0
+            || integrated.wrapper_operation_kind
+                    != OrdinaryDoubleRandOperationKind::noneligible)
+        malformed("incomplete operation wrapper");
+    if (x_verify.size() != y_verify.size()
+            || x_verify.size() != z_verify.size())
+        malformed("verification vector size mismatch");
+    if (local_mc_2t.stored_values.size()
+            != local_mc_2t.stored_secrets.size())
+        malformed("retained opening size mismatch");
+    if (integrated.frozen_batch)
+        malformed("frozen ordinary candidate at release entry");
+    if (integrated.adapter_receipt.authenticated
+            || integrated.adapter_receipt.authentication_invocation_id != 0
+            || not integrated.adapter_receipt.dealer_batches.empty()
+            || not integrated.adapter_receipt.source_handles.empty()
+            || not integrated.adapter_receipt.converted_r_t_derivations.empty()
+            || not integrated.adapter_receipt.authenticated_e_t_sources.empty()
+            || not integrated.adapter_receipt.converted_z_t_derivations.empty())
+        malformed("adapter receipt retained at release entry");
+
+    if (x_verify.empty())
+    {
+        if (not partial_mult_transcripts.empty())
+            malformed("transcript without verification coordinates");
+        if (have_current_virtual_transcript
+                || have_current_virtual_king_evidence)
+            malformed("virtual transcript without verification coordinates");
+        if (tentative_double_rand_capture_state.active
+                || tentative_double_rand_capture_state.finalized_candidate
+                || not tentative_double_rand_capture_state
+                        .producer_records.empty()
+                || not tentative_double_rand_capture_state
+                        .consumptions.empty()
+                || not tentative_double_rand_capture_state
+                        .producer_record_ordinals.empty()
+                || not tentative_double_rand_capture_state
+                        .consumed_outputs_by_producer.empty())
+            malformed("capture state without verification coordinates");
+        if (integrated.lifecycle != OrdinaryBatchLifecycle::idle
+                || integrated.current_verification_batch_serial != 0)
+            malformed("non-idle empty verification batch");
+    }
+    else
+    {
+        if (partial_mult_transcripts.empty())
+            malformed("verification coordinates without transcripts");
+        if (integrated.current_verification_batch_serial == 0)
+            malformed("verification batch lacks serial");
+        if (integrated.lifecycle
+                == OrdinaryBatchLifecycle::capturing_ordinary)
+        {
+            if (not tentative_double_rand_capture_state.active
+                    || tentative_double_rand_capture_state
+                            .finalized_candidate)
+                malformed("ordinary batch lacks active source capture");
+        }
+        else if (integrated.lifecycle == OrdinaryBatchLifecycle::idle)
+        {
+            if (tentative_double_rand_capture_state.active
+                    || tentative_double_rand_capture_state
+                            .finalized_candidate)
+                malformed("unsupported batch retained source capture");
+        }
+        else
+            malformed("release entered during internal or fatal lifecycle");
+    }
+
+    if (after_release
+            && (not x_verify.empty() || not y_verify.empty()
+                    || not z_verify.empty()
+                    || not partial_mult_transcripts.empty()
+                    || not local_mc_2t.stored_values.empty()
+                    || not local_mc_2t.stored_secrets.empty()
+                    || integrated.lifecycle != OrdinaryBatchLifecycle::idle
+                    || integrated.current_verification_batch_serial != 0))
+        malformed("successful release retained batch-local state");
+}
+
+template<class T>
+void AtlasGsz<T>::print_preprocessing_release_report(
+        size_t generated_items,
+        const PreprocessingReleaseSnapshot& before) const
+{
+    const char* selected = getenv("ATLAS_GSZ_AUTH_TEST");
+    if (P.my_num() != 0 || selected == 0
+            || string(selected).rfind("preprocessing-release", 0) != 0)
+        return;
+
+    const auto& integrated = integrated_ordinary_batch_state;
+    const auto& auth = optimistic_authentication_state;
+    const size_t check_key_comm = auth.check_key_communication
+            - before.check_key_communication;
+    const size_t combined_key_comm = auth.key_establishment_communication
+            - before.key_establishment_communication;
+    cout << "ATLAS_GSZ_PREPROCESSING_RELEASE"
+         << " mode=" << selected
+         << " status=PASS"
+         << " generated_items=" << generated_items
+         << " released_items=" << generated_items
+         << " cumulative_generated_items="
+         << integrated.preprocessing_release_test_generated_items
+         << " cumulative_released_items="
+         << integrated.preprocessing_release_test_released_items
+         << " release_before_consumer=1"
+         << " invocations="
+         << integrated.preprocessing_release_invocations
+         << " empty=" << integrated.empty_preprocessing_releases
+         << " residual_batches="
+         << integrated.preprocessing_residual_batches
+         << " failed=" << integrated.failed_preprocessing_releases
+         << " gs20_checks="
+         << integrated.gs20_checks - before.gs20_checks
+         << " authentication_started="
+         << integrated.authentication_invocations
+                    - before.authentication_started
+         << " authentication_completed="
+         << integrated.authentication_invocations_completed
+                    - before.authentication_completed
+         << " authentication_accepted="
+         << integrated.authentication_invocations_accepted
+                    - before.authentication_accepted
+         << " gs20_de_linearization_challenges="
+         << integrated.gs20_de_linearization_challenges
+                    - before.de_linearization_challenges
+         << " gs20_dimension_reduction_challenges="
+         << integrated.gs20_dimension_reduction_challenges
+                    - before.dimension_reduction_challenges
+         << " gs20_randomization_logical_challenges="
+         << integrated.gs20_randomization_logical_challenges
+                    - before.randomization_logical_challenges
+         << " gs20_randomization_raw_challenges="
+         << integrated.gs20_randomization_raw_samples
+                    - before.randomization_raw_challenges
+         << " check_tag_challenges="
+         << auth.global_check_tag_challenges
+                    - before.check_tag_challenges
+         << " verify_sharing="
+         << auth.verify_sharing_invocations - before.verify_sharing
+         << " check_key_setup="
+         << auth.key_establishment_runs - before.check_key_setup
+         << " check_key_runs="
+         << auth.check_key_runs - before.check_key_runs
+         << " base_sharing="
+         << auth.base_sharing_checks - before.base_sharing
+         << " ordinary_tag_relations="
+         << integrated.ordinary_tag_nu_relations
+                    - before.ordinary_tag_relations
+         << " base_tag_relations="
+         << integrated.base_tag_nu_relations
+                    - before.base_tag_relations
+         << " gate_comm="
+         << P.total_comm().sent - before.total_communication
+         << " gs20_comm="
+         << integrated.gs20_communication
+                    - before.gs20_communication
+         << " verify_sharing_comm="
+         << auth.verify_sharing_communication
+                    - before.verify_sharing_communication
+         << " check_key_setup_comm="
+         << auth.base_field_ftag_chunk_width_agreement_communication
+                    - before.chunk_width_communication
+                    + combined_key_comm - check_key_comm
+         << " check_key_run_comm=" << check_key_comm
+         << " base_sharing_comm="
+         << auth.base_sharing_communication
+                    - before.base_sharing_communication
+         << " ordinary_tag_comm="
+         << auth.ordinary_tag_generation_communication
+                    - before.ordinary_tag_communication
+         << " base_tag_comm="
+         << auth.base_tag_generation_communication
+                    - before.base_tag_communication
+         << " check_tag_comm="
+         << auth.tag_checking_communication
+                    - before.check_tag_communication
+         << " opening_check_comm="
+         << integrated.preprocessing_opening_check_communication
+                    - before.opening_communication
+         << " x_verify=" << x_verify.size()
+         << " y_verify=" << y_verify.size()
+         << " z_verify=" << z_verify.size()
+         << " partial_transcripts=" << partial_mult_transcripts.size()
+         << " wrapper_active=" << integrated.wrapper_operation_active
+         << " frozen_candidate=" << bool(integrated.frozen_batch)
+         << " retained_opening_values="
+         << local_mc_2t.stored_values.size()
+         << " retained_opening_secrets="
+         << local_mc_2t.stored_secrets.size()
+         << " capture_active="
+         << tentative_double_rand_capture_state.active
+         << " capture_finalized="
+         << bool(tentative_double_rand_capture_state.finalized_candidate)
+         << " capture_records="
+         << tentative_double_rand_capture_state.producer_records.size()
+         << " capture_consumptions="
+         << tentative_double_rand_capture_state.consumptions.size()
+         << " dealer_batches=" << auth.dealer_batches.size()
+         << " nu_material=" << auth.nu_material.size()
+         << " holder_tags=" << auth.holder_tags.size()
+         << " global_invocations=" << auth.global_invocations.size()
+         << " reusable_mu_keys=" << auth.keys.size()
+         << " key_epoch=" << auth.key_epoch
+         << " destructor_check=disabled destructor_comm=0"
+         << endl;
+}
+
+template<class T>
+void AtlasGsz<T>::before_preprocessing_release(size_t generated_items)
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    auto& auth = optimistic_authentication_state;
+    integrated.preprocessing_release_invocations++;
+
+    PreprocessingReleaseSnapshot before{};
+    before.total_communication = P.total_comm().sent;
+    before.gs20_checks = integrated.gs20_checks;
+    before.authentication_started = integrated.authentication_invocations;
+    before.authentication_completed =
+            integrated.authentication_invocations_completed;
+    before.authentication_accepted =
+            integrated.authentication_invocations_accepted;
+    before.de_linearization_challenges =
+            integrated.gs20_de_linearization_challenges;
+    before.dimension_reduction_challenges =
+            integrated.gs20_dimension_reduction_challenges;
+    before.randomization_logical_challenges =
+            integrated.gs20_randomization_logical_challenges;
+    before.randomization_raw_challenges =
+            integrated.gs20_randomization_raw_samples;
+    before.gs20_communication = integrated.gs20_communication;
+    before.verify_sharing = auth.verify_sharing_invocations;
+    before.check_key_setup = auth.key_establishment_runs;
+    before.check_key_runs = auth.check_key_runs;
+    before.base_sharing = auth.base_sharing_checks;
+    before.ordinary_tag_relations = integrated.ordinary_tag_nu_relations;
+    before.base_tag_relations = integrated.base_tag_nu_relations;
+    before.check_tag_challenges = auth.global_check_tag_challenges;
+    before.verify_sharing_communication = auth.verify_sharing_communication;
+    before.chunk_width_communication =
+            auth.base_field_ftag_chunk_width_agreement_communication;
+    before.key_establishment_communication =
+            auth.key_establishment_communication;
+    before.check_key_communication = auth.check_key_communication;
+    before.base_sharing_communication = auth.base_sharing_communication;
+    before.ordinary_tag_communication =
+            auth.ordinary_tag_generation_communication;
+    before.base_tag_communication = auth.base_tag_generation_communication;
+    before.check_tag_communication = auth.tag_checking_communication;
+    before.opening_communication =
+            integrated.preprocessing_opening_check_communication;
+
+    try
+    {
+        if (integrated.lifecycle == OrdinaryBatchLifecycle::failed)
+            throw logic_error(
+                    "AtlasGsz: preprocessing release attempted after fatal failure");
+        if (integrated.preprocessing_release_active)
+            throw logic_error(
+                    "AtlasGsz: recursive preprocessing release");
+        integrated.preprocessing_release_active = true;
+        if (integrated.wrapper_operation_active
+                || integrated.wrapper_pending_results != 0)
+            throw logic_error(
+                    "AtlasGsz: preprocessing release with incomplete operation wrapper");
+
+        const char* selected = getenv("ATLAS_GSZ_AUTH_TEST");
+        if (selected != 0
+                && string(selected)
+                        == "preprocessing-release-retained-opening"
+                && not integrated
+                        .preprocessing_release_test_opening_injected)
+        {
+            local_mc_2t.stored_values.push_back(
+                    typename T::open_type{});
+            local_mc_2t.stored_secrets.push_back(T{});
+            integrated.preprocessing_release_test_opening_injected = true;
+        }
+
+        validate_preprocessing_release_state(false);
+        const bool empty_release = x_verify.empty()
+                && local_mc_2t.stored_values.empty();
+        if (not x_verify.empty())
+        {
+            integrated.preprocessing_residual_batches++;
+            request_check(
+                    VerificationBatchFlushReason::preprocessing_release);
+        }
+        if (not local_mc_2t.stored_values.empty())
+        {
+            const size_t communication_before = P.total_comm().sent;
+            check_opened_values();
+            integrated.preprocessing_opening_check_communication +=
+                    P.total_comm().sent - communication_before;
+        }
+        validate_preprocessing_release_state(true);
+        if (empty_release)
+            integrated.empty_preprocessing_releases++;
+        integrated.preprocessing_release_test_generated_items +=
+                generated_items;
+        integrated.preprocessing_release_test_released_items +=
+                generated_items;
+        integrated.preprocessing_release_active = false;
+        print_preprocessing_release_report(generated_items, before);
+    }
+    catch (...)
+    {
+        integrated.preprocessing_release_active = false;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        integrated.failed_preprocessing_releases++;
+
+        const char* selected = getenv("ATLAS_GSZ_AUTH_TEST");
+        if (selected != 0
+                && string(selected)
+                        == "preprocessing-release-gs20-failure"
+                && not integrated.preprocessing_release_test_failure_reported)
+        {
+            integrated.preprocessing_release_test_failure_reported = true;
+            const size_t communication_before = P.total_comm().sent;
+            const size_t gs20_before = integrated.gs20_checks;
+            const size_t auth_before = integrated.authentication_invocations;
+            const size_t de_linearization_before =
+                    integrated.gs20_de_linearization_challenges;
+            const size_t dimension_before =
+                    integrated.gs20_dimension_reduction_challenges;
+            const size_t randomization_before =
+                    integrated.gs20_randomization_logical_challenges;
+            const size_t randomization_raw_before =
+                    integrated.gs20_randomization_raw_samples;
+            bool rejected = false;
+            try
+            {
+                before_preprocessing_release(0);
+            }
+            catch (...)
+            {
+                rejected = true;
+            }
+            if (not rejected
+                    || P.total_comm().sent != communication_before
+                    || integrated.gs20_checks != gs20_before
+                    || integrated.authentication_invocations != auth_before
+                    || integrated.gs20_de_linearization_challenges
+                            != de_linearization_before
+                    || integrated.gs20_dimension_reduction_challenges
+                            != dimension_before
+                    || integrated.gs20_randomization_logical_challenges
+                            != randomization_before
+                    || integrated.gs20_randomization_raw_samples
+                            != randomization_raw_before)
+                throw logic_error(
+                        "AtlasGsz: fatal preprocessing release retry was not communication-free");
+            if (P.my_num() == 0)
+                cout << "ATLAS_GSZ_PREPROCESSING_RELEASE"
+                     << " mode=" << selected
+                     << " status=PASS generated_items=" << generated_items
+                     << " released_items=0 material_released=0"
+                     << " invocations="
+                     << integrated.preprocessing_release_invocations
+                     << " empty="
+                     << integrated.empty_preprocessing_releases
+                     << " residual_batches="
+                     << integrated.preprocessing_residual_batches
+                     << " failed="
+                     << integrated.failed_preprocessing_releases
+                     << " gs20_checks="
+                     << integrated.gs20_checks - before.gs20_checks
+                     << " gs20_de_linearization_challenges="
+                     << integrated.gs20_de_linearization_challenges
+                                - before.de_linearization_challenges
+                     << " gs20_dimension_reduction_challenges="
+                     << integrated.gs20_dimension_reduction_challenges
+                                - before.dimension_reduction_challenges
+                     << " gs20_randomization_logical_challenges="
+                     << integrated.gs20_randomization_logical_challenges
+                                - before.randomization_logical_challenges
+                     << " gs20_randomization_raw_challenges="
+                     << integrated.gs20_randomization_raw_samples
+                                - before.randomization_raw_challenges
+                     << " gs20_comm="
+                     << integrated.gs20_communication
+                                - before.gs20_communication
+                     << " gate_comm="
+                     << P.total_comm().sent - before.total_communication
+                     << " authentication_started="
+                     << integrated.authentication_invocations
+                                - before.authentication_started
+                     << " authentication_completed="
+                     << integrated.authentication_invocations_completed
+                                - before.authentication_completed
+                     << " authentication_accepted="
+                     << integrated.authentication_invocations_accepted
+                                - before.authentication_accepted
+                     << " check_tag_challenges="
+                     << auth.global_check_tag_challenges
+                                - before.check_tag_challenges
+                     << " second_attempt_comm=0"
+                     << " second_attempt_challenges=0"
+                     << " second_attempt_authentication=0"
+                     << " x_verify=" << x_verify.size()
+                     << " y_verify=" << y_verify.size()
+                     << " z_verify=" << z_verify.size()
+                     << " partial_transcripts="
+                     << partial_mult_transcripts.size()
+                     << " wrapper_active="
+                     << integrated.wrapper_operation_active
+                     << " frozen_candidate="
+                     << bool(integrated.frozen_batch)
+                     << " retained_opening_values="
+                     << local_mc_2t.stored_values.size()
+                     << " dealer_batches=" << auth.dealer_batches.size()
+                     << " nu_material=" << auth.nu_material.size()
+                     << " holder_tags=" << auth.holder_tags.size()
+                     << " global_invocations="
+                     << auth.global_invocations.size()
+                     << " reusable_mu_keys=" << auth.keys.size()
+                     << " key_epoch=" << auth.key_epoch
+                     << " lifecycle=fatal destructor_retry=disabled"
+                     << " destructor_comm=0"
+                     << endl;
+        }
+        throw;
+    }
 }
 
 template <class T>
@@ -2264,6 +2699,8 @@ template<class T>
 bool AtlasGsz<T>::check_optimistic_authentication_keys()
 {
     auto& state = optimistic_authentication_state;
+    SentCommunicationAccumulator communication(
+            P, state.check_key_communication);
     assert(state.keys_established);
     assert(state.base_field_ftag_chunk_width_agreed);
     const int t = ShamirMachine::s().threshold;
@@ -15151,6 +15588,11 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 // This focused check runs only after a normal wrapper record
                 // has finalized and pulled the exact Atlas reference.
             }
+            else if (mode.rfind("preprocessing-release", 0) == 0)
+            {
+                // The independently owned preprocessing branch executes the
+                // focused checks at its explicit release boundary.
+            }
             else if (mode.rfind("honest-batch-integration", 0) == 0)
             {
                 if (not honest_batch_integration_test_mode.empty())
@@ -15820,6 +16262,8 @@ void AtlasGsz<T>::print_integrated_batch_report(
             return "eligibility-boundary";
         case VerificationBatchFlushReason::explicit_test_residual:
             return "explicit-residual";
+        case VerificationBatchFlushReason::preprocessing_release:
+            return "preprocessing-release";
         case VerificationBatchFlushReason::destructor:
             return "destructor";
         case VerificationBatchFlushReason::none:
@@ -16254,8 +16698,11 @@ void AtlasGsz<T>::check()
     integrated.lifecycle = OrdinaryBatchLifecycle::checking_gs20;
     integrated.inject_unsupported_gs20_failure =
             not integrated_ordinary
-            && honest_batch_integration_test_mode
-                    == "honest-batch-integration-unsupported-gs20-failure";
+            && (honest_batch_integration_test_mode
+                        == "honest-batch-integration-unsupported-gs20-failure"
+                    || (getenv("ATLAS_GSZ_AUTH_TEST") != 0
+                            && string(getenv("ATLAS_GSZ_AUTH_TEST"))
+                                    == "preprocessing-release-gs20-failure"));
 
 #ifndef NDEBUG
     bool dispute_state_was_initialized =
@@ -16410,7 +16857,7 @@ void AtlasGsz<T>::check()
             && selected_test_mode != 0
             && string(selected_test_mode)
                     == "honest-batch-integration-nested-preprocessing"
-            && integrated.preprocessing_initialization_wrappers_replaced > 0
+            && integrated.preprocessing_mul_public_records > 0
             && not integrated.preprocessing_mul_public_test_reported)
     {
         bool all_mul_public_records = not partial_mult_transcripts.empty();

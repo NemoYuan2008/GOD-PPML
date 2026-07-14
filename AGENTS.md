@@ -267,8 +267,25 @@ batch boundary before entering. `max_before_check` still counts `x_verify`
 coordinates rather than operations, so a single dot product can cross or
 overshoot it while producing one captured operation and one concrete king
 `e_t` source. Focused integration tests use a test-only effective threshold
-and explicit residual flush. Destructor-time checking is not a production
-pre-output gate.
+and explicit residual flush.
+
+Independently owned AtlasGsz preprocessing protocols now have one explicit,
+synchronous pre-consumption release boundary. `BitPrep` holds the persistent
+branch used by AtlasPrep bits, inverses, inputs, inherited squares, daBits, and
+loose edaBit vectors; the temporary triple generator owns the other reachable
+branch. Each generator keeps new values in a local vector, calls
+`before_preprocessing_release()` after all finalizers, and only then moves the
+values into the consumer-visible owner buffer. Mul-public remains
+unsupported/noneligible and GS20-only. Ordinary scalar work retains the
+existing eligible source-authentication behavior. A fatal release leaves the
+new values unpublished and rejects later release attempts without
+communication.
+
+`AtlasGsz::~AtlasGsz()` is non-throwing and communication-free. `BitPrep` does
+not invoke destructor-time `check()` for protocols exposing the explicit
+release API. Main online-protocol checking remains owned by the processor/tape
+`Proc.check()` path. This is a preprocessing prerequisite only; no application
+output gate is implemented.
 
 This automatic ordinary-batch lifecycle is not a complete segment/checkpoint
 scheduler and must not be described as the complete GSZ20 authentication path.
@@ -475,6 +492,30 @@ Expected output for `0-dot` and `0-dot-input`, allowing tiny fixed-point drift:
 [1, 4, 9, 16]
 [1, 4, 9]
 ```
+
+Focused preprocessing-release hooks (run every variant with both party
+counts; the compile argument becomes part of the schedule name):
+
+```sh
+conda run -n pytorch ./compile.py 0-preprocessing-release persistent
+ATLAS_GSZ_AUTH_TEST=preprocessing-release-persistent PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-preprocessing-release-persistent -b 4
+ATLAS_GSZ_AUTH_TEST=preprocessing-release-persistent PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-preprocessing-release-persistent -b 4
+
+conda run -n pytorch ./compile.py 0-preprocessing-release new-batch
+ATLAS_GSZ_AUTH_TEST=preprocessing-release-new-batch PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-preprocessing-release-new-batch -b 2
+ATLAS_GSZ_AUTH_TEST=preprocessing-release-new-batch PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-preprocessing-release-new-batch -b 2
+```
+
+Repeat the same compile/run pattern for `empty`, `temporary`,
+`temporary-empty`, `square`, `dabit`, `edabit`, `retained-opening`, and
+`gs20-failure`, using the matching `preprocessing-release-*` environment mode.
+The GS20 failure run must terminate nonzero after its focused PASS line and
+must not print
+`PREPROCESSING_RELEASE_APPLICATION_SUCCESS`.
 
 Focused producer-provenance and optimistic-authentication hooks:
 

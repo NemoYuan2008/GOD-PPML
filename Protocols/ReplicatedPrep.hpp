@@ -150,7 +150,7 @@ void BitPrep<T>::set_protocol(typename T::Protocol& protocol)
 {
     if (not this->protocol)
         this->protocol = new typename T::Protocol(protocol.branch());
-    this->protocol->init_mul();
+    initialize_preprocessing_protocol_owner(*this->protocol, 0);
     auto proc = this->proc;
     if (proc and proc->Proc)
         this->base_player = proc->Proc->thread_num;
@@ -161,7 +161,7 @@ BitPrep<T>::~BitPrep()
 {
     if (protocol)
     {
-        protocol->check();
+        finish_preprocessing_protocol_owner(*protocol, 0);
         delete protocol;
     }
 }
@@ -182,8 +182,19 @@ void ReplicatedRingPrep<T>::buffer_triples()
     assert(this->protocol != 0);
     // independent instance to avoid conflicts
     typename T::Protocol protocol(this->protocol->branch());
-    generate_triples(this->triples, BaseMachine::batch_size<T>(DATA_TRIPLE),
+    const char* release_test = getenv("ATLAS_GSZ_AUTH_TEST");
+    if (release_test != 0
+            && string(release_test)
+                    == "preprocessing-release-temporary-empty")
+        release_preprocessing_protocol(protocol, 0, 0);
+    vector<array<T, 3>> generated;
+    generate_triples(generated, BaseMachine::batch_size<T>(DATA_TRIPLE),
             &protocol);
+    this->triples.reserve(this->triples.size() + generated.size());
+    release_preprocessing_protocol(protocol, generated.size(), 0);
+    this->triples.insert(this->triples.end(),
+            make_move_iterator(generated.begin()),
+            make_move_iterator(generated.end()));
 }
 
 template<class T, class U>
@@ -256,8 +267,14 @@ void BitPrep<T>::buffer_squares()
 template<class T>
 void ReplicatedRingPrep<T>::buffer_squares()
 {
-    generate_squares(this->squares, this->buffer_size,
-            this->protocol);
+    vector<array<T, 2>> generated;
+    generate_squares(generated, this->buffer_size, this->protocol);
+    this->squares.reserve(this->squares.size() + generated.size());
+    release_preprocessing_protocol(
+            *this->protocol, generated.size(), 0);
+    this->squares.insert(this->squares.end(),
+            make_move_iterator(generated.begin()),
+            make_move_iterator(generated.end()));
 }
 
 template<class T, class U>

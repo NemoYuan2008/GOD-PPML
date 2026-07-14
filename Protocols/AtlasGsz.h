@@ -843,6 +843,7 @@ private:
         size_t key_establishment_runs = 0;
         size_t check_key_runs = 0;
         size_t key_establishment_communication = 0;
+        size_t check_key_communication = 0;
         size_t check_key_masking_equation_checks = 0;
         size_t verify_sharing_invocations = 0;
         size_t verify_sharing_communication = 0;
@@ -887,6 +888,7 @@ private:
         threshold,
         eligibility_boundary,
         explicit_test_residual,
+        preprocessing_release,
         destructor,
     };
 
@@ -997,6 +999,16 @@ private:
         size_t threshold_batches = 0;
         size_t eligibility_boundary_batches = 0;
         size_t explicit_residual_batches = 0;
+        bool preprocessing_release_active = false;
+        size_t preprocessing_release_invocations = 0;
+        size_t empty_preprocessing_releases = 0;
+        size_t preprocessing_residual_batches = 0;
+        size_t failed_preprocessing_releases = 0;
+        size_t preprocessing_opening_check_communication = 0;
+        size_t preprocessing_release_test_generated_items = 0;
+        size_t preprocessing_release_test_released_items = 0;
+        bool preprocessing_release_test_opening_injected = false;
+        bool preprocessing_release_test_failure_reported = false;
         size_t gs20_checks = 0;
         // A started invocation is counted immediately before entering the
         // source authenticator. Completed and accepted remain separate.
@@ -1017,6 +1029,36 @@ private:
         size_t ordinary_tag_nu_relations = 0;
         size_t base_tag_nu_relations = 0;
         IntegratedBatchReport latest_batch;
+    };
+
+    struct PreprocessingReleaseSnapshot
+    {
+        size_t total_communication = 0;
+        size_t gs20_checks = 0;
+        size_t authentication_started = 0;
+        size_t authentication_completed = 0;
+        size_t authentication_accepted = 0;
+        size_t de_linearization_challenges = 0;
+        size_t dimension_reduction_challenges = 0;
+        size_t randomization_logical_challenges = 0;
+        size_t randomization_raw_challenges = 0;
+        size_t gs20_communication = 0;
+        size_t verify_sharing = 0;
+        size_t check_key_setup = 0;
+        size_t check_key_runs = 0;
+        size_t base_sharing = 0;
+        size_t ordinary_tag_relations = 0;
+        size_t base_tag_relations = 0;
+        size_t check_tag_challenges = 0;
+        size_t verify_sharing_communication = 0;
+        size_t chunk_width_communication = 0;
+        size_t key_establishment_communication = 0;
+        size_t check_key_communication = 0;
+        size_t base_sharing_communication = 0;
+        size_t ordinary_tag_communication = 0;
+        size_t base_tag_communication = 0;
+        size_t check_tag_communication = 0;
+        size_t opening_communication = 0;
     };
 
     enum class AuthenticationPlanStatus
@@ -2202,6 +2244,10 @@ private:
             size_t coordinate_count);
     bool verification_batch_is_eligible_ordinary() const;
     void request_check(VerificationBatchFlushReason reason);
+    void validate_preprocessing_release_state(bool after_release) const;
+    void print_preprocessing_release_report(
+            size_t generated_items,
+            const PreprocessingReleaseSnapshot& before) const;
     void cleanup_successful_integrated_batch(
             size_t dealer_batch_start,
             size_t nu_material_start,
@@ -2580,7 +2626,7 @@ public:
 
     AtlasGsz(Player& P);
 
-    ~AtlasGsz();
+    ~AtlasGsz() noexcept;
 
     AtlasGsz branch()
     {
@@ -2632,6 +2678,11 @@ public:
     void prepare_with_solved_bits(const typename T::open_type& product);
 
     void maybe_check();
+
+    // Flush an independently owned preprocessing branch before its owner
+    // makes newly generated material consumable. The item count is used only
+    // for cumulative release diagnostics.
+    void before_preprocessing_release(size_t generated_items = 0);
 
     // GSZ20 verification
     void check();

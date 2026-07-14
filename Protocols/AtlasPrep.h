@@ -35,8 +35,17 @@ public:
             shares.push_back(this->protocol->get_random());
         vector<typename T::open_type> opened;
         this->proc->MC.POpen(opened, shares, this->proc->P);
+        vector<InputTuple<T>> generated;
+        generated.reserve(batch_size);
         for (int i = 0; i < batch_size; i++)
-            this->inputs.at(player).push_back({shares[i], opened[i]});
+            generated.push_back({shares[i], opened[i]});
+        this->inputs.at(player).reserve(
+                this->inputs.at(player).size() + generated.size());
+        release_preprocessing_protocol(
+                *this->protocol, generated.size(), 0);
+        this->inputs.at(player).insert(this->inputs.at(player).end(),
+                make_move_iterator(generated.begin()),
+                make_move_iterator(generated.end()));
     }
 
     void buffer_bits()
@@ -78,14 +87,24 @@ public:
 
         T one(1); // Assuming T is Mersenne
         T two_inverse = T(2).invert();
+        vector<T> generated;
+        generated.reserve(buffer_size);
         for (int i = 0; i < buffer_size; i++) {
             if (square_opened[i] != 0) {
-                this->bits.push_back((randoms[i] / square_opened[i].sqrRoot() + one) * two_inverse);
+                generated.push_back(
+                        (randoms[i] / square_opened[i].sqrRoot() + one)
+                        * two_inverse);
             }
         }
-        if (this->bits.empty()) {
+        if (generated.empty()) {
             throw runtime_error("All squares were zero");
         }
+        this->bits.reserve(this->bits.size() + generated.size());
+        release_preprocessing_protocol(
+                *this->protocol, generated.size(), 0);
+        this->bits.insert(this->bits.end(),
+                make_move_iterator(generated.begin()),
+                make_move_iterator(generated.end()));
     }
 
     void buffer_inverses() 
@@ -112,15 +131,24 @@ public:
             this->protocol->prepare_mul_pub(a[i], b[i]);
         }
         this->protocol->exchange_mul_pub();
+        vector<array<T, 2>> generated;
+        generated.reserve(buffer_size);
         for (int i = 0; i < buffer_size; i++) {
             T c = this->protocol->finalize_mul_pub();
             if (c != 0) {
-                this->inverses.push_back({a[i], b[i] / c});
+                generated.push_back({a[i], b[i] / c});
             }
         }
-        if (this->inverses.empty()) {
+        if (generated.empty()) {
             throw runtime_error("All products were zero");
         }
+        this->inverses.reserve(
+                this->inverses.size() + generated.size());
+        release_preprocessing_protocol(
+                *this->protocol, generated.size(), 0);
+        this->inverses.insert(this->inverses.end(),
+                make_move_iterator(generated.begin()),
+                make_move_iterator(generated.end()));
     }
 };
 

@@ -150,10 +150,18 @@ Implemented:
   successful unsupported-only batches retire their verification evidence and
   return to idle without source authentication, while every GS20 exception
   retains failure evidence and forbids a second communicating check;
-- normal verification of the real AtlasPrep mul-public batch: the existing
-  independently owned preprocessing protocol branch replaces only its exact
-  empty `BitPrep::set_protocol()` initialization prelude, records every real
-  mul-public coordinate/transcript, and runs the existing GS20-only check;
+- explicit pre-consumption release for independently owned AtlasGsz
+  preprocessing branches: generated triples, squares, bits, inverses, input
+  tuples, daBits, and loose edaBit vectors remain owner-local until all
+  wrappers are complete and the branch synchronously passes its residual GS20
+  and retained-opening checks;
+- normal verification of the real AtlasPrep mul-public batch at that release
+  boundary, retaining its unsupported/noneligible GS20-only classification
+  and starting no source authentication;
+- preservation of existing source-only authentication for eligible ordinary
+  scalar work in temporary and persistent preprocessing branches;
+- communication-free, non-throwing AtlasGsz destruction; main online protocol
+  checking remains owned by the explicit processor/tape `Proc.check()` path;
 - an explicit fixed-king-0 contract for this milestone;
 - one authoritative frozen candidate across GS20, exact post-authentication
   `r_t`/direct-`e_t`/`z_t` binding validation, and successful batch-local
@@ -221,8 +229,10 @@ sources instead of creating a second logical dealer for the king.
 coordinates, not high-level operations. A dot product is one captured
 operation and one concrete king `e_t` source even when its coordinate length
 crosses or overshoots the threshold. The focused integration mode uses a
-test-only effective threshold and an explicit residual flush; destructor-time
-checking is not a production pre-output gate.
+test-only effective threshold and an explicit residual flush. Independently
+owned preprocessing branches now use their explicit pre-consumption release
+path. AtlasGsz destruction performs no checking or communication and is not a
+security boundary.
 
 Authentication failures on both paths remain fail-stop at
 `RecoveryNotImplemented`: no participating batch receives handles, and no
@@ -286,6 +296,26 @@ zero additional communication. The
 61-coordinate AtlasPrep mul-public branch at the focused workload's current
 bit demand, and `honest-batch-integration-fixed-king` checks the local fixed-0
 guard.
+
+Focused preprocessing release uses
+`Programs/Source/0-preprocessing-release.py`. Compile each variant because the
+compiler argument becomes part of the schedule name, then use the matching
+focused mode, for example:
+
+```sh
+conda run -n pytorch ./compile.py 0-preprocessing-release persistent
+ATLAS_GSZ_AUTH_TEST=preprocessing-release-persistent PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-preprocessing-release-persistent -b 4
+
+conda run -n pytorch ./compile.py 0-preprocessing-release new-batch
+ATLAS_GSZ_AUTH_TEST=preprocessing-release-new-batch PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-preprocessing-release-new-batch -b 2
+```
+
+The `empty`, `temporary`, `temporary-empty`, `square`, `dabit`, `edabit`,
+`retained-opening`, and `gs20-failure` variants cover the remaining release
+boundaries. The failure variant must terminate nonzero after its focused PASS
+line and before the application-success marker.
 
 ## Archive scope
 

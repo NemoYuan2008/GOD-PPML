@@ -22,6 +22,49 @@
 template<class T>
 void bits_from_random(vector<T>& bits, typename T::Protocol& protocol);
 
+// Protocols with an explicit preprocessing-release boundary own their own
+// final checking lifecycle. All other protocols retain the legacy eager
+// initialization and destructor-time check behavior.
+template<class Protocol>
+auto initialize_preprocessing_protocol_owner(Protocol& protocol, int)
+        -> decltype(protocol.before_preprocessing_release(), void())
+{
+    (void) protocol;
+}
+
+template<class Protocol>
+void initialize_preprocessing_protocol_owner(Protocol& protocol, ...)
+{
+    protocol.init_mul();
+}
+
+template<class Protocol>
+auto release_preprocessing_protocol(
+        Protocol& protocol, size_t generated_items, int)
+        -> decltype(protocol.before_preprocessing_release(generated_items),
+                void())
+{
+    protocol.before_preprocessing_release(generated_items);
+}
+
+template<class Protocol>
+void release_preprocessing_protocol(Protocol&, size_t, ...)
+{
+}
+
+template<class Protocol>
+auto finish_preprocessing_protocol_owner(Protocol& protocol, int)
+        -> decltype(protocol.before_preprocessing_release(), void())
+{
+    (void) protocol;
+}
+
+template<class Protocol>
+void finish_preprocessing_protocol_owner(Protocol& protocol, ...)
+{
+    protocol.check();
+}
+
 namespace GC
 {
 template<class T> class ShareThread;
@@ -271,14 +314,34 @@ public:
     { this->buffer_inputs_as_usual(player, this->proc); }
 
     virtual void buffer_dabits(ThreadQueues*)
-    { this->buffer_dabits_without_check(this->dabits); }
+    {
+        vector<dabit<T>> generated;
+        this->buffer_dabits_without_check(generated);
+        this->dabits.reserve(this->dabits.size() + generated.size());
+        release_preprocessing_protocol(
+                *this->protocol, generated.size(), 0);
+        this->dabits.insert(this->dabits.end(),
+                make_move_iterator(generated.begin()),
+                make_move_iterator(generated.end()));
+    }
     virtual void buffer_edabits(int n_bits, ThreadQueues*)
     { buffer_edabits<0>(n_bits, T::clear::characteristic_two); }
     template<int>
     void buffer_edabits(int n_bits, false_type)
-    { this->template buffer_edabits_without_check<0>(n_bits,
-            this->edabits[{false, n_bits}],
-            BaseMachine::edabit_batch_size<T>(n_bits, this->buffer_size)); }
+    {
+        vector<edabitvec<T>> generated;
+        this->template buffer_edabits_without_check<0>(n_bits,
+                generated,
+                BaseMachine::edabit_batch_size<T>(
+                        n_bits, this->buffer_size));
+        auto& destination = this->edabits[{false, n_bits}];
+        destination.reserve(destination.size() + generated.size());
+        release_preprocessing_protocol(
+                *this->protocol, generated.size(), 0);
+        destination.insert(destination.end(),
+                make_move_iterator(generated.begin()),
+                make_move_iterator(generated.end()));
+    }
     template<int>
     void buffer_edabits(int, true_type)
     { throw not_implemented(); }
