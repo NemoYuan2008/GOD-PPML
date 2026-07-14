@@ -28,11 +28,13 @@ Related files may include:
 Do not add a separate protocol implementation or broadly refactor unrelated
 MP-SPDZ code unless the milestone explicitly requests it.
 
-The GSZ20 paper is located at ~/papers/GSZ20.pdf
+The main external references are:
 
-The LaTeX project (contains the technical core) of my GOD PPML paper is located at ~/papers/GOD-PPML-paper
-
-The implementation of original GS20 (security with abort) is at ~/papers/Malicious-Scalable-PPML
+- GSZ20 paper: `~/papers/GSZ20.pdf`;
+- GOD-PPML LaTeX technical core: `~/papers/GOD-PPML-paper`;
+- original GS20/security-with-abort implementation:
+  `~/projects/Malicious-Scalable-PPML` (use the actual local path if the
+  checkout is elsewhere).
 
 ## Source-of-truth hierarchy
 
@@ -149,12 +151,14 @@ checkpoint. The slice includes:
   batch, executed before key and tag work;
 - restricted `e = 1` consistency checking for each transient `B`-component
   BaseSharing before any `check_mask=true` tag material is generated;
-- a configurable, session-immutable base-field FTag chunk width `B`, defaulting
-  to `4` and focused-overridable with `ATLAS_GSZ_FTAG_CHUNK_WIDTH`; this is not
-  extension-field packing. The default value `4` is retained by the current
-  code but is not an acceptable production or experimental parameter for large
-  workloads. Any reported communication experiment must state the explicit
-  value of `ATLAS_GSZ_FTAG_CHUNK_WIDTH`;
+- a configurable, session-immutable base-field FTag batch width `B`, defaulting
+  to `4` and overridable with `ATLAS_GSZ_FTAG_CHUNK_WIDTH`; semantically
+  `B` is GSZ20's `ell`, the number of base-field source sharings in one
+  FTag batch. Because the current realization fixes `e=1`, it also satisfies
+  `q=ell/e=B`. It is not an extension degree and the implementation does not
+  perform extension-field packing. The code default is retained for focused
+  tests only and is not acceptable for large communication experiments; every
+  reported experiment must state the explicit width;
 - one reusable verifier-holder `mu` key epoch;
 - restricted `e = 1` Check-Key with a fresh uniform twisted mask `rho`;
 - a newly and independently uniformly sampled `nu` for each
@@ -311,124 +315,183 @@ new cryptographic execution on an incorrect legacy abstraction merely to
 minimize a diff.
 
 
-## Current communication-efficiency audit status
+## Communication audit status: resolved and frozen
 
-The first optimistic ordinary scalar/dot segment path and its runtime
-corrections are committed.
+The protocol-to-code communication audit and the matched experiment matrix are
+complete. The communication discrepancy is explained, all authentication
+phases agree with the corrected finite implementation formula exactly in
+bytes, and every audited honest run completed one accepted authentication
+invocation and one sealed/promoted checkpoint with zero unattributed
+authentication traffic.
 
-The current implementation now has:
+### Matched comparison definition
 
-- internal GS20 verification batches that do not authenticate themselves;
-- one segment-owned ordinary scalar/dot source collector;
-- exactly one source-only authentication invocation when the current logical
-  segment closes;
-- exact producer-group deduplication using the concrete producer output count;
-- one real dealer batch per party, with the king's DoubleRand sources and
-  direct `e_t` sources concatenated into the king's batch;
-- committed authenticated source handles;
-- handle-based `r_t`, direct `e_t`, and `z_t=e_t-r_t` derivations;
-- one sealed/promoted ordinary checkpoint;
-- one reusable `mu` key epoch and fresh per-chunk `nu`;
-- communication, runtime, and memory audit modes;
-- O(1) authenticated-handle validation by source ordinal;
-- one-pass producer-group width calculation;
-- memory estimation disabled during normal execution.
+Use only like-for-like communication figures:
 
-The previously introduced runtime regression has been resolved. For
-`Programs/Source/1-net-a` with three parties and
-`ATLAS_GSZ_FTAG_CHUNK_WIDTH=320`, normal execution is approximately 2.7
-seconds, compared with approximately 2.4 seconds before real authentication
-was integrated. Authentication communication and protocol behavior were
-unchanged by the runtime correction.
+- `Data sent` is one party's local sent payload;
+- `Global data sent` is the sum of all parties' sent payloads;
+- all reported MB values below are decimal MB (`10^6` bytes);
+- one `Mersenne<61>` field element is serialized as exactly eight bytes;
+- SSL/certificate setup is excluded because MP-SPDZ communication accounting is
+  reset before program execution;
+- preprocessing and protocol-finalization communication are included;
+- the current GOD and original GS20 runs use identical program source,
+  schedules, seven scheduled bytecodes, and binary input;
+- communication and runtime experiments use clean `-O3` builds, retain
+  `-Werror`, keep assertions enabled, and do not define `NDEBUG`.
 
-### Unresolved communication problem
+The old `12.2587 MB` value is the **party-0** counter of the original
+15-party GS20 run. The matching original **global** counter is `31.5270 MB`.
+Do not compare party-local and global figures.
 
-The remaining primary issue is the communication cost and party-count scaling
-of the real authentication/FTag realization.
-
-For the same `1-net-a` workload:
-
-- the original GS20 implementation communicates approximately 12.2587 MB
-  globally at 15 parties;
-- the GOD implementation immediately before real authentication was wired into
-  ordinary execution was nearly identical to GS20;
-- the current restricted authentication path, after segment collection and
-  width tuning, communicates approximately 55.57 MB at 15 parties, with the
-  best measured width near `B=448`;
-- the historical/default `B=4` configuration is pathological and produced
-  approximately 1,039 MB at 15 parties.
-
-Therefore the GS20 computation, virtual transcripts, and local provenance
-bookkeeping are not the source of the large communication gap. The unresolved
-cost comes from the current real FTag/source-authentication realization.
-
-Do not claim that the 55.57 MB result is inevitable, paper-faithful, linear in
-the number of parties, or representative of GSZ20's `5.5+epsilon` concrete
-claim until the protocol-to-code correspondence has been audited.
-
-The current implementation uses the restricted setting:
+At 15 parties with the exact finite-optimal width `B=397`, the resolved global
+reconciliation is:
 
 ```text
-F = K = F_(2^61-1)
-e = 1
+original GS20 global                 31.527000 MB
+pre-authentication protocol drift     1.930860 MB
+authentication                       21.471240 MB
+------------------------------------------------
+current GOD global                   54.929100 MB
 ```
 
-and an implementation parameter `B` described as a base-field chunk width.
-It has not yet been established that `B` corresponds exactly to the paper's
-`ell`, to `q=ell/e`, or to the complete batching schedule of GSZ20 `Tag`.
+The remaining legacy-footer uncertainty is only rounding at approximately the
+hundred-byte scale and is consistent with zero. It is not an unexplained
+protocol cost.
 
-### Current audit milestone
+### Exact finite implementation formula
 
-The next milestone is analysis-only. Before modifying code, compare the
-current implementation against GSZ20's:
+For one logical segment and one reusable key epoch, define:
 
-- FTag;
-- Verify-Sharing;
-- Check-Key;
-- BaseSharing;
-- Check-Tag;
-- complete Tag realization;
-- Comp-Seg scheduling.
+```text
+K = n(n-1)
+L = K(3n-5) + (n-1)
+Q = sum_d ceil(source_count_d / B)
+```
 
-The audit must determine:
+The exact authentication communication is:
 
-- which implementation messages correspond to each paper protocol;
-- which costs are per session, segment, dealer, chunk, verifier, and holder;
-- whether the current dealer × chunk × verifier × holder communication is
-  exactly required;
-- whether the paper amortizes or avoids any current communication;
-- whether extension-field packing is required;
-- whether the `O(n^2)` segment partition is relevant to honest-path
-  communication or primarily to retry bounds;
-- the expected cost of a paper-faithful realization for the exact `1-net-a`
-  workload.
+```text
+E_V  = 6nK
+E_K  = K[(n-2)B + n^2 - n + 14]
+E_O  = LQ
+E_BS = n[6K + t(B+4)]
+E_BT = nL
+E_CT = K(B+7)
 
-Do not, before this audit is complete:
+bytes_auth = 8(E_V + E_K + E_O + E_BS + E_BT + E_CT)
+```
 
-- split the current collector into `n^2` segments;
-- redesign FTag;
-- remove protocol messages merely to reduce measurements;
-- hard-code another width as proof of paper fidelity;
-- describe the restricted `e=1` path as the complete GSZ20 Tag protocol;
-- revisit the resolved quadratic runtime issue.
+The `+4` in `E_BS` accounts for the actual 32-byte pairwise `ShamirInput`
+seed. The older `t(B+1)` expression is obsolete.
 
-### Build configuration
+### Exact finite-optimal widths and measured communication
 
-Use the normal working build for all communication audits:
+The following widths are the unique minima for the actual public dealer source
+counts of `Programs/Source/1-net-a`, which contains 29,696 captured ordinary
+scalar operations in one logical segment:
 
-- keep `NDEBUG` undefined;
-- retain `-Werror`;
-- perform a clean rebuild when changing compiler flags.
+| n | optimal B | Q | exact auth MB | GOD global MB | original GS20 global MB | GOD / GS20 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 3  | 320 | 186 | 0.080832 | 4.611330 | 4.287950 | 1.075x |
+| 5  | 372 | 160 | 0.553600 | 9.814340 | 8.764670 | 1.120x |
+| 7  | 386 | 154 | 1.766352 | 15.817000 | 13.289800 | 1.190x |
+| 9  | 413 | 144 | 4.087584 | 22.961200 | 17.836500 | 1.287x |
+| 11 | 387 | 154 | 7.887880 | 31.607500 | 22.395200 | 1.411x |
+| 13 | 382 | 156 | 13.564512 | 42.147700 | 26.960700 | 1.563x |
+| 15 | 397 | 150 | 21.471240 | 54.929100 | 31.527000 | 1.742x |
 
-The current repository is not `NDEBUG`-clean. Defining `NDEBUG` produces
-unused-variable errors under `-Werror`, and after suppressing those errors the
-compiled `1-net-a` execution fails while reading
-`Player-Data/Input-Binary-P0-1`. Restoring the normal build makes the workload
-succeed.
+`B=448` is no longer the recommended 15-party width. It produces
+`22.107792 MB` of authentication; switching to `B=397` saves only
+`0.636552 MB`, about `1.15%` of the whole run. Width selection is therefore a
+small finite optimization, not a mechanism that closes the authentication gap.
+The production code still has no automatic selector; experiments must pass the
+chosen public width explicitly.
 
-Treat `NDEBUG` compatibility as a separate deferred release-engineering
-milestone. Assertions and debug-only checks are local computation and must not
-be used to explain network communication.
+### Protocol conclusions that are now settled
+
+- `B=ell`; because `e=1`, `q=ell/e=B` numerically. `B` is not an extension
+  degree.
+- Extension-field packing is not the missing bandwidth optimization. It changes
+  representation and soundness-field size, but not the base-field-equivalent
+  vector payload by itself.
+- GSZ20 Protocol 25 genuinely performs work for every real
+  `dealer x chunk x verifier x holder` relation. The measured ordinary tag
+  traffic is not duplicate authentication or per-wire tagging.
+- The dominant finite 15-party authentication terms are Key/Check-Key and
+  ordinary SingleTagComp work. Removing them would weaken or change the
+  selected FTag construction.
+- The current code invokes Verify-Sharing per dealer, while Protocol 37
+  describes segment-level Verify-Sharing. The current BaseSharing realization
+  also performs concrete per-dealer consistency work. These remain fidelity
+  questions but together are too small to explain the observed scaling.
+- Protocol 24 calls Check-Key once per segment even when `mu` is reused. The
+  current one-segment implementation cannot be extrapolated to a complete
+  multi-segment Protocol-37 execution.
+- The `O(n^2)` segment partition is relevant to both retry bounds and the
+  paper's asymptotic substitution, but naively applying it to this small
+  benchmark would repeat large fixed costs and increase communication.
+- GSZ20's `5.5+epsilon` statement ignores terms independent of the circuit.
+  This 29,696-operation benchmark is not in the finite amortization regime at
+  large `n`; the matrix does not contradict the theorem.
+
+Communication development is now frozen. Do not redesign FTag, remove
+security-critical messages, split the current workload into `n^2` segments,
+or add deferred operation families merely to improve these benchmark numbers.
+Any future communication change must have a new protocol argument and an
+independently reviewed security rationale.
+
+### Runtime status: separate and unresolved
+
+The earlier quadratic runtime regression has been fixed and must not be
+reopened. A separate residual runtime gap remains in matched `-O3`, no-audit,
+local-loopback runs:
+
+| n | GOD total s | measured authentication s | original GS20 total s | GOD / GS20 |
+|---:|---:|---:|---:|---:|
+| 3  | 0.454911 | 0.006575 | 0.059198 | 7.685x |
+| 5  | 0.726236 | 0.018943 | 0.094561 | 7.680x |
+| 7  | 1.091400 | 0.045094 | 0.140741 | 7.755x |
+| 9  | 1.676180 | 0.113706 | 0.197001 | 8.508x |
+| 11 | 2.327500 | 0.224830 | 0.287721 | 8.089x |
+| 13 | 3.585240 | 0.519745 | 0.396986 | 9.031x |
+| 15 | 4.992670 | 0.845295 | 0.518964 | 9.620x |
+
+These are single-run characterization measurements, not paper-ready timing
+statistics. Authentication timing comes from audited runs while total timing
+comes from no-audit runs, so do not subtract them as exact phase accounting.
+The residual gap may arise from provenance capture, transcript handling,
+object construction, validation, checkpoint bookkeeping, or other local work;
+it has not yet been profiled.
+
+The next technical milestone is **analysis-first runtime profiling**, not an
+optimization patch:
+
+1. repeat the `n=3` and `n=15` points with warm-ups and multiple measured runs;
+2. report medians and dispersion, not one-shot values;
+3. compare the current HEAD, the last pre-authentication control commit, and
+   the original GS20 checkout under identical `-O3` conditions;
+4. profile with audit modes disabled;
+5. attribute time to authentication, provenance capture, producer grouping,
+   derivation construction, handle validation, checkpoint promotion, GS20
+   verification, and framework overhead;
+6. make no protocol or source change until a dominant cost is identified.
+
+### Build configuration and NDEBUG
+
+For matched communication or runtime experiments use:
+
+```sh
+make clean
+make -j6 OPTIM=-O3 atlas-gsz-party.x
+conda run -n pytorch ./compile.py 1-net-a
+```
+
+Keep `NDEBUG` undefined and retain `-Werror`. The repository is not currently
+`NDEBUG`-clean: defining it causes unused-variable errors, and suppressing
+those errors produced a `FIXINPUT` failure. Treat NDEBUG compatibility as a
+separate deferred release-engineering issue. Assertions are local computation
+and must not be used to explain network communication.
 
 ## Critical implementation constraints
 
@@ -619,7 +682,7 @@ Focused producer-provenance and optimistic-authentication hooks:
 ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-dot
 ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-dot
+
 
 ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-mul-input
@@ -746,23 +809,30 @@ test-only `lambda=1` override only if its sampled challenge is zero),
 and `failure` changes only the final aggregate holder tag. Honest execution
 always uses the sampled zero-permitted challenge without an override.
 
-## Near-term honest-path milestones
+## Near-term milestones
 
-The first segment-owned ordinary scalar/dot collector, one close-time source
-authentication, one promoted checkpoint over exact handle-based
-`z_t = e_t - r_t` live-outs, and the communication-neutral runtime corrections
-are implemented and committed.
+The communication audit, finite-width matrix, and global GS20 comparison are
+resolved and frozen. The current ordinary one-segment honest path is suitable
+for communication experiments under the exact scope stated above. Do not add
+multiple segments, final output gating, deferred operation families, or a new
+FTag construction as part of the runtime investigation.
 
-The immediate next milestone is not another coding pass. It is the
-protocol-to-code communication audit described above. Until that audit
-identifies the exact discrepancy between the restricted implementation and
-GSZ20's complete Tag realization, do not add deferred operation families,
-multiple logical segments, final output gating, or a new FTag design merely to
-improve benchmark numbers.
+The immediate sequence is:
 
-After the audit is complete, the next implementation milestone must be chosen
-from its findings and must remain independently reviewable. Any later source
-collector work must continue to use the king's existing real-dealer batch; it
+1. commit a documentation-only closure that records the resolved communication
+   accounting and removes stale claims;
+2. open a fresh runtime-profiling milestone;
+3. collect repeated, matched `-O3` measurements and profile the current,
+   pre-authentication-control, and original GS20 builds;
+4. identify one dominant local-computation cost before proposing any code
+   change;
+5. keep every later optimization small, independently reviewable, and
+   communication-neutral unless explicitly justified otherwise.
+
+The broader Stage-1 implementation targets—deferred operation-family
+provenance, multiple logical segments, scheduler continuation, and final
+output gating—remain frozen until explicitly resumed. Any later source
+collector work must continue to use the king's existing real-dealer batch and
 must not create a second logical dealer for the king.
 
 ## Reporting
@@ -781,6 +851,11 @@ The final report for a coding pass should include:
 - diffstat;
 - explicit deferred limitations;
 - confirmation that the optimized ultimate-tuple success path remains intact.
+
+For a runtime-analysis pass, also report warm-up policy, repetition count,
+per-run samples, median, dispersion, profiler/tool configuration, matched
+build identities, and the attributed dominant call paths. Do not present
+single-run local-loopback timings as paper-ready performance claims.
 
 Do not print the full Git diff unless requested. The user will inspect the diff
 separately.

@@ -83,8 +83,10 @@ Implemented:
 - optimized ultimate-tuple success opening;
 - real restricted `e = 1` Check-Key;
 - reusable verifier-holder `mu` keys;
-- a configurable, session-immutable base-field FTag chunk width `B`, with
-  default `B=4` and focused override `ATLAS_GSZ_FTAG_CHUNK_WIDTH`;
+- a configurable, session-immutable base-field FTag batch width `B`, with
+  default `B=4` and override `ATLAS_GSZ_FTAG_CHUNK_WIDTH`; `B` is the
+  paper's `ell`, and because this realization fixes `e=1`, it also equals
+  `q=ell/e`. It is not an extension degree;
 - internal zero padding in a partial final chunk, without creating source
   ordinals, authenticated handles, or derivation terms for padding;
 - a newly and independently uniformly sampled `nu` for each
@@ -261,15 +263,123 @@ maximum degree at most `m*(W+1)-1`. Its concrete soundness uses
 invocations; the implementation does not claim arbitrary kappa-bit
 soundness.
 
+## Communication audit and experiment status
+
+The communication audit is complete and frozen for the exact implemented
+scope: one logical online segment, 29,696 captured ordinary scalar operations,
+optimistic honest execution, restricted `F=K=F_(2^61-1)` with `e=1`, real
+source authentication, authenticated handles, and one promoted checkpoint.
+This is not a complete Protocol-37 or complete GOD PPML implementation.
+
+### Correct communication comparison
+
+`Data sent` is party-local. `Global data sent` is the sum over all parties.
+The previously quoted original GS20 value `12.2587 MB` is party 0 at 15
+parties; the matching original global value is `31.5270 MB`.
+
+At the exact finite-optimal 15-party width `B=397`:
+
+```text
+original GS20 global                 31.527000 MB
+pre-authentication protocol drift     1.930860 MB
+authentication                       21.471240 MB
+------------------------------------------------
+current GOD global                   54.929100 MB
+```
+
+The current result is therefore `1.742x` the original GS20 global result, not
+a comparison of `55.57 MB` against the party-0 `12.2587 MB` counter.
+
+### Exact finite authentication formula
+
+For one segment and one reusable key epoch:
+
+```text
+K = n(n-1)
+L = K(3n-5) + (n-1)
+Q = sum_d ceil(source_count_d / B)
+
+E_V  = 6nK
+E_K  = K[(n-2)B + n^2 - n + 14]
+E_O  = LQ
+E_BS = n[6K + t(B+4)]
+E_BT = nL
+E_CT = K(B+7)
+
+authentication bytes = 8(E_V + E_K + E_O + E_BS + E_BT + E_CT)
+```
+
+The `+4` in `E_BS` is the actual 32-byte pairwise `ShamirInput` seed. Every
+audited run matches this formula exactly in bytes with zero unattributed
+authentication communication.
+
+### Finite-optimal widths for `1-net-a`
+
+| n | optimal B | Q | exact auth MB | GOD global MB | original GS20 global MB | ratio |
+|---:|---:|---:|---:|---:|---:|---:|
+| 3  | 320 | 186 | 0.080832 | 4.611330 | 4.287950 | 1.075x |
+| 5  | 372 | 160 | 0.553600 | 9.814340 | 8.764670 | 1.120x |
+| 7  | 386 | 154 | 1.766352 | 15.817000 | 13.289800 | 1.190x |
+| 9  | 413 | 144 | 4.087584 | 22.961200 | 17.836500 | 1.287x |
+| 11 | 387 | 154 | 7.887880 | 31.607500 | 22.395200 | 1.411x |
+| 13 | 382 | 156 | 13.564512 | 42.147700 | 26.960700 | 1.563x |
+| 15 | 397 | 150 | 21.471240 | 54.929100 | 31.527000 | 1.742x |
+
+The code default `B=4` is retained for focused tests but is pathological for
+large workloads. Every experiment must pass and report an explicit public
+width. There is no automatic production selector.
+
+The audit also establishes that Protocol-25 work per real
+`dealer x chunk x verifier x holder` relation is genuine, and that
+extension-field packing is not a missing base-field-equivalent bandwidth
+optimization. The paper's `5.5+epsilon` statement ignores fixed terms
+independent of the circuit; this small benchmark is outside that finite
+amortization regime at larger party counts.
+
+### Runtime status
+
+Communication is resolved, but runtime is not yet optimized. Matched `-O3`,
+no-audit, local-loopback single runs range from `7.685x` the original GS20
+runtime at three parties to `9.620x` at fifteen parties. These are
+characterization measurements only. The next technical milestone is repeated
+measurement and profiling of the current HEAD, the last pre-authentication
+control, and the original GS20 checkout before any optimization patch.
+
+Do not reopen the already-fixed quadratic runtime regression, redesign FTag,
+or remove protocol messages merely to improve these figures.
+
 ## Build and tests
 
-Typical commands from the full repository root are:
+Typical development/smoke-test commands from the full repository root are:
 
 ```sh
 make -j6 atlas-gsz-party.x
 conda run -n pytorch ./compile.py 0-dot
 ./Scripts/atlas-gsz.sh 0-dot
 ```
+
+For matched communication or runtime experiments, use a clean optimized
+build with assertions enabled, `-Werror`, and no `NDEBUG`:
+
+```sh
+make clean
+make -j6 OPTIM=-O3 atlas-gsz-party.x
+conda run -n pytorch ./compile.py 1-net-a
+
+# Audited communication run
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=$B \
+ATLAS_GSZ_COMM_AUDIT=1 \
+ATLAS_GSZ_RUNTIME_AUDIT=1 \
+PLAYERS=$n ./Scripts/atlas-gsz.sh 1-net-a
+
+# Fair total-runtime run with audit overhead disabled
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=$B \
+PLAYERS=$n ./Scripts/atlas-gsz.sh 1-net-a
+```
+
+The current repository is not `NDEBUG`-clean. Treat NDEBUG compatibility as
+a separate deferred release-engineering issue; do not disable assertions for
+the communication or runtime matrix.
 
 Focused optimistic authentication tests use `ATLAS_GSZ_AUTH_TEST` as described
 in `AGENTS.md`.
