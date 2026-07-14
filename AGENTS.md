@@ -250,43 +250,55 @@ before any authentication mutation or execution. Authentication rejection
 retains the registered diagnostic records and fail-stop evidence, creates no
 handles, and does not permit reuse or retry.
 
-Eligible ordinary scalar-multiplication and ordinary dot-product verification
-batches are now integrated automatically through the existing
-`AtlasConfig::max_before_check` / `maybe_check()` / `check()` lifecycle. The
-production order is pure finalize/freeze and exact preflight, then the existing
-GS20 verification, then exactly one source-only global authentication
-invocation. One frozen candidate is retained across GS20. Only after GS20 and
-authentication both succeed are the exact `r_t`, direct `e_t`, and `z_t`
-bindings validated and the batch-local verification, capture, receipt, dealer
-batch, `nu`, holder-tag, and global-invocation state retired. Reusable checked
-`mu` keys, their epoch, agreed FTag width, monotonic IDs, PRNG state, and
-cumulative counters persist.
+Eligible ordinary scalar-multiplication and ordinary dot-product operations
+are now integrated through one explicit logical online segment. The existing
+`AtlasConfig::max_before_check` / `maybe_check()` / `check()` lifecycle remains
+an internal GS20 memory/verification boundary only. Each successfully verified
+ordinary candidate is transferred into one segment-owned collector without
+authentication. At segment close, one communication-free structural preflight
+deduplicates exact whole DoubleRand producer groups, reads each producer
+group's actual output count, forms one ordered source sequence per real dealer,
+and appends every direct concrete `e_t` source to king 0's existing dealer
+sequence. The collector then invokes the existing global source-only
+authentication exactly once.
+
+After authentication success, the exact `r_t`, direct `e_t`, and `z_t`
+bindings are validated against committed handles. The ordered ordinary `z_t`
+live-outs form one checkpoint candidate, which seals and promotes only after
+all derivations resolve. Successful cleanup retires internal verification
+state, tentative producer/candidate state, receipt-local mappings, fresh `nu`,
+holder tags, and the successful global-invocation presentation. Authenticated
+dealer batches/handles, the promoted checkpoint, reusable checked `mu` keys,
+their epoch, agreed FTag width, monotonic IDs, PRNG state, and cumulative public
+counters persist.
 
 Unsupported operation families remain GS20-only and force an eligible ordinary
 batch boundary before entering. `max_before_check` still counts `x_verify`
 coordinates rather than operations, so a single dot product can cross or
 overshoot it while producing one captured operation and one concrete king
 `e_t` source. Focused integration tests use a test-only effective threshold
-and explicit residual flush. Destructor-time checking is not a production
-pre-output gate.
+and an explicit segment close after the final residual flush. Destructor-time
+close remains only a fallback for workloads without a scheduler hook and is
+not a production pre-output gate.
 
-This automatic ordinary-batch lifecycle is not a complete segment/checkpoint
-scheduler and must not be described as the complete GSZ20 authentication path.
+This one-worker, one-segment ordinary lifecycle is not a complete
+segment/checkpoint scheduler and must not be described as the complete GSZ20
+authentication path.
 
 The following honest-path items remain unimplemented:
 
-1. complete segment-wide source collection across the deferred operation
-   families, checkpoint derivation construction, and checkpoint creation;
-2. normal segment/checkpoint scheduler integration beyond eligible ordinary
-   GS20 verification batches;
+1. segment-wide source collection and checkpoint live-outs for deferred
+   operation families;
+2. continuation across more than one logical segment and normal scheduler
+   integration;
 3. final production output gating through that scheduler.
 
 Truncation, mul-public, virtual-transcript, compression-generated, and
 ultimate-tuple provenance remain deferred.
 
-A future production segment collector must merge the king's
-PartialMult-dealt degree-`t` `e_t` sources with that same real party's other
-dealer sources. It must not create a second logical dealer for the king.
+The current ordinary collector merges the king's PartialMult-dealt degree-`t`
+`e_t` sources with that same real party's other dealer sources and must remain
+free of any second logical dealer for the king.
 
 Legacy authentication, recovery, and Analyze-related metadata skeletons remain
 in the code. They are not authoritative production provenance. Do not build
@@ -611,14 +623,12 @@ always uses the sampled zero-permitted challenge without an override.
 
 ## Near-term honest-path milestones
 
-The focused conversion of captured tentative `r_t` derivations, direct
-authentication of exact concrete king-generated `e_t` sources, and exact
-handle-based `z_t = e_t - r_t` derivations are implemented in both the
-one-shot adapter and the automatic eligible ordinary-batch lifecycle. Unless
-the user changes priorities, the expected next sequence is:
+The first segment-owned ordinary scalar/dot collector, one close-time source
+authentication, and one promoted checkpoint over exact handle-based
+`z_t = e_t - r_t` live-outs are implemented. Unless the user changes
+priorities, the expected next sequence is:
 
-1. form complete segment source collections and checkpoint derivations, then
-   integrate authentication, sealing, and promotion;
+1. add deferred operation-family provenance to complete segment collections;
 2. integrate normal segment continuation and final output gating.
 
 The next milestone must continue to use the king's existing real-dealer batch;

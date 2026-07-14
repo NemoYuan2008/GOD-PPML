@@ -43,11 +43,14 @@ These contain the main GS20/GOD-PPML implementation, including:
   handle-commit path and a checkpoint-coupled authentication/promotion path;
 - authenticated source handles and derivation-based checkpoint promotion.
 
-Eligible ordinary scalar-multiplication and dot-product verification batches
-now enter the source-only FTag path automatically through the existing
-`max_before_check`/`maybe_check()`/`check()` lifecycle. This is batch-lifecycle
-integration only; it is not a complete PPML segment/checkpoint scheduler or an
-output gate.
+Eligible ordinary scalar-multiplication and dot-product operations now enter
+one explicit logical online segment. `max_before_check` still creates internal
+GS20 verification batches, but successful internal checks only transfer their
+exact frozen candidates into the segment-owned collector. The collector forms
+one canonical all-dealer source set, invokes source authentication exactly once
+at segment close, and promotes one checkpoint over the ordered ordinary
+`z_t` live-outs. This remains a one-worker, one-segment optimistic path, not a
+general PPML segment scheduler or an output gate.
 
 ### `AtlasGszShare.h`
 
@@ -142,10 +145,18 @@ Implemented:
   ordinary scalar or dot operation, ordered as `(1,h_e)` followed by the
   existing `r_t` terms with native field-negated coefficients, without a new
   source, handle, authentication invocation, checkpoint, or registry;
-- automatic ordinary-batch orchestration in the order
-  `freeze/preflight -> existing GS20 check -> one source-only authentication`,
-  with unsupported operation families isolated at verification-batch
-  boundaries;
+- segment-owned ordinary orchestration in the order
+  `freeze/preflight -> internal GS20 check -> collect`, repeated across zero or
+  more threshold batches, followed by exactly one
+  `segment preflight -> source-only authentication -> checkpoint promotion` at
+  logical segment close;
+- communication-free segment preflight that preserves completed-operation
+  order, rejects duplicate consumed producer outputs, deduplicates exact whole
+  producer groups, and reads the concrete output count of every producer group
+  instead of assuming `t+1` outputs;
+- one authoritative real-dealer source sequence per party at close, with all
+  concrete king `e_t` sources appended to king 0's existing DoubleRand dealer
+  sequence and no synthetic second king dealer;
 - the same fatal `checking_gs20` lifecycle around every nonempty GS20 batch;
   successful unsupported-only batches retire their verification evidence and
   return to idle without source authentication, while every GS20 exception
@@ -155,9 +166,17 @@ Implemented:
   empty `BitPrep::set_protocol()` initialization prelude, records every real
   mul-public coordinate/transcript, and runs the existing GS20-only check;
 - an explicit fixed-king-0 contract for this milestone;
-- one authoritative frozen candidate across GS20, exact post-authentication
-  `r_t`/direct-`e_t`/`z_t` binding validation, and successful batch-local
-  cleanup that retains the checked reusable `mu` key epoch and monotonic IDs;
+- one authoritative frozen candidate per internal GS20 check, exact transfer
+  into the segment collector after success, and exact post-authentication
+  `r_t`/direct-`e_t`/`z_t` binding validation at segment close;
+- one sealed/promoted checkpoint containing the explicitly supported ordered
+  ordinary `z_t` live-out derivations, backed by retained authenticated source
+  records and handles;
+- successful segment cleanup that removes internal transcripts, tentative
+  producer/candidate state, fresh `nu`, holder tags, the successful invocation
+  presentation, and receipt-local mappings while retaining the reusable `mu`
+  epoch, authenticated source batches, checkpoint, monotonic IDs, and public
+  communication counters;
 - invocation-local direct indexing for producer/output/source-group capture and
   FTag material lookup, without a persistent provenance registry;
 - fail-stop `RecoveryNotImplemented` behavior;
@@ -169,24 +188,24 @@ packing.
 
 Not yet implemented or integrated:
 
-- normal segment-scheduler integration;
+- more than one logical online segment or general segment-scheduler
+  integration;
 - complete input, truncation, or preprocessing provenance;
-- complete segment operation-output/checkpoint derivations or any checkpoint
-  from this adapter;
+- input, MultTrunc, mul-public, and other deferred operation-family live-outs
+  in the segment checkpoint;
 - mul-public, virtual-transcript, compression-generated, and ultimate-tuple
   provenance;
 - final output gating;
 - real `Analyze-Sharing`;
 - localization, rollback, retry, and continued execution after faults.
 
-Source-only authentication is an authenticated-source-table operation, not a
-checkpoint: it creates no checkpoint record and performs no sealing or
-promotion. The one-shot focused adapter remains available, but the same pure
-freeze and authenticate/commit phases are now also used automatically for an
-eligible ordinary GS20 verification batch. Current-batch sources are frozen
-and preflighted before GS20, authenticated exactly once only after GS20
-success, and retired after successful local binding validation. GS20 failure
-retains the frozen evidence and performs no current-batch authentication.
+Source-only authentication remains an authenticated-source-table operation;
+it does not itself create or promote a checkpoint. The segment owner invokes
+that component once after all internal GS20 checks succeed, converts the exact
+committed handles, then separately constructs and promotes the checkpoint.
+GS20 failure retains the affected frozen evidence, latches the segment failure,
+and performs no authentication. Authentication rejection creates neither
+handles nor a checkpoint and terminates at `RecoveryNotImplemented`.
 
 Tentative capture by itself creates no dealer batch or batch ID,
 authentication invocation, authenticated handle, FTag chunk, checkpoint, or
@@ -213,16 +232,19 @@ Successful authentication certifies consistency of the dealer-generated
 source sharings. It does not prove that a corrupt dealer sampled a uniformly
 random or otherwise prescribed secret.
 
-A future production segment collector must merge the king's
-PartialMult-dealt degree-`t` `e_t` sources with that same party's other dealer
-sources instead of creating a second logical dealer for the king.
+The first production segment collector now merges king 0's PartialMult-dealt
+degree-`t` `e_t` sources with that party's other real-dealer sources. The
+collector reports the actual producer records, producer groups, outputs per
+group, per-dealer source counts, chunk counts, committed handles, and an
+instrumented peak estimate of collector-owned bytes.
 
 `AtlasConfig::max_before_check` remains unchanged and counts `x_verify`
 coordinates, not high-level operations. A dot product is one captured
 operation and one concrete king `e_t` source even when its coordinate length
 crosses or overshoots the threshold. The focused integration mode uses a
-test-only effective threshold and an explicit residual flush; destructor-time
-checking is not a production pre-output gate.
+test-only effective threshold and an explicit logical-segment close after the
+final residual flush. A destructor close remains only a fallback for workloads
+without a scheduler hook and is not a production pre-output gate.
 
 Authentication failures on both paths remain fail-stop at
 `RecoveryNotImplemented`: no participating batch receives handles, and no
@@ -271,13 +293,16 @@ modes. The adapter modes exercise component integration only; they do not form
 a checkpoint, integrate a scheduler, or establish complete operation or
 segment provenance.
 
-Focused automatic integration uses
+Focused segment-owned integration uses
 `Programs/Source/0-honest-batch-integration.py` with 3 and 5 parties and
 `ATLAS_GSZ_AUTH_TEST=honest-batch-integration`. Its companion
 `honest-batch-integration-preflight-rejections`,
 `honest-batch-integration-auth-rejection`, and
 `honest-batch-integration-gs20-failure` modes cover communication-free exact
-preflight rejection and both ordinary fail-stop boundaries. The
+preflight rejection, zero authentication at seven internal ordinary GS20
+checks, one close-time invocation, whole-group deduplication using the actual
+producer width, king-source merging, handle/derivation/checkpoint creation,
+bounded cleanup, and both ordinary fail-stop boundaries. The
 `honest-batch-integration-unsupported-gs20-failure` mode proves that one real
 unsupported-only batch performs exactly one GS20 invocation, starts no source
 authentication, latches the fatal lifecycle, and rejects a second check with

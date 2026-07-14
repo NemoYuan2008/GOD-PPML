@@ -1,14 +1,18 @@
 '''
-Focused ordinary-batch integration workload.
+Focused segment-owned ordinary-source integration workload.
 
 With ATLAS_GSZ_AUTH_TEST=honest-batch-integration, AtlasGsz uses the
 test-only effective coordinate threshold four. The dependent operation order
-creates seven accepted batches: a below-threshold residual batch, four
-naturally threshold-triggered batches (including a length-five overshoot),
-one real truncation eligibility-boundary batch, and one final residual batch.
-The truncation itself is checked once in an unsupported-only GS20 batch and
-its real AtlasPrep bit generation exercises the independently owned
-preprocessing mul-public protocol branch.
+creates seven successfully verified ordinary GS20 batches inside one explicit
+logical segment: a below-threshold residual batch, four naturally
+threshold-triggered batches (including a length-five overshoot), one batch
+closed at the real truncation eligibility boundary, and one final residual
+batch. These internal checks perform no source authentication. The final
+residual flush explicitly closes the segment, causing exactly one all-dealer
+source authentication and one sealed/promoted checkpoint. The truncation
+itself is checked once in an unsupported-only GS20 batch and its real
+AtlasPrep bit generation exercises the independently owned preprocessing
+mul-public protocol branch; its provenance remains outside this milestone.
 '''
 
 from Compiler.library import print_ln, runtime_error_if

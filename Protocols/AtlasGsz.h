@@ -900,9 +900,13 @@ private:
     struct IntegratedBatchReport
     {
         bool valid = false;
+        uint64_t logical_segment_id = 0;
+        uint64_t checkpoint_id = 0;
         uint64_t verification_batch_serial = 0;
         VerificationBatchFlushReason flush_reason =
                 VerificationBatchFlushReason::none;
+        size_t internal_gs20_checks = 0;
+        size_t collected_verification_batches = 0;
         size_t ordinary_scalar_operations = 0;
         size_t ordinary_dot_operations = 0;
         size_t x_verify_coordinates = 0;
@@ -910,6 +914,10 @@ private:
         vector<OrdinaryBatchOperationShape> operation_shapes;
         vector<size_t> per_dealer_source_counts;
         vector<size_t> per_dealer_ftag_chunk_counts;
+        size_t double_rand_producer_records = 0;
+        size_t double_rand_source_groups = 0;
+        vector<size_t> outputs_per_double_rand_source_group;
+        size_t peak_segment_collector_bytes = 0;
         size_t committed_handles = 0;
         size_t r_t_derivations = 0;
         size_t direct_e_t_handles = 0;
@@ -968,6 +976,8 @@ private:
         size_t retained_global_invocations = 0;
         size_t persistent_reusable_keys = 0;
         uint64_t persistent_key_epoch = 0;
+        bool checkpoint_sealed = false;
+        bool checkpoint_promoted = false;
     };
 
     struct IntegratedOrdinaryBatchState
@@ -1018,7 +1028,35 @@ private:
         size_t z_t_derivations = 0;
         size_t ordinary_tag_nu_relations = 0;
         size_t base_tag_nu_relations = 0;
+        size_t logical_segments_started = 0;
+        size_t logical_segments_closed = 0;
+        size_t logical_segments_promoted = 0;
+        size_t double_rand_producer_records = 0;
+        size_t double_rand_source_groups = 0;
+        vector<size_t> outputs_per_double_rand_source_group;
+        size_t peak_segment_collector_bytes = 0;
         IntegratedBatchReport latest_batch;
+    };
+
+    enum class OrdinaryOnlineSegmentLifecycle
+    {
+        idle,
+        collecting,
+        closing,
+        promoted,
+        failed,
+    };
+
+    struct OrdinaryOnlineSegmentCollector
+    {
+        OrdinaryOnlineSegmentLifecycle lifecycle =
+                OrdinaryOnlineSegmentLifecycle::idle;
+        uint64_t next_logical_segment_id = 1;
+        uint64_t logical_segment_id = 0;
+        uint64_t checkpoint_id = 0;
+        vector<unique_ptr<FrozenOrdinaryBatch>> verified_batches;
+        IntegratedBatchReport report;
+        size_t peak_owned_bytes = 0;
     };
 
     enum class AuthenticationPlanStatus
@@ -1999,6 +2037,7 @@ private:
 
     OptimisticAuthenticationState optimistic_authentication_state;
     IntegratedOrdinaryBatchState integrated_ordinary_batch_state;
+    OrdinaryOnlineSegmentCollector ordinary_online_segment_collector;
     bool producer_provenance_test_hook_ran = false;
     bool consumed_provenance_transfer_test_hook_ran = false;
     bool special_e_t_test_enabled = false;
@@ -2054,8 +2093,15 @@ private:
             const TentativeDoubleRandCaptureCandidate& candidate) const;
     bool validate_exact_ordinary_batch_correspondence(
             const TentativeDoubleRandCaptureCandidate& candidate) const;
+    unique_ptr<FrozenOrdinaryBatch> build_frozen_ordinary_candidate(
+            unique_ptr<TentativeDoubleRandCaptureCandidate> candidate,
+            uint64_t verification_batch_serial,
+            size_t x_verify_coordinate_count,
+            size_t partial_transcript_count);
     unique_ptr<FrozenOrdinaryBatch>
         freeze_finalized_tentative_double_rand_candidate();
+    unique_ptr<FrozenOrdinaryBatch>
+        merge_verified_ordinary_segment_candidates();
     void maybe_complete_tentative_double_rand_capture_test();
     bool no_authentication_or_checkpoint_artifacts() const;
     void run_special_e_t_malformed_support_test();
@@ -2205,6 +2251,14 @@ private:
             size_t coordinate_count);
     bool verification_batch_is_eligible_ordinary() const;
     void request_check(VerificationBatchFlushReason reason);
+    void begin_ordinary_online_segment();
+    void collect_verified_ordinary_batch(
+            unique_ptr<FrozenOrdinaryBatch> frozen,
+            const IntegratedBatchReport& report);
+    void close_ordinary_online_segment();
+    size_t estimate_frozen_ordinary_batch_owned_bytes(
+            const FrozenOrdinaryBatch& frozen) const;
+    size_t estimate_ordinary_segment_collector_owned_bytes() const;
     void cleanup_successful_integrated_batch(
             size_t dealer_batch_start,
             size_t nu_material_start,

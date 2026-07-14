@@ -742,23 +742,26 @@ bool AtlasGsz<T>::validate_exact_ordinary_batch_correspondence(
 
 template<class T>
 unique_ptr<typename AtlasGsz<T>::FrozenOrdinaryBatch>
-AtlasGsz<T>::freeze_finalized_tentative_double_rand_candidate()
+AtlasGsz<T>::build_frozen_ordinary_candidate(
+        unique_ptr<TentativeDoubleRandCaptureCandidate> candidate_owner,
+        uint64_t verification_batch_serial,
+        size_t x_verify_coordinate_count,
+        size_t partial_transcript_count)
 {
-    auto& capture = tentative_double_rand_capture_state;
-    const auto* candidate = capture.finalized_candidate.get();
-    if (capture.active || candidate == 0
-            || optimistic_authentication_state.status
-                    != OptimisticAuthenticationStatus::ready
-            || not validate_exact_ordinary_batch_correspondence(*candidate))
+    const auto* candidate = candidate_owner.get();
+    if (candidate == 0 || verification_batch_serial == 0
+            || x_verify_coordinate_count == 0
+            || partial_transcript_count == 0
+            || candidate->consumed_outputs.size()
+                    != partial_transcript_count)
         return nullptr;
 
     auto frozen = make_unique<FrozenOrdinaryBatch>();
-    frozen->verification_batch_serial = integrated_ordinary_batch_state
-            .current_verification_batch_serial;
+    frozen->verification_batch_serial = verification_batch_serial;
     frozen->dealer_count = size_t(P.num_players());
     frozen->operation_count = candidate->consumed_outputs.size();
-    frozen->x_verify_coordinate_count = x_verify.size();
-    frozen->partial_transcript_count = partial_mult_transcripts.size();
+    frozen->x_verify_coordinate_count = x_verify_coordinate_count;
+    frozen->partial_transcript_count = partial_transcript_count;
     frozen->mapping_count = checked_size_product(frozen->dealer_count,
             candidate->source_count,
             "AtlasGsz: frozen ordinary mapping count overflow");
@@ -935,13 +938,233 @@ AtlasGsz<T>::freeze_finalized_tentative_double_rand_candidate()
             != used_mappings.end())
         return nullptr;
 
-    frozen->candidate = std::move(capture.finalized_candidate);
-    if (not frozen->candidate || capture.active
+    frozen->candidate = std::move(candidate_owner);
+    return frozen;
+}
+
+template<class T>
+unique_ptr<typename AtlasGsz<T>::FrozenOrdinaryBatch>
+AtlasGsz<T>::freeze_finalized_tentative_double_rand_candidate()
+{
+    auto& capture = tentative_double_rand_capture_state;
+    const auto* candidate = capture.finalized_candidate.get();
+    if (capture.active || candidate == 0
+            || optimistic_authentication_state.status
+                    != OptimisticAuthenticationStatus::ready
+            || not validate_exact_ordinary_batch_correspondence(*candidate))
+        return nullptr;
+
+    auto candidate_owner = std::move(capture.finalized_candidate);
+    if (capture.active || not candidate_owner
             || not capture.producer_records.empty()
             || not capture.consumptions.empty())
         throw logic_error(
                 "AtlasGsz: pure ordinary freeze did not claim exactly one finalized candidate");
-    return frozen;
+    return build_frozen_ordinary_candidate(std::move(candidate_owner),
+            integrated_ordinary_batch_state
+                    .current_verification_batch_serial,
+            x_verify.size(), partial_mult_transcripts.size());
+}
+
+template<class T>
+unique_ptr<typename AtlasGsz<T>::FrozenOrdinaryBatch>
+AtlasGsz<T>::merge_verified_ordinary_segment_candidates()
+{
+    auto& segment = ordinary_online_segment_collector;
+    if (segment.lifecycle != OrdinaryOnlineSegmentLifecycle::closing
+            || segment.logical_segment_id == 0
+            || segment.verified_batches.empty())
+        return nullptr;
+
+    auto merged = make_unique<TentativeDoubleRandCaptureCandidate>();
+    unordered_map<const void*, size_t> producer_ordinals;
+    vector<vector<bool>> used_source_groups;
+    vector<unordered_map<size_t, bool>> used_outputs;
+    size_t total_coordinates = 0;
+    size_t total_transcripts = 0;
+    uint64_t previous_batch_serial = 0;
+
+    for (const auto& frozen_owner : segment.verified_batches)
+    {
+        const auto* frozen = frozen_owner.get();
+        const auto* candidate = frozen == 0 ? 0 : frozen->candidate.get();
+        if (candidate == 0
+                || frozen->verification_batch_serial == 0
+                || frozen->verification_batch_serial
+                        <= previous_batch_serial
+                || frozen->dealer_count != size_t(P.num_players())
+                || frozen->operation_count
+                        != candidate->consumed_outputs.size()
+                || frozen->operation_count
+                        != frozen->partial_transcript_count
+                || frozen->mapping_count
+                        != frozen->dealer_count * candidate->source_count
+                || frozen->prospective_batches.size()
+                        != frozen->dealer_count
+                || frozen->prospective_mappings.size()
+                        != frozen->mapping_count
+                || frozen->converted_term_mapping_indices.size()
+                        != frozen->operation_count
+                || frozen->e_t_source_ordinals.size()
+                        != frozen->operation_count)
+            return nullptr;
+        previous_batch_serial = frozen->verification_batch_serial;
+        total_coordinates = checked_size_sum(total_coordinates,
+                frozen->x_verify_coordinate_count,
+                "AtlasGsz: segment coordinate count overflow");
+        total_transcripts = checked_size_sum(total_transcripts,
+                frozen->partial_transcript_count,
+                "AtlasGsz: segment transcript count overflow");
+
+        vector<size_t> local_to_segment_producer(
+                candidate->producer_records.size());
+        for (size_t local_producer = 0;
+                local_producer < candidate->producer_records.size();
+                local_producer++)
+        {
+            const auto& producer = candidate->producer_records.at(
+                    local_producer);
+            if (not producer
+                    || not validate_tentative_paired_producer_record(
+                            *producer))
+                return nullptr;
+            auto existing = producer_ordinals.find(producer.get());
+            if (existing == producer_ordinals.end())
+            {
+                const size_t segment_producer =
+                        merged->producer_records.size();
+                if (not producer_ordinals.emplace(
+                        producer.get(), segment_producer).second)
+                    return nullptr;
+                merged->producer_records.push_back(producer);
+                used_source_groups.emplace_back(
+                        producer->degree_t.source_groups.size(), false);
+                used_outputs.emplace_back();
+                local_to_segment_producer.at(local_producer) =
+                        segment_producer;
+            }
+            else
+                local_to_segment_producer.at(local_producer) =
+                        existing->second;
+        }
+
+        for (const auto& local_group : candidate->source_groups)
+        {
+            if (local_group.producer_record_ordinal
+                        >= local_to_segment_producer.size())
+                return nullptr;
+            const size_t segment_producer =
+                    local_to_segment_producer.at(
+                            local_group.producer_record_ordinal);
+            if (local_group.input_generation_group_ordinal
+                        >= used_source_groups.at(segment_producer).size())
+                return nullptr;
+            used_source_groups.at(segment_producer).at(
+                    local_group.input_generation_group_ordinal) = true;
+        }
+
+        for (const auto& local_output : candidate->consumed_outputs)
+        {
+            if (local_output.producer_record_ordinal
+                        >= local_to_segment_producer.size())
+                return nullptr;
+            const size_t segment_producer =
+                    local_to_segment_producer.at(
+                            local_output.producer_record_ordinal);
+            if (not used_outputs.at(segment_producer).emplace(
+                    local_output.producer_output_ordinal, true).second)
+                return nullptr;
+
+            TentativeConsumedOutputEvidence output = local_output;
+            output.capture_order_ordinal =
+                    merged->consumed_outputs.size();
+            output.partial_mult_transcript_record_ordinal =
+                    output.capture_order_ordinal;
+            output.producer_record_ordinal = segment_producer;
+            for (auto& term : output.degree_t_derivation.terms)
+            {
+                if (term.source.producer_record_ordinal
+                            != local_output.producer_record_ordinal)
+                    return nullptr;
+                term.source.producer_record_ordinal = segment_producer;
+            }
+            merged->consumed_outputs.push_back(std::move(output));
+        }
+    }
+
+    for (size_t producer = 0; producer < used_source_groups.size();
+            producer++)
+        for (size_t group = 0;
+                group < used_source_groups.at(producer).size(); group++)
+            if (used_source_groups.at(producer).at(group))
+                merged->source_groups.push_back({producer, group});
+    merged->source_count = merged->source_groups.size();
+    if (merged->producer_records.empty() || merged->source_count == 0
+            || merged->consumed_outputs.empty()
+            || merged->consumed_outputs.size() != total_transcripts)
+        return nullptr;
+
+    merged->dealer_sources.reserve(P.num_players());
+    for (int dealer = 0; dealer < P.num_players(); dealer++)
+    {
+        TentativeDealerSourceSequence sequence{};
+        sequence.dealer = dealer;
+        sequence.sources.reserve(merged->source_count);
+        for (size_t source_ordinal = 0;
+                source_ordinal < merged->source_groups.size();
+                source_ordinal++)
+        {
+            const auto& group = merged->source_groups.at(source_ordinal);
+            const auto& original = merged->producer_records.at(
+                    group.producer_record_ordinal)
+                    ->degree_t.source_groups.at(
+                            group.input_generation_group_ordinal)
+                    .sources.at(dealer);
+            if (original.dealer != dealer
+                    || original.input_batch_ordinal
+                            != group.input_generation_group_ordinal)
+                return nullptr;
+            TentativeDealerSource source{};
+            source.reference.producer_record_ordinal =
+                    group.producer_record_ordinal;
+            source.reference.input_generation_group_ordinal =
+                    group.input_generation_group_ordinal;
+            source.reference.dealer = dealer;
+            source.tentative_source_ordinal = source_ordinal;
+            source.local_share = original.local_share;
+            sequence.sources.push_back(std::move(source));
+        }
+        merged->dealer_sources.push_back(std::move(sequence));
+    }
+
+    auto& report = segment.report;
+    report.double_rand_producer_records = merged->producer_records.size();
+    report.double_rand_source_groups = merged->source_groups.size();
+    report.outputs_per_double_rand_source_group.clear();
+    report.outputs_per_double_rand_source_group.reserve(
+            merged->source_groups.size());
+    for (const auto& group : merged->source_groups)
+    {
+        const auto& producer = *merged->producer_records.at(
+                group.producer_record_ordinal);
+        size_t degree_t_outputs = 0;
+        size_t degree_2t_outputs = 0;
+        for (const auto& derivation : producer.degree_t.output_derivations)
+            degree_t_outputs += derivation.input_batch_ordinal
+                    == group.input_generation_group_ordinal;
+        for (const auto& derivation : producer.degree_2t.output_derivations)
+            degree_2t_outputs += derivation.input_batch_ordinal
+                    == group.input_generation_group_ordinal;
+        if (degree_t_outputs == 0
+                || degree_t_outputs != degree_2t_outputs)
+            return nullptr;
+        report.outputs_per_double_rand_source_group.push_back(
+                degree_t_outputs);
+    }
+
+    return build_frozen_ordinary_candidate(std::move(merged),
+            segment.logical_segment_id, total_coordinates,
+            total_transcripts);
 }
 
 template<class T>
@@ -1534,10 +1757,19 @@ bool AtlasGsz<T>::agree_base_field_ftag_chunk_width()
 template<class T>
 AtlasGsz<T>::~AtlasGsz()
 {
+    if (integrated_ordinary_batch_state.lifecycle
+                    == OrdinaryBatchLifecycle::failed
+            || ordinary_online_segment_collector.lifecycle
+                    == OrdinaryOnlineSegmentLifecycle::failed)
+    {
+        print_communication_audit_summary();
+        return;
+    }
     if (not x_verify.empty())
         request_check(VerificationBatchFlushReason::destructor);
-    else
-        check();
+    if (ordinary_online_segment_collector.lifecycle
+            == OrdinaryOnlineSegmentLifecycle::collecting)
+        close_ordinary_online_segment();
     check_opened_values();
     print_communication_audit_summary();
 }
@@ -1564,6 +1796,491 @@ bool AtlasGsz<T>::communication_audit_enabled() const
 {
     const char* audit = getenv("ATLAS_GSZ_COMM_AUDIT");
     return audit != 0 && string(audit) == "1";
+}
+
+template<class T>
+size_t AtlasGsz<T>::estimate_frozen_ordinary_batch_owned_bytes(
+        const FrozenOrdinaryBatch& frozen) const
+{
+    size_t result = sizeof(FrozenOrdinaryBatch);
+    auto add_vector = [&] (size_t capacity, size_t element_size) {
+        result = checked_size_sum(result,
+                checked_size_product(capacity, element_size,
+                        "AtlasGsz: segment memory estimate overflow"),
+                "AtlasGsz: segment memory estimate overflow");
+    };
+
+    if (frozen.candidate)
+    {
+        const auto& candidate = *frozen.candidate;
+        result = checked_size_sum(result,
+                sizeof(TentativeDoubleRandCaptureCandidate),
+                "AtlasGsz: segment memory estimate overflow");
+        add_vector(candidate.producer_records.capacity(),
+                sizeof(shared_ptr<const typename Atlas<T>::
+                        DoubleSharingProducerProvenance>));
+        add_vector(candidate.source_groups.capacity(),
+                sizeof(TentativeSourceGroupReference));
+        add_vector(candidate.dealer_sources.capacity(),
+                sizeof(TentativeDealerSourceSequence));
+        for (const auto& sequence : candidate.dealer_sources)
+            add_vector(sequence.sources.capacity(),
+                    sizeof(TentativeDealerSource));
+        add_vector(candidate.consumed_outputs.capacity(),
+                sizeof(TentativeConsumedOutputEvidence));
+        for (const auto& output : candidate.consumed_outputs)
+        {
+            add_vector(output.degree_t_derivation.terms.capacity(),
+                    sizeof(TentativeLinearDerivationTerm));
+            add_vector(output.concrete_e_t_source
+                            .special_sharing_support.capacity(),
+                    sizeof(int));
+            add_vector(output.decomposition.dealer_components.capacity(),
+                    sizeof(typename Atlas<T>::
+                            DealerDoubleSharingContribution));
+            add_vector(output.decomposition.own_dealer_evidence
+                            .r_t_shares.capacity(),
+                    sizeof(typename Atlas<T>::share_value_type));
+            add_vector(output.decomposition.own_dealer_evidence
+                            .r_2t_shares.capacity(),
+                    sizeof(typename Atlas<T>::share_value_type));
+        }
+    }
+
+    add_vector(frozen.prospective_batches.capacity(),
+            sizeof(DealerSourceBatchRecord));
+    for (const auto& batch : frozen.prospective_batches)
+    {
+        add_vector(batch.source_ordinals.capacity(), sizeof(uint64_t));
+        add_vector(batch.local_source_shares.capacity(), sizeof(T));
+        add_vector(batch.authenticated_handles.capacity(),
+                sizeof(AuthenticatedSourceHandle));
+    }
+    add_vector(frozen.prospective_mappings.capacity(),
+            sizeof(TentativeDoubleRandProspectiveSourceMapping));
+    add_vector(frozen.converted_term_mapping_indices.capacity(),
+            sizeof(vector<size_t>));
+    for (const auto& indices : frozen.converted_term_mapping_indices)
+        add_vector(indices.capacity(), sizeof(size_t));
+    add_vector(frozen.e_t_source_ordinals.capacity(), sizeof(size_t));
+
+    const auto& receipt = frozen.receipt;
+    add_vector(receipt.dealer_batches.capacity(),
+            sizeof(TentativeDoubleRandDealerBatchSummary));
+    add_vector(receipt.source_handles.capacity(),
+            sizeof(TentativeDoubleRandSourceHandleMapping));
+    add_vector(receipt.converted_r_t_derivations.capacity(),
+            sizeof(TentativeDoubleRandConvertedRtDerivation));
+    for (const auto& converted : receipt.converted_r_t_derivations)
+        add_vector(converted.derivation.terms.capacity(),
+                sizeof(LinearDerivationTerm));
+    add_vector(receipt.authenticated_e_t_sources.capacity(),
+            sizeof(TentativeAuthenticatedEtSource));
+    for (const auto& source : receipt.authenticated_e_t_sources)
+        add_vector(source.special_sharing_support.capacity(), sizeof(int));
+    add_vector(receipt.converted_z_t_derivations.capacity(),
+            sizeof(TentativeDoubleRandConvertedZtDerivation));
+    for (const auto& converted : receipt.converted_z_t_derivations)
+        add_vector(converted.derivation.terms.capacity(),
+                sizeof(LinearDerivationTerm));
+    return result;
+}
+
+template<class T>
+size_t AtlasGsz<T>::estimate_ordinary_segment_collector_owned_bytes() const
+{
+    const auto& segment = ordinary_online_segment_collector;
+    size_t result = sizeof(OrdinaryOnlineSegmentCollector);
+    auto add_report_vector = [&](size_t capacity, size_t element_size) {
+        result = checked_size_sum(result,
+                checked_size_product(capacity, element_size,
+                        "AtlasGsz: segment memory estimate overflow"),
+                "AtlasGsz: segment memory estimate overflow");
+    };
+    add_report_vector(segment.report.operation_shapes.capacity(),
+            sizeof(OrdinaryBatchOperationShape));
+    add_report_vector(segment.report.per_dealer_source_counts.capacity(),
+            sizeof(size_t));
+    add_report_vector(segment.report.per_dealer_ftag_chunk_counts.capacity(),
+            sizeof(size_t));
+    add_report_vector(
+            segment.report.outputs_per_double_rand_source_group.capacity(),
+            sizeof(size_t));
+    result = checked_size_sum(result,
+            checked_size_product(segment.verified_batches.capacity(),
+                    sizeof(unique_ptr<FrozenOrdinaryBatch>),
+                    "AtlasGsz: segment memory estimate overflow"),
+            "AtlasGsz: segment memory estimate overflow");
+    for (const auto& frozen : segment.verified_batches)
+        if (frozen)
+            result = checked_size_sum(result,
+                    estimate_frozen_ordinary_batch_owned_bytes(*frozen),
+                    "AtlasGsz: segment memory estimate overflow");
+    return result;
+}
+
+template<class T>
+void AtlasGsz<T>::begin_ordinary_online_segment()
+{
+    auto& segment = ordinary_online_segment_collector;
+    auto& integrated = integrated_ordinary_batch_state;
+    if (segment.lifecycle == OrdinaryOnlineSegmentLifecycle::collecting)
+        return;
+    if (segment.lifecycle == OrdinaryOnlineSegmentLifecycle::failed)
+        throw logic_error(
+                "AtlasGsz: logical segment begin after fatal failure");
+    if (segment.lifecycle == OrdinaryOnlineSegmentLifecycle::closing)
+        throw logic_error(
+                "AtlasGsz: logical segment begin during close");
+    if (segment.lifecycle == OrdinaryOnlineSegmentLifecycle::promoted)
+        throw logic_error(
+                "AtlasGsz: this milestone supports exactly one logical online segment");
+    if (segment.next_logical_segment_id == 0)
+        throw overflow_error(
+                "AtlasGsz: logical segment identifier exhausted");
+
+    segment.logical_segment_id = segment.next_logical_segment_id++;
+    segment.checkpoint_id = 0;
+    segment.verified_batches.clear();
+    segment.report = IntegratedBatchReport{};
+    segment.report.valid = true;
+    segment.report.logical_segment_id = segment.logical_segment_id;
+    segment.lifecycle = OrdinaryOnlineSegmentLifecycle::collecting;
+    segment.peak_owned_bytes =
+            estimate_ordinary_segment_collector_owned_bytes();
+    integrated.logical_segments_started++;
+}
+
+template<class T>
+void AtlasGsz<T>::collect_verified_ordinary_batch(
+        unique_ptr<FrozenOrdinaryBatch> frozen,
+        const IntegratedBatchReport& batch_report)
+{
+    auto& segment = ordinary_online_segment_collector;
+    if (segment.lifecycle != OrdinaryOnlineSegmentLifecycle::collecting
+            || segment.logical_segment_id == 0 || not frozen
+            || not batch_report.valid
+            || batch_report.authentication_invocations_started != 0
+            || batch_report.authentication_invocations_completed != 0
+            || batch_report.authentication_invocations_accepted != 0)
+        throw logic_error(
+                "AtlasGsz: invalid verified ordinary-batch transfer to segment collector");
+
+    auto& report = segment.report;
+    report.verification_batch_serial =
+            batch_report.verification_batch_serial;
+    report.flush_reason = batch_report.flush_reason;
+    report.internal_gs20_checks++;
+    report.collected_verification_batches++;
+    report.ordinary_scalar_operations = checked_size_sum(
+            report.ordinary_scalar_operations,
+            batch_report.ordinary_scalar_operations,
+            "AtlasGsz: segment scalar-operation count overflow");
+    report.ordinary_dot_operations = checked_size_sum(
+            report.ordinary_dot_operations,
+            batch_report.ordinary_dot_operations,
+            "AtlasGsz: segment dot-operation count overflow");
+    report.x_verify_coordinates = checked_size_sum(
+            report.x_verify_coordinates,
+            batch_report.x_verify_coordinates,
+            "AtlasGsz: segment coordinate count overflow");
+    report.partial_transcripts = checked_size_sum(
+            report.partial_transcripts,
+            batch_report.partial_transcripts,
+            "AtlasGsz: segment transcript count overflow");
+    report.operation_shapes.insert(report.operation_shapes.end(),
+            batch_report.operation_shapes.begin(),
+            batch_report.operation_shapes.end());
+    report.gs20_de_linearization_challenges +=
+            batch_report.gs20_de_linearization_challenges;
+    report.gs20_dimension_reduction_challenges +=
+            batch_report.gs20_dimension_reduction_challenges;
+    report.gs20_randomization_logical_challenges +=
+            batch_report.gs20_randomization_logical_challenges;
+    report.gs20_randomization_raw_samples +=
+            batch_report.gs20_randomization_raw_samples;
+    report.gs20_communication += batch_report.gs20_communication;
+    segment.verified_batches.push_back(std::move(frozen));
+    segment.peak_owned_bytes = max(segment.peak_owned_bytes,
+            estimate_ordinary_segment_collector_owned_bytes());
+    report.peak_segment_collector_bytes = segment.peak_owned_bytes;
+}
+
+template<class T>
+void AtlasGsz<T>::close_ordinary_online_segment()
+{
+    auto& segment = ordinary_online_segment_collector;
+    auto& integrated = integrated_ordinary_batch_state;
+    auto& auth = optimistic_authentication_state;
+    if (segment.lifecycle == OrdinaryOnlineSegmentLifecycle::idle
+            || segment.lifecycle == OrdinaryOnlineSegmentLifecycle::promoted)
+        return;
+    if (segment.lifecycle != OrdinaryOnlineSegmentLifecycle::collecting
+            || segment.logical_segment_id == 0
+            || segment.verified_batches.empty()
+            || not x_verify.empty() || integrated.wrapper_operation_active)
+    {
+        segment.lifecycle = OrdinaryOnlineSegmentLifecycle::failed;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: RecoveryNotImplemented at malformed logical segment close");
+    }
+
+    segment.lifecycle = OrdinaryOnlineSegmentLifecycle::closing;
+    integrated.lifecycle = OrdinaryBatchLifecycle::authenticating_sources;
+    auto merged = merge_verified_ordinary_segment_candidates();
+    if (not merged)
+    {
+        segment.lifecycle = OrdinaryOnlineSegmentLifecycle::failed;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: RecoveryNotImplemented after segment structural preflight failure");
+    }
+    segment.peak_owned_bytes = max(segment.peak_owned_bytes,
+            checked_size_sum(
+                    estimate_ordinary_segment_collector_owned_bytes(),
+                    estimate_frozen_ordinary_batch_owned_bytes(*merged),
+                    "AtlasGsz: segment peak memory overflow"));
+    segment.report.peak_segment_collector_bytes =
+            segment.peak_owned_bytes;
+
+    const size_t dealer_batch_start = auth.dealer_batches.size();
+    const size_t nu_material_start = auth.nu_material.size();
+    const size_t holder_tag_start = auth.holder_tags.size();
+    const size_t global_invocation_start = auth.global_invocations.size();
+    const size_t checkpoint_start = auth.checkpoints.size();
+    const size_t auth_communication_before = P.total_comm().sent;
+    const size_t verify_invocations_before =
+            auth.verify_sharing_invocations;
+    const size_t key_setup_before = auth.key_establishment_runs;
+    const size_t check_key_before = auth.check_key_runs;
+    const size_t base_checks_before = auth.base_sharing_checks;
+    const size_t verify_comm_before = auth.verify_sharing_communication;
+    const size_t width_comm_before =
+            auth.base_field_ftag_chunk_width_agreement_communication;
+    const size_t key_comm_before = auth.key_establishment_communication;
+    const size_t base_comm_before = auth.base_sharing_communication;
+    const size_t ordinary_tag_comm_before =
+            auth.ordinary_tag_generation_communication;
+    const size_t base_tag_comm_before =
+            auth.base_tag_generation_communication;
+    const size_t check_tag_comm_before = auth.tag_checking_communication;
+    const size_t challenge_before = auth.global_check_tag_challenges;
+
+    GlobalAuthenticationTestFault test_fault =
+            GlobalAuthenticationTestFault::none;
+    int bad_verify_dealer = -1;
+    if (honest_batch_integration_test_mode
+            == "honest-batch-integration-auth-rejection")
+        bad_verify_dealer = 0;
+
+    TentativeDoubleRandAuthenticationReceipt receipt{};
+    size_t auth_communication = 0;
+    try
+    {
+        // Width agreement is the first close-time protocol action. A
+        // mismatch therefore precedes every width-dependent PRNG sample,
+        // key distribution, sharing check, and tag message.
+        agree_base_field_ftag_chunk_width();
+        integrated.authentication_invocations++;
+        segment.report.authentication_invocations_started = 1;
+        receipt = authenticate_frozen_tentative_double_rand_candidate(
+                *merged, test_fault, bad_verify_dealer);
+        integrated.authentication_invocations_completed++;
+        segment.report.authentication_invocations_completed = 1;
+        auth_communication = P.total_comm().sent - auth_communication_before;
+        integrated.total_authentication_communication += auth_communication;
+        integrated.total_integrated_communication += auth_communication;
+    }
+    catch (...)
+    {
+        auth_communication = P.total_comm().sent - auth_communication_before;
+        integrated.total_authentication_communication += auth_communication;
+        integrated.total_integrated_communication += auth_communication;
+        segment.lifecycle = OrdinaryOnlineSegmentLifecycle::failed;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw;
+    }
+
+    if (not receipt.authenticated)
+    {
+        if (auth.checkpoints.size() != checkpoint_start)
+            throw logic_error(
+                    "AtlasGsz: rejected segment authentication created a checkpoint");
+        for (size_t index = dealer_batch_start;
+                index < auth.dealer_batches.size(); index++)
+            if (not auth.dealer_batches.at(index)
+                    .authenticated_handles.empty())
+                throw logic_error(
+                        "AtlasGsz: rejected segment authentication created handles");
+        if (honest_batch_integration_test_mode
+                    == "honest-batch-integration-auth-rejection"
+                && P.my_num() == 0)
+            cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-auth-rejection"
+                 << " PASS internal_gs20_checks="
+                 << segment.report.internal_gs20_checks
+                 << " internal_authentication_invocations=0"
+                 << " segment_authentication_invocations=1"
+                 << " authentication_accepted=0 handles=0 checkpoints=0"
+                 << " lifecycle=failed" << endl;
+        segment.lifecycle = OrdinaryOnlineSegmentLifecycle::failed;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw mac_fail(
+                "AtlasGsz: RecoveryNotImplemented after logical-segment source authentication failure");
+    }
+
+    integrated.authentication_invocations_accepted++;
+    segment.report.authentication_invocations_accepted = 1;
+    if (receipt.converted_r_t_derivations.size()
+                    != merged->operation_count
+            || receipt.authenticated_e_t_sources.size()
+                    != merged->operation_count
+            || receipt.converted_z_t_derivations.size()
+                    != merged->operation_count)
+    {
+        segment.lifecycle = OrdinaryOnlineSegmentLifecycle::failed;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: RecoveryNotImplemented after incomplete segment derivation conversion");
+    }
+
+    vector<LinearDerivation> live_out_derivations;
+    live_out_derivations.reserve(
+            receipt.converted_z_t_derivations.size());
+    for (const auto& converted : receipt.converted_z_t_derivations)
+        live_out_derivations.push_back(converted.derivation);
+    const uint64_t checkpoint_id =
+            create_optimistic_checkpoint(live_out_derivations);
+    if (checkpoint_id == 0
+            || not promote_optimistic_checkpoint(checkpoint_id))
+    {
+        segment.lifecycle = OrdinaryOnlineSegmentLifecycle::failed;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: RecoveryNotImplemented after segment checkpoint validation failure");
+    }
+    const auto* checkpoint = find_optimistic_checkpoint(checkpoint_id);
+    if (checkpoint == 0 || not checkpoint->sealed
+            || not checkpoint->promoted
+            || checkpoint->output_derivations.size()
+                    != merged->operation_count)
+        throw logic_error(
+                "AtlasGsz: promoted segment checkpoint is incomplete");
+
+    auto& report = segment.report;
+    report.checkpoint_id = checkpoint_id;
+    report.checkpoint_sealed = true;
+    report.checkpoint_promoted = true;
+    report.verify_sharing_invocations =
+            auth.verify_sharing_invocations - verify_invocations_before;
+    report.check_key_setup_runs =
+            auth.key_establishment_runs - key_setup_before;
+    report.check_key_runs = auth.check_key_runs - check_key_before;
+    report.checked_base_sharings =
+            auth.base_sharing_checks - base_checks_before;
+    report.verify_sharing_communication =
+            auth.verify_sharing_communication - verify_comm_before;
+    report.key_check_communication =
+            auth.base_field_ftag_chunk_width_agreement_communication
+                    - width_comm_before
+            + auth.key_establishment_communication - key_comm_before;
+    report.base_sharing_communication =
+            auth.base_sharing_communication - base_comm_before;
+    report.ordinary_tag_communication =
+            auth.ordinary_tag_generation_communication
+                    - ordinary_tag_comm_before;
+    report.base_tag_communication =
+            auth.base_tag_generation_communication - base_tag_comm_before;
+    report.check_tag_communication =
+            auth.tag_checking_communication - check_tag_comm_before;
+    report.global_check_tag_challenges =
+            auth.global_check_tag_challenges - challenge_before;
+    report.total_authentication_communication = auth_communication;
+    report.total_integrated_communication =
+            report.gs20_communication + auth_communication;
+    report.r_t_derivations = receipt.converted_r_t_derivations.size();
+    report.direct_e_t_handles = receipt.authenticated_e_t_sources.size();
+    report.z_t_derivations = receipt.converted_z_t_derivations.size();
+    report.r_t_local_evaluations = report.r_t_derivations;
+    report.e_t_local_evaluations = report.direct_e_t_handles;
+    report.z_t_local_evaluations = report.z_t_derivations;
+
+    const size_t integrated_batch_count =
+            auth.dealer_batches.size() - dealer_batch_start;
+    report.per_dealer_source_counts.reserve(integrated_batch_count);
+    report.per_dealer_ftag_chunk_counts.reserve(integrated_batch_count);
+    for (size_t index = dealer_batch_start;
+            index < auth.dealer_batches.size(); index++)
+    {
+        const auto& batch = auth.dealer_batches.at(index);
+        report.per_dealer_source_counts.push_back(
+                batch.local_source_shares.size());
+        report.per_dealer_ftag_chunk_counts.push_back(
+                batch.ftag_chunk_count);
+        report.committed_handles += batch.authenticated_handles.size();
+    }
+    for (size_t index = nu_material_start;
+            index < auth.nu_material.size(); index++)
+        if (auth.nu_material.at(index).check_mask)
+            report.base_tag_nu_relations++;
+        else
+            report.ordinary_tag_nu_relations++;
+
+    integrated.committed_handles += report.committed_handles;
+    integrated.r_t_derivations += report.r_t_derivations;
+    integrated.direct_e_t_handles += report.direct_e_t_handles;
+    integrated.z_t_derivations += report.z_t_derivations;
+    integrated.ordinary_tag_nu_relations +=
+            report.ordinary_tag_nu_relations;
+    integrated.base_tag_nu_relations += report.base_tag_nu_relations;
+    integrated.double_rand_producer_records =
+            report.double_rand_producer_records;
+    integrated.double_rand_source_groups =
+            report.double_rand_source_groups;
+    integrated.outputs_per_double_rand_source_group =
+            report.outputs_per_double_rand_source_group;
+    integrated.peak_segment_collector_bytes =
+            report.peak_segment_collector_bytes;
+
+    // Authenticated source batches and the checkpoint remain authoritative.
+    // Fresh nu, holder tags, and the successful invocation presentation are
+    // segment-close transients and are retired after promotion.
+    auth.nu_material.resize(nu_material_start);
+    auth.holder_tags.resize(holder_tag_start);
+    auth.global_invocations.resize(global_invocation_start);
+    report.post_cleanup_dealer_batches = 0;
+    report.post_cleanup_nu_material =
+            auth.nu_material.size() - nu_material_start;
+    report.post_cleanup_holder_tags =
+            auth.holder_tags.size() - holder_tag_start;
+    report.post_cleanup_global_invocations =
+            auth.global_invocations.size() - global_invocation_start;
+    report.retained_dealer_batches = auth.dealer_batches.size();
+    report.retained_nu_material = auth.nu_material.size();
+    report.retained_holder_tags = auth.holder_tags.size();
+    report.retained_global_invocations = auth.global_invocations.size();
+    report.persistent_reusable_keys = auth.keys.size();
+    report.persistent_key_epoch = auth.key_epoch;
+
+    segment.verified_batches.clear();
+    vector<unique_ptr<FrozenOrdinaryBatch>>().swap(
+            segment.verified_batches);
+    report.post_cleanup_frozen_batches = 0;
+    report.post_cleanup_receipt_dealer_batches = 0;
+    report.post_cleanup_receipt_source_handles = 0;
+    report.post_cleanup_receipt_r_t = 0;
+    report.post_cleanup_receipt_e_t = 0;
+    report.post_cleanup_receipt_z_t = 0;
+    segment.checkpoint_id = checkpoint_id;
+    segment.lifecycle = OrdinaryOnlineSegmentLifecycle::promoted;
+    integrated.lifecycle = OrdinaryBatchLifecycle::idle;
+    integrated.logical_segments_closed++;
+    integrated.logical_segments_promoted++;
+    integrated.latest_batch = report;
+    print_communication_audit_batch(report);
+    if (not honest_batch_integration_test_mode.empty())
+        print_integrated_batch_report(report);
+    segment.report = IntegratedBatchReport{};
 }
 
 template<class T>
@@ -1620,6 +2337,10 @@ void AtlasGsz<T>::ensure_wrapper_entry_allowed(const char* operation)
             || integrated.lifecycle == OrdinaryBatchLifecycle::failed)
         throw logic_error(string("AtlasGsz: wrapper entry during fatal or internal phase: ")
                 + operation);
+    if (ordinary_online_segment_collector.lifecycle
+            == OrdinaryOnlineSegmentLifecycle::failed)
+        throw logic_error(string("AtlasGsz: wrapper entry after fatal segment failure: ")
+                + operation);
 }
 
 template<class T>
@@ -1639,6 +2360,11 @@ void AtlasGsz<T>::enter_verification_operation(
 
     if (automatic_ordinary_integration_enabled())
     {
+        if (eligible
+                && ordinary_online_segment_collector.lifecycle
+                        == OrdinaryOnlineSegmentLifecycle::promoted)
+            throw logic_error(
+                    "AtlasGsz: an ordinary operation followed the sole promoted online segment");
         if (eligible && not x_verify.empty()
                 && integrated.lifecycle !=
                         OrdinaryBatchLifecycle::capturing_ordinary)
@@ -1701,6 +2427,7 @@ void AtlasGsz<T>::finish_verification_operation(
                     || operation_kind
                         == OrdinaryDoubleRandOperationKind::dot_product))
     {
+        begin_ordinary_online_segment();
         if (operation_kind
                 == OrdinaryDoubleRandOperationKind::scalar_multiplication)
             integrated.ordinary_scalar_operations++;
@@ -15835,9 +16562,13 @@ void AtlasGsz<T>::print_integrated_batch_report(
         }
         return "invalid";
     };
-    cout << "ATLAS_GSZ_INTEGRATED_BATCH"
-         << " serial=" << report.verification_batch_serial
-         << " reason=" << reason()
+    cout << "ATLAS_GSZ_INTEGRATED_SEGMENT"
+         << " logical_segment_id=" << report.logical_segment_id
+         << " checkpoint_id=" << report.checkpoint_id
+         << " internal_gs20_checks=" << report.internal_gs20_checks
+         << " collected_verification_batches="
+         << report.collected_verification_batches
+         << " closing_batch_reason=" << reason()
          << " scalar_ops=" << report.ordinary_scalar_operations
          << " dot_ops=" << report.ordinary_dot_operations
          << " total_ops=" << report.operation_shapes.size()
@@ -15868,6 +16599,30 @@ void AtlasGsz<T>::print_integrated_batch_report(
         if (i != 0)
             cout << ',';
         cout << report.per_dealer_ftag_chunk_counts.at(i);
+    }
+    cout << " producer_records=" << report.double_rand_producer_records
+         << " producer_groups=" << report.double_rand_source_groups
+         << " outputs_per_producer_group=";
+    const bool uniform_producer_group_width =
+            not report.outputs_per_double_rand_source_group.empty()
+            && all_of(
+                    report.outputs_per_double_rand_source_group.begin(),
+                    report.outputs_per_double_rand_source_group.end(),
+                    [&] (size_t width) {
+                        return width == report
+                                .outputs_per_double_rand_source_group.front();
+                    });
+    if (uniform_producer_group_width)
+        cout << report.outputs_per_double_rand_source_group.front()
+             << 'x'
+             << report.outputs_per_double_rand_source_group.size();
+    else for (size_t group = 0;
+            group < report.outputs_per_double_rand_source_group.size();
+            group++)
+    {
+        if (group != 0)
+            cout << ',';
+        cout << report.outputs_per_double_rand_source_group.at(group);
     }
     cout << " handles=" << report.committed_handles
          << " r_t=" << report.r_t_derivations
@@ -15934,6 +16689,10 @@ void AtlasGsz<T>::print_integrated_batch_report(
          << report.retained_global_invocations
          << " persistent_keys=" << report.persistent_reusable_keys
          << " key_epoch=" << report.persistent_key_epoch
+         << " checkpoint_sealed=" << report.checkpoint_sealed
+         << " checkpoint_promoted=" << report.checkpoint_promoted
+         << " peak_segment_collector_bytes="
+         << report.peak_segment_collector_bytes
          << endl;
 }
 
@@ -15964,11 +16723,13 @@ void AtlasGsz<T>::print_communication_audit_batch(
             report.per_dealer_ftag_chunk_counts.begin(),
             report.per_dealer_ftag_chunk_counts.end(), size_t(0));
 
-    cout << "ATLAS_GSZ_COMM_AUDIT_BATCH"
+    cout << "ATLAS_GSZ_COMM_AUDIT_SEGMENT"
          << " party=" << P.my_num()
          << " communication_scope=party-local-sent-bytes"
-         << " serial=" << report.verification_batch_serial
-         << " reason=" << reason()
+         << " logical_segment_id=" << report.logical_segment_id
+         << " checkpoint_id=" << report.checkpoint_id
+         << " internal_gs20_checks=" << report.internal_gs20_checks
+         << " closing_batch_reason=" << reason()
          << " operations=" << report.operation_shapes.size()
          << " scalar_operations=" << report.ordinary_scalar_operations
          << " dot_operations=" << report.ordinary_dot_operations
@@ -15994,7 +16755,34 @@ void AtlasGsz<T>::print_communication_audit_batch(
         cout << dealer << ':'
              << report.per_dealer_ftag_chunk_counts.at(dealer);
     }
+    cout << " double_rand_producer_records="
+         << report.double_rand_producer_records
+         << " double_rand_producer_groups="
+         << report.double_rand_source_groups
+         << " outputs_per_producer_group=";
+    const bool uniform_producer_group_width =
+            not report.outputs_per_double_rand_source_group.empty()
+            && all_of(
+                    report.outputs_per_double_rand_source_group.begin(),
+                    report.outputs_per_double_rand_source_group.end(),
+                    [&] (size_t width) {
+                        return width == report
+                                .outputs_per_double_rand_source_group.front();
+                    });
+    if (uniform_producer_group_width)
+        cout << report.outputs_per_double_rand_source_group.front()
+             << 'x'
+             << report.outputs_per_double_rand_source_group.size();
+    else for (size_t group = 0;
+            group < report.outputs_per_double_rand_source_group.size();
+            group++)
+    {
+        if (group != 0)
+            cout << ',';
+        cout << report.outputs_per_double_rand_source_group.at(group);
+    }
     cout << " total_source_chunks=" << total_source_chunks
+         << " committed_handles=" << report.committed_handles
          << " persistent_verifier_holder_keys="
          << report.persistent_reusable_keys
          << " ordinary_key_chunk_relations="
@@ -16014,6 +16802,10 @@ void AtlasGsz<T>::print_communication_audit_batch(
          << " comm_check_tag=" << report.check_tag_communication
          << " comm_authentication="
          << report.total_authentication_communication
+         << " checkpoint_sealed=" << report.checkpoint_sealed
+         << " checkpoint_promoted=" << report.checkpoint_promoted
+         << " peak_segment_collector_bytes="
+         << report.peak_segment_collector_bytes
          << endl;
 }
 
@@ -16041,12 +16833,29 @@ void AtlasGsz<T>::print_communication_audit_summary() const
             ? integrated.total_authentication_communication
                     - accounted_authentication_communication
             : 0;
+    const bool non_authentication_accounting_consistent =
+            P.total_comm().sent
+                    >= integrated.total_authentication_communication;
+    const size_t non_authentication_communication =
+            non_authentication_accounting_consistent
+            ? P.total_comm().sent
+                    - integrated.total_authentication_communication
+            : 0;
+    const auto& report = integrated.latest_batch;
 
     cout << "ATLAS_GSZ_COMM_AUDIT_TOTAL"
          << " party=" << P.my_num()
          << " communication_scope=party-local-sent-bytes"
          << " chunk_width=" << base_field_ftag_chunk_width()
-         << " batches=" << integrated.authentication_invocations
+         << " internal_gs20_checks=" << integrated.gs20_checks
+         << " logical_segments_started="
+         << integrated.logical_segments_started
+         << " logical_segments_closed="
+         << integrated.logical_segments_closed
+         << " logical_segments_promoted="
+         << integrated.logical_segments_promoted
+         << " authentication_invocations="
+         << integrated.authentication_invocations
          << " reason_threshold=" << integrated.threshold_batches
          << " reason_eligibility_boundary="
          << integrated.eligibility_boundary_batches
@@ -16061,6 +16870,51 @@ void AtlasGsz<T>::print_communication_audit_summary() const
          << " x_verify_coordinates="
          << integrated.x_verify_coordinates
          << " transcripts=" << integrated.partial_transcripts
+         << " double_rand_producer_records="
+         << integrated.double_rand_producer_records
+         << " double_rand_producer_groups="
+         << integrated.double_rand_source_groups
+         << " outputs_per_producer_group=";
+    const bool uniform_producer_group_width =
+            not integrated.outputs_per_double_rand_source_group.empty()
+            && all_of(
+                    integrated.outputs_per_double_rand_source_group.begin(),
+                    integrated.outputs_per_double_rand_source_group.end(),
+                    [&] (size_t width) {
+                        return width == integrated
+                                .outputs_per_double_rand_source_group.front();
+                    });
+    if (uniform_producer_group_width)
+        cout << integrated.outputs_per_double_rand_source_group.front()
+             << 'x'
+             << integrated.outputs_per_double_rand_source_group.size();
+    else for (size_t group = 0;
+            group < integrated.outputs_per_double_rand_source_group.size();
+            group++)
+    {
+        if (group != 0)
+            cout << ',';
+        cout << integrated.outputs_per_double_rand_source_group.at(group);
+    }
+    cout << " per_dealer_source_counts=";
+    for (size_t dealer = 0;
+            dealer < report.per_dealer_source_counts.size(); dealer++)
+    {
+        if (dealer != 0)
+            cout << ',';
+        cout << dealer << ':'
+             << report.per_dealer_source_counts.at(dealer);
+    }
+    cout << " ordinary_source_chunks=";
+    for (size_t dealer = 0;
+            dealer < report.per_dealer_ftag_chunk_counts.size(); dealer++)
+    {
+        if (dealer != 0)
+            cout << ',';
+        cout << dealer << ':'
+             << report.per_dealer_ftag_chunk_counts.at(dealer);
+    }
+    cout << " committed_handles=" << integrated.committed_handles
          << " persistent_verifier_holder_keys=" << auth.keys.size()
          << " total_source_chunks=" << auth.total_ftag_chunks
          << " ordinary_key_chunk_relations="
@@ -16093,6 +16947,12 @@ void AtlasGsz<T>::print_communication_audit_summary() const
          << unattributed_authentication_communication
          << " authentication_accounting_consistent="
          << accounting_consistent
+         << " comm_non_authentication="
+         << non_authentication_communication
+         << " non_authentication_accounting_consistent="
+         << non_authentication_accounting_consistent
+         << " peak_segment_collector_bytes="
+         << integrated.peak_segment_collector_bytes
          << " comm_player_total=" << P.total_comm().sent
          << endl;
 }
@@ -16111,8 +16971,51 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
         return;
 
     auto& auth = optimistic_authentication_state;
-    const uint64_t next_batch_id = auth.next_batch_id;
-    const uint64_t next_invocation_id = auth.next_global_invocation_id;
+    const auto& open_segment = ordinary_online_segment_collector;
+    if (auth.next_batch_id != 1
+            || auth.next_global_invocation_id != 1
+            || not auth.dealer_batches.empty()
+            || not auth.global_invocations.empty()
+            || not auth.keys.empty()
+            || integrated.authentication_invocations != 0
+            || integrated.authentication_invocations_completed != 0
+            || integrated.authentication_invocations_accepted != 0
+            || integrated.total_authentication_communication != 0
+            || open_segment.lifecycle
+                    != OrdinaryOnlineSegmentLifecycle::collecting
+            || open_segment.logical_segment_id != 1
+            || open_segment.verified_batches.size() != 7
+            || open_segment.report.internal_gs20_checks != 7)
+        throw logic_error(
+                "AtlasGsz: internal GS20 checks authenticated before segment close");
+
+    vector<const void*> expected_producers;
+    vector<pair<const void*, size_t>> expected_groups;
+    for (const auto& frozen : open_segment.verified_batches)
+    {
+        if (not frozen || not frozen->candidate)
+            throw logic_error(
+                    "AtlasGsz: focused segment lost a verified candidate");
+        const auto& candidate = *frozen->candidate;
+        for (const auto& producer : candidate.producer_records)
+            if (find(expected_producers.begin(), expected_producers.end(),
+                    producer.get()) == expected_producers.end())
+                expected_producers.push_back(producer.get());
+        for (const auto& group : candidate.source_groups)
+        {
+            const pair<const void*, size_t> identity(
+                    candidate.producer_records.at(
+                            group.producer_record_ordinal).get(),
+                    group.input_generation_group_ordinal);
+            if (find(expected_groups.begin(), expected_groups.end(),
+                    identity) == expected_groups.end())
+                expected_groups.push_back(identity);
+        }
+    }
+    const size_t expected_producer_records = expected_producers.size();
+    const size_t expected_source_groups = expected_groups.size();
+
+    close_ordinary_online_segment();
     const size_t communication = P.total_comm().sent;
     const size_t gs20_checks = integrated.gs20_checks;
     const size_t auth_invocations = integrated.authentication_invocations;
@@ -16121,9 +17024,63 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
     const size_t auth_accepted =
             integrated.authentication_invocations_accepted;
     check();
-    if (auth.next_batch_id != next_batch_id
-            || auth.next_global_invocation_id != next_invocation_id
-            || P.total_comm().sent != communication
+    const auto& segment = ordinary_online_segment_collector;
+    const auto& report = integrated.latest_batch;
+    const size_t expected_handles = checked_size_sum(
+            checked_size_product(size_t(P.num_players()),
+                    expected_source_groups,
+                    "AtlasGsz: focused handle count overflow"),
+            operations, "AtlasGsz: focused handle count overflow");
+    size_t expected_ordinary_chunks = 0;
+    for (int dealer = 0; dealer < P.num_players(); dealer++)
+        expected_ordinary_chunks += base_field_ftag_chunk_count(
+                expected_source_groups
+                + (dealer == 0 ? operations : 0));
+    const size_t verifier_holder_relations =
+            size_t(P.num_players() * (P.num_players() - 1));
+    bool producer_group_widths_are_actual_n =
+            report.outputs_per_double_rand_source_group.size()
+                    == expected_source_groups;
+    for (auto output_count :
+            report.outputs_per_double_rand_source_group)
+        producer_group_widths_are_actual_n &=
+                output_count == size_t(P.num_players());
+    bool source_counts_are_exact =
+            report.per_dealer_source_counts.size()
+                    == size_t(P.num_players());
+    for (int dealer = 0; dealer < P.num_players()
+            && source_counts_are_exact; dealer++)
+        source_counts_are_exact &=
+                report.per_dealer_source_counts.at(dealer)
+                == expected_source_groups
+                        + (dealer == 0 ? operations : 0);
+    static const OrdinaryDoubleRandOperationKind expected_kinds[] = {
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::dot_product,
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::dot_product,
+            OrdinaryDoubleRandOperationKind::dot_product,
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::dot_product,
+            OrdinaryDoubleRandOperationKind::scalar_multiplication,
+            OrdinaryDoubleRandOperationKind::dot_product};
+    static const size_t expected_lengths[] = {
+            1, 1, 1, 3, 1, 3, 5, 1, 1, 3, 1, 2};
+    bool operation_order_is_exact = report.operation_shapes.size()
+            == sizeof(expected_kinds) / sizeof(expected_kinds[0]);
+    for (size_t i = 0;
+            i < report.operation_shapes.size() && operation_order_is_exact;
+            i++)
+        operation_order_is_exact &=
+                report.operation_shapes.at(i).kind == expected_kinds[i]
+                && report.operation_shapes.at(i).length
+                        == expected_lengths[i];
+    const auto* checkpoint =
+            find_optimistic_checkpoint(segment.checkpoint_id);
+    if (P.total_comm().sent != communication
             || integrated.gs20_checks != gs20_checks
             || integrated.authentication_invocations != auth_invocations
             || integrated.authentication_invocations_completed
@@ -16137,9 +17094,9 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
             || integrated.eligibility_boundary_batches != 1
             || integrated.explicit_residual_batches != 2
             || integrated.gs20_checks != 8
-            || integrated.authentication_invocations != 7
-            || integrated.authentication_invocations_completed != 7
-            || integrated.authentication_invocations_accepted != 7
+            || integrated.authentication_invocations != 1
+            || integrated.authentication_invocations_completed != 1
+            || integrated.authentication_invocations_accepted != 1
             || integrated.ordinary_scalar_operations != 7
             || integrated.ordinary_dot_operations != 5
             || integrated.ordinary_operations != 12
@@ -16149,54 +17106,72 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
                     != size_t(P.num_players() * (P.num_players() - 1))
             || auth.key_epoch != 1
             || auth.verify_sharing_invocations
-                    != size_t(7 * P.num_players())
+                    != size_t(P.num_players())
             || auth.base_sharing_checks
-                    != size_t(7 * P.num_players())
-            || auth.global_check_tag_challenges != 7
-            || integrated.committed_handles
-                    != size_t(P.num_players() == 3 ? 36 : 52)
+                    != size_t(P.num_players())
+            || auth.global_check_tag_challenges != 1
+            || integrated.committed_handles != expected_handles
             || integrated.r_t_derivations != 12
             || integrated.direct_e_t_handles != 12
             || integrated.z_t_derivations != 12
             || integrated.ordinary_tag_nu_relations
-                    != size_t(P.num_players() == 3 ? 126 : 700)
+                    != expected_ordinary_chunks
+                            * verifier_holder_relations
             || integrated.base_tag_nu_relations
-                    != size_t(P.num_players() == 3 ? 126 : 700)
+                    != size_t(P.num_players())
+                            * verifier_holder_relations
+            || integrated.logical_segments_started != 1
+            || integrated.logical_segments_closed != 1
+            || integrated.logical_segments_promoted != 1
+            || segment.lifecycle
+                    != OrdinaryOnlineSegmentLifecycle::promoted
+            || segment.logical_segment_id != 1
+            || segment.checkpoint_id == 0
+            || not segment.verified_batches.empty()
+            || checkpoint == 0 || not checkpoint->sealed
+            || not checkpoint->promoted
+            || checkpoint->output_derivations.size() != operations
+            || auth.checkpoints.size() != 1
+            || auth.dealer_batches.size() != size_t(P.num_players())
+            || not auth.nu_material.empty()
+            || not auth.holder_tags.empty()
+            || not auth.global_invocations.empty()
+            || report.logical_segment_id != 1
+            || report.internal_gs20_checks != 7
+            || report.collected_verification_batches != 7
+            || report.double_rand_producer_records
+                    != expected_producer_records
+            || report.double_rand_source_groups
+                    != expected_source_groups
+            || not producer_group_widths_are_actual_n
+            || not source_counts_are_exact
+            || not operation_order_is_exact
+            || report.peak_segment_collector_bytes == 0
+            || report.committed_handles != expected_handles
+            || not report.checkpoint_sealed
+            || not report.checkpoint_promoted
             || auth.verify_sharing_communication == 0
             || auth.key_establishment_communication == 0
             || auth.base_sharing_communication == 0
             || auth.ordinary_tag_generation_communication == 0
             || auth.base_tag_generation_communication == 0
             || auth.tag_checking_communication == 0
-            || not integrated.latest_batch.valid
-            || integrated.latest_batch.post_cleanup_dealer_batches != 0
-            || integrated.latest_batch.post_cleanup_nu_material != 0
-            || integrated.latest_batch.post_cleanup_holder_tags != 0
-            || integrated.latest_batch.post_cleanup_global_invocations != 0
-            || integrated.latest_batch.post_cleanup_virtual_transcripts != 0
-            || integrated.latest_batch
-                    .post_cleanup_virtual_king_evidence != 0
-            || integrated.latest_batch.post_cleanup_capture_active != 0
-            || integrated.latest_batch.post_cleanup_capture_finalized != 0
-            || integrated.latest_batch.post_cleanup_capture_producers != 0
-            || integrated.latest_batch.post_cleanup_capture_consumptions != 0
-            || integrated.latest_batch
-                    .post_cleanup_capture_producer_indices != 0
-            || integrated.latest_batch
-                    .post_cleanup_capture_output_indices != 0
-            || integrated.latest_batch.post_cleanup_frozen_batches != 0
-            || integrated.latest_batch
-                    .post_cleanup_receipt_dealer_batches != 0
-            || integrated.latest_batch
-                    .post_cleanup_receipt_source_handles != 0
-            || integrated.latest_batch.post_cleanup_receipt_r_t != 0
-            || integrated.latest_batch.post_cleanup_receipt_e_t != 0
-            || integrated.latest_batch.post_cleanup_receipt_z_t != 0)
+            || not report.valid
+            || report.post_cleanup_nu_material != 0
+            || report.post_cleanup_holder_tags != 0
+            || report.post_cleanup_global_invocations != 0
+            || report.post_cleanup_frozen_batches != 0
+            || report.post_cleanup_receipt_dealer_batches != 0
+            || report.post_cleanup_receipt_source_handles != 0
+            || report.post_cleanup_receipt_r_t != 0
+            || report.post_cleanup_receipt_e_t != 0
+            || report.post_cleanup_receipt_z_t != 0)
         throw logic_error(
                 "AtlasGsz: honest batch integration cumulative test failed");
 
     honest_batch_integration_test_hook_ran = true;
     if (P.my_num() == 0)
+    {
         cout << "ATLAS_GSZ_AUTH_TEST "
              << honest_batch_integration_test_mode
              << " PASS production_threshold="
@@ -16212,6 +17187,10 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
              << integrated.eligibility_boundary_batches
              << " residual_batches=" << integrated.explicit_residual_batches
              << " gs20_checks=" << integrated.gs20_checks
+             << " internal_gs20_checks="
+             << report.internal_gs20_checks
+             << " logical_segments="
+             << integrated.logical_segments_promoted
              << " authentication_invocations="
              << integrated.authentication_invocations
              << " authentication_completed="
@@ -16222,6 +17201,29 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
              << " r_t=" << integrated.r_t_derivations
              << " e_t=" << integrated.direct_e_t_handles
              << " z_t=" << integrated.z_t_derivations
+             << " producer_records="
+             << report.double_rand_producer_records
+             << " producer_groups="
+             << report.double_rand_source_groups
+             << " outputs_per_producer_group=";
+        for (size_t group = 0;
+                group < report.outputs_per_double_rand_source_group.size();
+                group++)
+        {
+            if (group != 0)
+                cout << ',';
+            cout << report.outputs_per_double_rand_source_group.at(group);
+        }
+        cout << " dealer_sources=";
+        for (size_t dealer = 0;
+                dealer < report.per_dealer_source_counts.size(); dealer++)
+        {
+            if (dealer != 0)
+                cout << ',';
+            cout << dealer << ':'
+                 << report.per_dealer_source_counts.at(dealer);
+        }
+        cout << " ordinary_source_chunks=" << expected_ordinary_chunks
              << " ordinary_relations="
              << integrated.ordinary_tag_nu_relations
              << " base_relations=" << integrated.base_tag_nu_relations
@@ -16253,9 +17255,16 @@ void AtlasGsz<T>::maybe_flush_honest_batch_integration_residual()
              << " runtime=unavailable"
              << " empty_check=no-op"
              << " post_cleanup=bounded-zero"
+             << " retained_dealer_batches="
+             << auth.dealer_batches.size()
+             << " checkpoint_id=" << segment.checkpoint_id
+             << " checkpoint=sealed-promoted"
+             << " peak_segment_collector_bytes="
+             << report.peak_segment_collector_bytes
              << " persistent_keys=" << auth.keys.size()
              << " key_epoch=" << auth.key_epoch
              << endl;
+    }
 }
 
 
@@ -16396,6 +17405,8 @@ void AtlasGsz<T>::check()
         catch (...)
         {
             integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+            ordinary_online_segment_collector.lifecycle =
+                    OrdinaryOnlineSegmentLifecycle::failed;
             throw;
         }
     }
@@ -16510,6 +17521,10 @@ void AtlasGsz<T>::check()
                     gs20_communication;
         integrated.inject_unsupported_gs20_failure = false;
         integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        if (ordinary_online_segment_collector.lifecycle
+                == OrdinaryOnlineSegmentLifecycle::collecting)
+            ordinary_online_segment_collector.lifecycle =
+                    OrdinaryOnlineSegmentLifecycle::failed;
         if (integrated_ordinary
                 && honest_batch_integration_test_mode
                         == "honest-batch-integration-gs20-failure"
@@ -16517,7 +17532,8 @@ void AtlasGsz<T>::check()
             cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-gs20-failure"
                  << " PASS gs20_checks=1 authentication_invocations=0"
                  << " gs20_comm=" << gs20_communication
-                 << " handles=0 frozen_batch=retained lifecycle=failed"
+                 << " handles=0 checkpoints=0 frozen_batch=retained"
+                 << " segment_lifecycle=failed lifecycle=failed"
                  << endl;
         if (not integrated_ordinary
                 && honest_batch_integration_test_mode
@@ -16544,7 +17560,13 @@ void AtlasGsz<T>::check()
                             != second_check_communication_before
                     || gs20_communication == 0
                     || integrated.lifecycle
-                            != OrdinaryBatchLifecycle::failed)
+                            != OrdinaryBatchLifecycle::failed
+                    || ordinary_online_segment_collector.lifecycle
+                            != OrdinaryOnlineSegmentLifecycle::failed
+                    || not optimistic_authentication_state
+                            .dealer_batches.empty()
+                    || not optimistic_authentication_state
+                            .checkpoints.empty())
                 throw logic_error(
                         "AtlasGsz: unsupported GS20 failure did not remain communication-free and fatal");
             if (P.my_num() == 0)
@@ -16555,7 +17577,8 @@ void AtlasGsz<T>::check()
                      << " second_check_comm=0 lifecycle=failed"
                      << endl;
         }
-        throw;
+        throw mac_fail(
+                "AtlasGsz: RecoveryNotImplemented after GS20 verification failure");
     }
     const size_t gs20_communication =
             P.total_comm().sent - gs20_communication_before;
@@ -16618,9 +17641,6 @@ void AtlasGsz<T>::check()
 
     if (integrated_ordinary)
     {
-        try
-        {
-        auto& auth = optimistic_authentication_state;
         report.gs20_communication = gs20_communication;
         report.gs20_de_linearization_challenges =
                 integrated.gs20_de_linearization_challenges
@@ -16634,175 +17654,14 @@ void AtlasGsz<T>::check()
         report.gs20_randomization_raw_samples =
                 integrated.gs20_randomization_raw_samples
                 - randomization_raw_before;
-
-        const size_t dealer_batch_start = auth.dealer_batches.size();
-        const size_t nu_material_start = auth.nu_material.size();
-        const size_t holder_tag_start = auth.holder_tags.size();
-        const size_t global_invocation_start =
-                auth.global_invocations.size();
-        const size_t auth_communication_before = P.total_comm().sent;
-        const size_t verify_invocations_before =
-                auth.verify_sharing_invocations;
-        const size_t key_setup_before = auth.key_establishment_runs;
-        const size_t check_key_before = auth.check_key_runs;
-        const size_t base_checks_before = auth.base_sharing_checks;
-        const size_t verify_comm_before =
-                auth.verify_sharing_communication;
-        const size_t width_comm_before =
-                auth.base_field_ftag_chunk_width_agreement_communication;
-        const size_t key_comm_before =
-                auth.key_establishment_communication;
-        const size_t base_comm_before = auth.base_sharing_communication;
-        const size_t ordinary_tag_comm_before =
-                auth.ordinary_tag_generation_communication;
-        const size_t base_tag_comm_before =
-                auth.base_tag_generation_communication;
-        const size_t check_tag_comm_before =
-                auth.tag_checking_communication;
-        const size_t challenge_before =
-                auth.global_check_tag_challenges;
-
-        integrated.lifecycle =
-                OrdinaryBatchLifecycle::authenticating_sources;
-        GlobalAuthenticationTestFault test_fault =
-                GlobalAuthenticationTestFault::none;
-        int bad_verify_dealer = -1;
-        if (honest_batch_integration_test_mode
-                == "honest-batch-integration-auth-rejection")
-            bad_verify_dealer = 0;
-        bool authentication_communication_recorded = false;
-        size_t auth_communication = 0;
-        auto record_authentication_communication = [&] {
-            if (authentication_communication_recorded)
-                return;
-            auth_communication =
-                    P.total_comm().sent - auth_communication_before;
-            integrated.total_authentication_communication +=
-                    auth_communication;
-            integrated.total_integrated_communication +=
-                    auth_communication;
-            authentication_communication_recorded = true;
-        };
-        integrated.authentication_invocations++;
-        report.authentication_invocations_started = 1;
-        try
-        {
-            integrated.adapter_receipt =
-                    authenticate_frozen_tentative_double_rand_candidate(
-                            *integrated.frozen_batch, test_fault,
-                            bad_verify_dealer);
-        }
-        catch (...)
-        {
-            record_authentication_communication();
-            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
-            throw;
-        }
-        integrated.authentication_invocations_completed++;
-        report.authentication_invocations_completed = 1;
-        record_authentication_communication();
-
-        if (not integrated.adapter_receipt.authenticated)
-        {
-            if (honest_batch_integration_test_mode
-                    == "honest-batch-integration-auth-rejection"
-                    && P.my_num() == 0)
-                cout << "ATLAS_GSZ_AUTH_TEST honest-batch-integration-auth-rejection"
-                     << " PASS gs20_checks=1 authentication_started=1"
-                     << " authentication_completed=1 authentication_accepted=0"
-                     << " auth_comm=" << auth_communication
-                     << " handles=0 lifecycle=failed"
-                     << endl;
-            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
-            throw mac_fail(
-                    "AtlasGsz: RecoveryNotImplemented after integrated ordinary-source authentication failure");
-        }
-        integrated.authentication_invocations_accepted++;
-        report.authentication_invocations_accepted = 1;
-
-        report.verify_sharing_invocations =
-                auth.verify_sharing_invocations - verify_invocations_before;
-        report.check_key_setup_runs =
-                auth.key_establishment_runs - key_setup_before;
-        report.check_key_runs = auth.check_key_runs - check_key_before;
-        report.checked_base_sharings =
-                auth.base_sharing_checks - base_checks_before;
-        report.verify_sharing_communication =
-                auth.verify_sharing_communication - verify_comm_before;
-        report.key_check_communication =
-                auth.base_field_ftag_chunk_width_agreement_communication
-                        - width_comm_before
-                + auth.key_establishment_communication - key_comm_before;
-        report.base_sharing_communication =
-                auth.base_sharing_communication - base_comm_before;
-        report.ordinary_tag_communication =
-                auth.ordinary_tag_generation_communication
-                        - ordinary_tag_comm_before;
-        report.base_tag_communication =
-                auth.base_tag_generation_communication
-                        - base_tag_comm_before;
-        report.check_tag_communication =
-                auth.tag_checking_communication - check_tag_comm_before;
-        report.global_check_tag_challenges =
-                auth.global_check_tag_challenges - challenge_before;
-        report.total_authentication_communication = auth_communication;
-        report.total_integrated_communication =
-                gs20_communication + auth_communication;
-        report.r_t_derivations =
-                integrated.adapter_receipt
-                        .converted_r_t_derivations.size();
-        report.direct_e_t_handles =
-                integrated.adapter_receipt
-                        .authenticated_e_t_sources.size();
-        report.z_t_derivations =
-                integrated.adapter_receipt
-                        .converted_z_t_derivations.size();
-        report.r_t_local_evaluations = report.r_t_derivations;
-        report.e_t_local_evaluations = report.direct_e_t_handles;
-        report.z_t_local_evaluations = report.z_t_derivations;
-
-        const size_t integrated_batch_count =
-                auth.dealer_batches.size() - dealer_batch_start;
-        report.per_dealer_source_counts.reserve(integrated_batch_count);
-        report.per_dealer_ftag_chunk_counts.reserve(
-                integrated_batch_count);
-        for (size_t index = dealer_batch_start;
-                index < auth.dealer_batches.size(); index++)
-        {
-            const auto& batch = auth.dealer_batches.at(index);
-            report.per_dealer_source_counts.push_back(
-                    batch.local_source_shares.size());
-            report.per_dealer_ftag_chunk_counts.push_back(
-                    batch.ftag_chunk_count);
-            report.committed_handles +=
-                    batch.authenticated_handles.size();
-        }
-        report.ordinary_tag_nu_relations = 0;
-        report.base_tag_nu_relations = 0;
-        for (size_t index = nu_material_start;
-                index < auth.nu_material.size(); index++)
-            if (auth.nu_material.at(index).check_mask)
-                report.base_tag_nu_relations++;
-            else
-                report.ordinary_tag_nu_relations++;
-        integrated.committed_handles += report.committed_handles;
-        integrated.r_t_derivations += report.r_t_derivations;
-        integrated.direct_e_t_handles += report.direct_e_t_handles;
-        integrated.z_t_derivations += report.z_t_derivations;
-        integrated.ordinary_tag_nu_relations +=
-                report.ordinary_tag_nu_relations;
-        integrated.base_tag_nu_relations +=
-                report.base_tag_nu_relations;
-
-        cleanup_successful_integrated_batch(
-                dealer_batch_start, nu_material_start, holder_tag_start,
-                global_invocation_start, report);
-        }
-        catch (...)
-        {
-            integrated.lifecycle = OrdinaryBatchLifecycle::failed;
-            throw;
-        }
+        if (integrated.authentication_invocations
+                    != authentication_invocations_before
+                || P.total_comm().sent
+                        != gs20_communication_before + gs20_communication)
+            throw logic_error(
+                    "AtlasGsz: internal GS20 check started source authentication");
+        collect_verified_ordinary_batch(
+                std::move(integrated.frozen_batch), report);
     }
 
     x_verify.clear();
@@ -16869,10 +17728,19 @@ void AtlasGsz<T>::check()
                 optimistic_authentication_state.keys.size();
         report.persistent_key_epoch =
                 optimistic_authentication_state.key_epoch;
-        integrated.latest_batch = report;
-        print_communication_audit_batch(report);
-        if (not honest_batch_integration_test_mode.empty())
-            print_integrated_batch_report(report);
+        if (communication_audit_enabled())
+            cout << "ATLAS_GSZ_COMM_AUDIT_INTERNAL_GS20"
+                 << " party=" << P.my_num()
+                 << " communication_scope=party-local-sent-bytes"
+                 << " verification_batch_serial="
+                 << report.verification_batch_serial
+                 << " logical_segment_id="
+                 << ordinary_online_segment_collector.logical_segment_id
+                 << " operations=" << report.operation_shapes.size()
+                 << " x_verify_coordinates="
+                 << report.x_verify_coordinates
+                 << " comm_gs20=" << report.gs20_communication
+                 << " authentication_invocations=0" << endl;
     }
     else
     {
