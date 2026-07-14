@@ -15,6 +15,70 @@
 #include <sodium.h>
 #include <string>
 
+namespace protocol_output_dispatch
+{
+template<class Protocol>
+auto normal_finalize(Protocol& protocol, int)
+        -> decltype(protocol.finalize_normal_boundary(), void())
+{
+  protocol.finalize_normal_boundary();
+}
+
+template<class Protocol>
+void normal_finalize(Protocol& protocol, long)
+{
+  protocol.check();
+}
+
+template<class Protocol>
+auto before(Protocol& protocol, const char* kind, int)
+        -> decltype(protocol.before_external_output(kind), void())
+{
+  protocol.before_external_output(kind);
+}
+
+template<class Protocol>
+void before(Protocol&, const char*, long)
+{
+}
+
+template<class Protocol>
+auto reject(Protocol& protocol, const char* kind, int)
+        -> decltype(protocol.reject_external_output(kind), void())
+{
+  protocol.reject_external_output(kind);
+}
+
+template<class Protocol>
+void reject(Protocol&, const char*, long)
+{
+}
+
+template<class Protocol>
+auto note(Protocol& protocol, size_t count, int)
+        -> decltype(protocol.note_external_output_released(count), void())
+{
+  protocol.note_external_output_released(count);
+}
+
+template<class Protocol>
+void note(Protocol&, size_t, long)
+{
+}
+
+template<class Protocol>
+auto failed(Protocol& protocol, const char* kind, int) noexcept
+        -> decltype(protocol.external_output_failed(kind), void())
+{
+  protocol.external_output_failed(kind);
+}
+
+template<class Protocol>
+void failed(Protocol&, const char*, long) noexcept
+{
+}
+}
+
 template <class T>
 SubProcessor<T>::SubProcessor(ArithmeticProcessor& Proc, typename T::MAC_Check& MC,
     Preprocessing<T>& DataF, Player& P) :
@@ -166,9 +230,33 @@ template<class T>
 void SubProcessor<T>::check()
 {
   // protocol check before last MAC check
-  protocol.check();
+  protocol_output_dispatch::normal_finalize(protocol, 0);
   // MACCheck
   MC.Check(P);
+}
+
+template<class T>
+void SubProcessor<T>::before_external_output(const char* kind)
+{
+  protocol_output_dispatch::before(protocol, kind, 0);
+}
+
+template<class T>
+void SubProcessor<T>::reject_external_output(const char* kind)
+{
+  protocol_output_dispatch::reject(protocol, kind, 0);
+}
+
+template<class T>
+void SubProcessor<T>::note_external_output_released(size_t count)
+{
+  protocol_output_dispatch::note(protocol, count, 0);
+}
+
+template<class T>
+void SubProcessor<T>::external_output_failed(const char* kind) noexcept
+{
+  protocol_output_dispatch::failed(protocol, kind, 0);
 }
 
 template<class sint, class sgf2n>
@@ -237,6 +325,8 @@ void Processor<sint, sgf2n>::convcintvec(const Instruction& instruction)
 template<class sint, class sgf2n>
 void Processor<sint, sgf2n>::split(const Instruction& instruction)
 {
+  before_mixed_domain_secret_output(
+          "unsupported_arithmetic_to_gc_conversion");
   int n = instruction.get_n();
   assert (instruction.get_start().size() % n == 0);
   int unit = GC::Clear::N_BITS;
@@ -261,6 +351,8 @@ void Processor<sint, sgf2n>::write_socket(const RegType reg_type,
     bool send_macs, int socket_id, int message_type,
     const vector<int>& registers, int size)
 {
+  if (reg_type == SINT)
+    Procp.reject_external_output("secret_socket_output");
   int m = registers.size();
   socket_stream.reset_write_head();
 
@@ -428,6 +520,7 @@ template<class sint, class sgf2n>
 void Processor<sint, sgf2n>::write_shares_to_file(long start_pos,
     const vector<int>& data_registers, size_t vector_size)
 {
+  Procp.reject_external_output("explicit_share_file_output");
   if (not sint::real_shares(P))
     return;
 
@@ -451,6 +544,23 @@ void SubProcessor<T>::maybe_check()
 {
   if (OnlineOptions::singleton.has_option("always_check"))
     check();
+}
+
+template <class T>
+void SubProcessor<T>::external_POpen(const Instruction& inst)
+{
+  before_external_output("prime_public_open");
+  try
+  {
+    POpen(inst);
+    note_external_output_released(
+            inst.get_start().size() / 2 * inst.get_size());
+  }
+  catch (...)
+  {
+    external_output_failed("prime_public_open");
+    throw;
+  }
 }
 
 template <class T>
@@ -1113,17 +1223,32 @@ void SubProcessor<T>::input_personal(const vector<int>& args)
 template<class T>
 void SubProcessor<T>::private_output(const vector<int>& args)
 {
-  typename T::PrivateOutput output(*this);
-  for (size_t i = 0; i < args.size(); i += 4)
-    for (int j = 0; j < args[i]; j++)
-      {
-        int player = args[i + 1];
-        output.prepare_sending(S.at(args[i + 3] + j), player);
-      }
-  output.exchange();
-  for (size_t i = 0; i < args.size(); i += 4)
-    for (int j = 0; j < args[i]; j++)
-      C.at(args[i + 2] + j) = output.finalize(args[i + 1]);
+  before_external_output("prime_private_output");
+  try
+  {
+    check();
+    size_t output_count = 0;
+    {
+      typename T::PrivateOutput output(*this);
+      for (size_t i = 0; i < args.size(); i += 4)
+        for (int j = 0; j < args[i]; j++)
+          {
+            int player = args[i + 1];
+            output.prepare_sending(S.at(args[i + 3] + j), player);
+            output_count++;
+          }
+      output.exchange();
+      for (size_t i = 0; i < args.size(); i += 4)
+        for (int j = 0; j < args[i]; j++)
+          C.at(args[i + 2] + j) = output.finalize(args[i + 1]);
+    }
+    note_external_output_released(output_count);
+  }
+  catch (...)
+  {
+    external_output_failed("prime_private_output");
+    throw;
+  }
 }
 
 template<class T>

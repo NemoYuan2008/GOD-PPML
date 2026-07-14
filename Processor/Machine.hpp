@@ -23,6 +23,61 @@
 #include <pthread.h>
 using namespace std;
 
+template<class T, class = void>
+struct AtlasGszStageOneOutputPolicy : false_type
+{
+};
+
+template<class T>
+struct AtlasGszStageOneOutputPolicy<T,
+        typename enable_if<T::atlas_gsz_stage_one_output_policy>::type>
+        : true_type
+{
+};
+
+inline void print_atlas_gsz_preexecution_rejection(
+        int player, const char* mode, const char* kind,
+        bool multi_worker)
+{
+  if (player != 0 || mode == 0)
+    return;
+  cout << "ATLAS_GSZ_OUTPUT_GATE mode=" << mode
+       << " status=REJECTED invocation=0 kind=" << kind
+       << " output_gate_invocations=0 empty_output_gates=0"
+       << " output_triggered_residual_batches=0 failed_output_gates=0"
+       << " output_triggered_retained_opening_checks=0"
+       << " gs20_checks=0 authentication_started=0"
+       << " authentication_completed=0 authentication_accepted=0"
+       << " gs20_de_linearization_challenges=0"
+       << " gs20_dimension_reduction_challenges=0"
+       << " gs20_randomization_logical_challenges=0"
+       << " gs20_randomization_raw_challenges=0"
+       << " check_tag_challenges=0 verify_sharing=0"
+       << " check_key_setup=0 check_key_runs=0 base_sharing=0"
+       << " ordinary_tag_relations=0 base_tag_relations=0"
+       << " gs20_comm=0 verify_sharing_comm=0"
+       << " check_key_setup_comm=0 check_key_run_comm=0"
+       << " base_sharing_comm=0 ordinary_tag_comm=0"
+       << " base_tag_comm=0 check_tag_comm=0 retained_opening_comm=0"
+       << " output_gate_verification_comm=0 total_gate_comm=0"
+       << " normal_finalization_comm=0 actual_revealed_outputs=0"
+       << " recursion_guard_rejections=0 recursion_rejected=0"
+       << " multi_worker_rejected=" << multi_worker
+       << " second_attempt_comm=0 second_attempt_challenges=0"
+       << " second_attempt_authentication=0"
+       << " x_verify=0 y_verify=0 z_verify=0 partial_transcripts=0"
+       << " virtual_transcript=0 virtual_evidence=0 capture_active=0"
+       << " capture_finalized=0 capture_records=0 capture_consumptions=0"
+       << " capture_producer_indices=0 capture_output_indices=0"
+       << " frozen_batch=0 receipt=0/0/0/0/0 dealer_batches=0"
+       << " nu_material=0 holder_tags=0 global_invocations=0"
+       << " retained_opening_values=0 retained_opening_secrets=0"
+       << " reusable_mu_keys=0 key_epoch=0"
+       << " destructor_check=disabled destructor_comm=0"
+       << " duplicate_finalization=0"
+       << endl;
+}
+
 template<class sint, class sgf2n>
 void Machine<sint, sgf2n>::init_binary_domains(int security_parameter, int lg2)
 {
@@ -155,6 +210,15 @@ void Machine<sint, sgf2n>::prepare(const string& progname_str)
   int old_n_threads = nthreads;
   progs.clear();
   load_schedule(progname_str);
+  if (AtlasGszStageOneOutputPolicy<sint>::value && nthreads != 1)
+    {
+      const char* mode = getenv("ATLAS_GSZ_AUTH_TEST");
+      if (mode != 0 && string(mode) == "output-gate-multi-worker")
+        print_atlas_gsz_preexecution_rejection(
+                my_number, mode, "machine_schedule", true);
+      throw runtime_error(
+              "AtlasGsz Stage-1 requires exactly one online arithmetic worker");
+    }
   check_program();
 
   // keep preprocessing
@@ -367,6 +431,9 @@ template<class sint, class sgf2n>
 DataPositions Machine<sint, sgf2n>::run_tape(int thread_number, int tape_number,
     int arg, const DataPositions& pos)
 {
+  if (AtlasGszStageOneOutputPolicy<sint>::value && thread_number != 0)
+    throw runtime_error(
+            "AtlasGsz Stage-1 permits online arithmetic worker 0 only");
   if (size_t(thread_number) >= tinfo.size())
     throw overflow("invalid thread number", thread_number, tinfo.size());
   if (size_t(tape_number) >= progs.size())
@@ -414,6 +481,24 @@ template<class sint, class sgf2n>
 void Machine<sint, sgf2n>::run_function(const string& name,
         FunctionArgument& result, vector<FunctionArgument>& arguments)
 {
+  if (AtlasGszStageOneOutputPolicy<sint>::value)
+    {
+      const char* mode = getenv("ATLAS_GSZ_AUTH_TEST");
+      if (mode != 0 && string(mode) == "output-gate-run-function")
+        {
+          print_atlas_gsz_preexecution_rejection(
+                  my_number, mode, "run_function", false);
+          if (my_number == 0)
+            cout << "ATLAS_GSZ_RUN_FUNCTION_REJECTION"
+                 << " rejected_before_prepare=1"
+                 << " rejected_before_argument_copy=1"
+                 << " rejected_before_tape=1"
+                 << " rejected_before_result_copy=1"
+                 << endl;
+        }
+      throw runtime_error(
+              "AtlasGsz Stage-1 rejects Machine::run_function at host API entry");
+    }
   ifstream file;
   FunctionArgument::open(file, name, arguments);
 
@@ -530,6 +615,16 @@ pair<DataPositions, NamedCommStats> Machine<sint, sgf2n>::stop_threads()
 template<class sint, class sgf2n>
 void Machine<sint, sgf2n>::run(const string& progname)
 {
+  const char* output_test_mode = getenv("ATLAS_GSZ_AUTH_TEST");
+  if (AtlasGszStageOneOutputPolicy<sint>::value
+          && output_test_mode != 0
+          && string(output_test_mode) == "output-gate-run-function")
+    {
+      FunctionArgument result;
+      vector<FunctionArgument> arguments;
+      run_function("__atlas_gsz_stage_one_must_not_open__", result,
+              arguments);
+    }
   prepare(progname);
 
   Timer proc_timer(CLOCK_PROCESS_CPUTIME_ID);

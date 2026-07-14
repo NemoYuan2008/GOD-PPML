@@ -77,7 +77,13 @@ public:
 
   void check();
 
+  void before_external_output(const char* kind);
+  void reject_external_output(const char* kind);
+  void note_external_output_released(size_t count);
+  void external_output_failed(const char* kind) noexcept;
+
   // Access to PO (via calls to POpen start/stop)
+  void external_POpen(const Instruction& inst);
   void POpen(const Instruction& inst);
 
   void muls(const vector<int>& reg);
@@ -276,6 +282,11 @@ class Processor : public ArithmeticProcessor
 
   void check();
 
+  void before_mixed_domain_secret_output(const char* kind)
+  {
+    Procp.reject_external_output(kind);
+  }
+
   void dabit(const Instruction& instruction);
   void edabit(const Instruction& instruction, bool strict = false);
 
@@ -320,4 +331,3 @@ class Processor : public ArithmeticProcessor
 };
 
 #endif
-

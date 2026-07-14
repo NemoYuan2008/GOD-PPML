@@ -46,8 +46,9 @@ These contain the main GS20/GOD-PPML implementation, including:
 Eligible ordinary scalar-multiplication and dot-product verification batches
 now enter the source-only FTag path automatically through the existing
 `max_before_check`/`maybe_check()`/`check()` lifecycle. This is batch-lifecycle
-integration only; it is not a complete PPML segment/checkpoint scheduler or an
-output gate.
+integration plus a production Stage-1 semantic output boundary; it is not a
+complete PPML segment/checkpoint scheduler or a checkpoint-controlled GOD
+output protocol.
 
 ### `AtlasGszShare.h`
 
@@ -175,6 +176,45 @@ Implemented:
 This is base-field chunking with `F=K=F_p` and `e=1`, not extension-field
 packing.
 
+### Stage-1 semantic output and finalization boundary
+
+The production runtime has an optimistic, fail-stop Stage-1 output boundary:
+
+- prime public `OPEN` invokes the owning AtlasGsz gate before opening
+  communication;
+- prime `PRIVATEOUTPUT` invokes the gate before mask acquisition, secret
+  copying, or private-output preparation;
+- a nonempty residual verification batch runs the existing GS20 check, and an
+  eligible ordinary scalar/dot batch then runs exactly one existing
+  source-only authentication invocation;
+- exact captured `r_t`, direct authenticated `e_t`, and derived `z_t`
+  bindings are validated before successful batch-local cleanup;
+- retained degree-`2t` openings are checked after residual verification;
+- an empty gate adds zero communication, randomness, GS20 checks,
+  authentication invocations, and challenges;
+- direct prime/GF2N share printing, secret socket output, explicit share-file
+  output, and `Machine::run_function` are rejected before secret packing,
+  copying, persistence, or host transfer;
+- AtlasGsz arithmetic-to-GC `SPLIT` is unsupported (`has_split=false` and the
+  generic fallback throws) and is rejected fail-closed before reading or
+  copying the prime secret or entering that fallback;
+- GC and GF2N secret reveal remain unsupported and are rejected before their
+  reveal/opening operations; already-clear output is not gated again;
+- exactly one online arithmetic worker is supported. `CALL_TAPE` and
+  sequential tapes on worker 0 remain supported;
+- normal processor/tape check boundaries finalize residual verification and
+  then retained openings, including programs with no semantic output;
+- `AtlasGsz::~AtlasGsz()` remains non-throwing and communication-free;
+- automatic `Machine::run` memory serialization remains internal per-party
+  persistence. It is not an authenticated checkpoint and provides no Stage-1
+  recovery or restart mechanism.
+
+Any GS20, authentication, binding, retained-opening, reentrancy, or unexpected
+gate failure latches a fatal lifecycle. There is no output reconstruction,
+retry, rollback, replay, relay, `Analyze-Sharing`, localization, or `Corr`/`Disp`
+mutation after failure. This boundary is part of the optimistic fail-stop
+Stage-1 path and is not complete GOD output delivery.
+
 Not yet implemented or integrated:
 
 - normal segment-scheduler integration;
@@ -183,9 +223,11 @@ Not yet implemented or integrated:
   from this adapter;
 - mul-public, virtual-transcript, compression-generated, and ultimate-tuple
   provenance;
-- final output gating;
+- integration of the existing runtime output boundary with a future
+  segment/checkpoint scheduler and sealed checkpoints;
 - real `Analyze-Sharing`;
-- localization, rollback, retry, and continued execution after faults.
+- localization, rollback, retry, replay, relay, continued execution after
+  faults, and multi-worker execution.
 
 Source-only authentication is an authenticated-source-table operation, not a
 checkpoint: it creates no checkpoint record and performs no sealing or

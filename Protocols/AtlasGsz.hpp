@@ -1542,7 +1542,8 @@ AtlasGsz<T>::~AtlasGsz() noexcept
 template<class T>
 size_t AtlasGsz<T>::effective_max_before_check() const
 {
-    if (not honest_batch_integration_test_mode.empty())
+    if (not honest_batch_integration_test_mode.empty()
+            || not output_gate_test_mode.empty())
         return 4;
     return AtlasConfig::max_before_check;
 }
@@ -2174,6 +2175,659 @@ void AtlasGsz<T>::before_preprocessing_release(size_t generated_items)
     }
 }
 
+template<class T>
+void AtlasGsz<T>::validate_external_output_state(
+        bool after_output_gate) const
+{
+    validate_preprocessing_release_state(after_output_gate);
+
+    const auto& integrated = integrated_ordinary_batch_state;
+    const auto& auth = optimistic_authentication_state;
+    auto malformed = [] (const char* reason) {
+        throw logic_error(
+                string("AtlasGsz: malformed external-output state: ")
+                + reason);
+    };
+
+    if (auth.status != OptimisticAuthenticationStatus::ready)
+        malformed("source authentication is in a fatal state");
+    if (x_verify.empty())
+    {
+        if (not partial_mult_transcripts.empty())
+            malformed("empty verification vector retained transcripts");
+    }
+    else
+    {
+        validate_partial_mult_transcript_coverage();
+        if (integrated.lifecycle
+                == OrdinaryBatchLifecycle::capturing_ordinary)
+        {
+            if (not verification_batch_is_eligible_ordinary()
+                    || not tentative_double_rand_capture_state.active
+                    || tentative_double_rand_capture_state
+                            .consumptions.size()
+                            != partial_mult_transcripts.size())
+                malformed("ordinary residual is not exactly covered by capture");
+        }
+        else if (integrated.lifecycle == OrdinaryBatchLifecycle::idle)
+        {
+            for (const auto& record : partial_mult_transcripts)
+                if (record.operation_kind
+                        != OrdinaryDoubleRandOperationKind::noneligible
+                        && not (tentative_double_rand_capture_test_enabled
+                                && tentative_double_rand_capture_test_hook_ran))
+                    malformed("mixed eligible and unsupported residual");
+        }
+        else
+            malformed("residual entered in an internal or fatal lifecycle");
+    }
+
+    if (after_output_gate)
+    {
+        const bool isolated_legacy_authentication_test_inventory =
+                auth.test_hook_ran && output_gate_test_mode.empty();
+        if (not auth.dealer_batches.empty()
+                || not auth.nu_material.empty()
+                || not auth.holder_tags.empty()
+                || not auth.global_invocations.empty())
+        {
+            if (not isolated_legacy_authentication_test_inventory)
+                malformed("successful gate retained batch-local authentication state");
+        }
+        if (not local_mc_2t.stored_values.empty()
+                || not local_mc_2t.stored_secrets.empty())
+            malformed("successful gate retained degree-2t openings");
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::complete_output_gate_report(
+        OutputGateReport& report,
+        const PreprocessingReleaseSnapshot& before) const
+{
+    const auto& integrated = integrated_ordinary_batch_state;
+    const auto& auth = optimistic_authentication_state;
+    const size_t check_key_communication = auth.check_key_communication
+            - before.check_key_communication;
+    const size_t combined_key_communication =
+            auth.key_establishment_communication
+            - before.key_establishment_communication;
+
+    report.gs20_checks = integrated.gs20_checks - before.gs20_checks;
+    report.authentication_started = integrated.authentication_invocations
+            - before.authentication_started;
+    report.authentication_completed =
+            integrated.authentication_invocations_completed
+            - before.authentication_completed;
+    report.authentication_accepted =
+            integrated.authentication_invocations_accepted
+            - before.authentication_accepted;
+    report.gs20_de_linearization_challenges =
+            integrated.gs20_de_linearization_challenges
+            - before.de_linearization_challenges;
+    report.gs20_dimension_reduction_challenges =
+            integrated.gs20_dimension_reduction_challenges
+            - before.dimension_reduction_challenges;
+    report.gs20_randomization_logical_challenges =
+            integrated.gs20_randomization_logical_challenges
+            - before.randomization_logical_challenges;
+    report.gs20_randomization_raw_challenges =
+            integrated.gs20_randomization_raw_samples
+            - before.randomization_raw_challenges;
+    report.check_tag_challenges = auth.global_check_tag_challenges
+            - before.check_tag_challenges;
+    report.verify_sharing = auth.verify_sharing_invocations
+            - before.verify_sharing;
+    report.check_key_setup = auth.key_establishment_runs
+            - before.check_key_setup;
+    report.check_key_runs = auth.check_key_runs - before.check_key_runs;
+    report.base_sharing = auth.base_sharing_checks - before.base_sharing;
+    report.ordinary_tag_relations = integrated.ordinary_tag_nu_relations
+            - before.ordinary_tag_relations;
+    report.base_tag_relations = integrated.base_tag_nu_relations
+            - before.base_tag_relations;
+    report.gs20_communication = integrated.gs20_communication
+            - before.gs20_communication;
+    report.verify_sharing_communication =
+            auth.verify_sharing_communication
+            - before.verify_sharing_communication;
+    report.check_key_setup_communication =
+            auth.base_field_ftag_chunk_width_agreement_communication
+                    - before.chunk_width_communication
+            + combined_key_communication - check_key_communication;
+    report.check_key_run_communication = check_key_communication;
+    report.base_sharing_communication = auth.base_sharing_communication
+            - before.base_sharing_communication;
+    report.ordinary_tag_communication =
+            auth.ordinary_tag_generation_communication
+            - before.ordinary_tag_communication;
+    report.base_tag_communication =
+            auth.base_tag_generation_communication
+            - before.base_tag_communication;
+    report.check_tag_communication = auth.tag_checking_communication
+            - before.check_tag_communication;
+    report.verification_communication =
+            integrated.output_gate_verification_communication
+            - before.total_communication;
+    report.retained_opening_communication =
+            integrated.output_gate_retained_opening_communication
+            - before.opening_communication;
+    report.total_gate_communication = report.verification_communication
+            + report.retained_opening_communication;
+}
+
+template<class T>
+void AtlasGsz<T>::print_output_gate_report(
+        const OutputGateReport& report) const
+{
+    if (P.my_num() != 0 || output_gate_test_mode.empty())
+        return;
+
+    const auto& integrated = integrated_ordinary_batch_state;
+    const auto& auth = optimistic_authentication_state;
+    size_t capture_output_indices = 0;
+    for (const auto& indices : tentative_double_rand_capture_state
+            .consumed_outputs_by_producer)
+        capture_output_indices += indices.size();
+
+    cout << "ATLAS_GSZ_OUTPUT_GATE"
+         << " mode=" << output_gate_test_mode
+         << " status=" << (report.passed ? "PASS" : "REJECTED")
+         << " invocation=" << report.invocation
+         << " kind=" << report.kind
+         << " failure=" << (report.failure.empty() ? "none" : report.failure)
+         << " output_gate_invocations="
+         << integrated.output_gate_invocations
+         << " empty_output_gates=" << integrated.empty_output_gates
+         << " output_triggered_residual_batches="
+         << integrated.output_triggered_residual_batches
+         << " failed_output_gates=" << integrated.failed_output_gates
+         << " output_triggered_retained_opening_checks="
+         << integrated.output_triggered_retained_opening_checks
+         << " gs20_checks=" << report.gs20_checks
+         << " authentication_started=" << report.authentication_started
+         << " authentication_completed=" << report.authentication_completed
+         << " authentication_accepted=" << report.authentication_accepted
+         << " gs20_de_linearization_challenges="
+         << report.gs20_de_linearization_challenges
+         << " gs20_dimension_reduction_challenges="
+         << report.gs20_dimension_reduction_challenges
+         << " gs20_randomization_logical_challenges="
+         << report.gs20_randomization_logical_challenges
+         << " gs20_randomization_raw_challenges="
+         << report.gs20_randomization_raw_challenges
+         << " check_tag_challenges=" << report.check_tag_challenges
+         << " verify_sharing=" << report.verify_sharing
+         << " check_key_setup=" << report.check_key_setup
+         << " check_key_runs=" << report.check_key_runs
+         << " base_sharing=" << report.base_sharing
+         << " ordinary_tag_relations=" << report.ordinary_tag_relations
+         << " base_tag_relations=" << report.base_tag_relations
+         << " gs20_comm=" << report.gs20_communication
+         << " verify_sharing_comm="
+         << report.verify_sharing_communication
+         << " check_key_setup_comm="
+         << report.check_key_setup_communication
+         << " check_key_run_comm="
+         << report.check_key_run_communication
+         << " base_sharing_comm=" << report.base_sharing_communication
+         << " ordinary_tag_comm=" << report.ordinary_tag_communication
+         << " base_tag_comm=" << report.base_tag_communication
+         << " check_tag_comm=" << report.check_tag_communication
+         << " retained_opening_comm="
+         << report.retained_opening_communication
+         << " output_gate_verification_comm="
+         << report.verification_communication
+         << " total_gate_comm=" << report.total_gate_communication
+         << " normal_finalization_comm="
+         << report.normal_finalization_communication
+         << " actual_revealed_outputs=" << report.revealed_outputs
+         << " recursion_guard_rejections="
+         << integrated.recursive_output_gate_rejections
+         << " recursion_rejected=" << report.recursion_rejected
+         << " multi_worker_rejected=" << report.multi_worker_rejected
+         << " second_attempt_comm=" << report.second_attempt_communication
+         << " second_attempt_challenges="
+         << report.second_attempt_challenges
+         << " second_attempt_authentication="
+         << report.second_attempt_authentication
+         << " x_verify=" << x_verify.size()
+         << " y_verify=" << y_verify.size()
+         << " z_verify=" << z_verify.size()
+         << " partial_transcripts=" << partial_mult_transcripts.size()
+         << " virtual_transcript=" << have_current_virtual_transcript
+         << " virtual_evidence=" << have_current_virtual_king_evidence
+         << " capture_active="
+         << tentative_double_rand_capture_state.active
+         << " capture_finalized="
+         << bool(tentative_double_rand_capture_state.finalized_candidate)
+         << " capture_records="
+         << tentative_double_rand_capture_state.producer_records.size()
+         << " capture_consumptions="
+         << tentative_double_rand_capture_state.consumptions.size()
+         << " capture_producer_indices="
+         << tentative_double_rand_capture_state.producer_record_ordinals.size()
+         << " capture_output_indices=" << capture_output_indices
+         << " frozen_batch=" << bool(integrated.frozen_batch)
+         << " receipt="
+         << integrated.adapter_receipt.dealer_batches.size() << '/'
+         << integrated.adapter_receipt.source_handles.size() << '/'
+         << integrated.adapter_receipt.converted_r_t_derivations.size() << '/'
+         << integrated.adapter_receipt.authenticated_e_t_sources.size() << '/'
+         << integrated.adapter_receipt.converted_z_t_derivations.size()
+         << " dealer_batches=" << auth.dealer_batches.size()
+         << " nu_material=" << auth.nu_material.size()
+         << " holder_tags=" << auth.holder_tags.size()
+         << " global_invocations=" << auth.global_invocations.size()
+         << " retained_opening_values="
+         << local_mc_2t.stored_values.size()
+         << " retained_opening_secrets="
+         << local_mc_2t.stored_secrets.size()
+         << " reusable_mu_keys=" << auth.keys.size()
+         << " key_epoch=" << auth.key_epoch
+         << " destructor_check=disabled destructor_comm=0"
+         << " duplicate_finalization=0"
+         << endl;
+}
+
+template<class T>
+void AtlasGsz<T>::before_external_output(const char* kind)
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    auto& auth = optimistic_authentication_state;
+    integrated.output_gate_invocations++;
+
+    PreprocessingReleaseSnapshot before{};
+    before.total_communication =
+            integrated.output_gate_verification_communication;
+    before.opening_communication =
+            integrated.output_gate_retained_opening_communication;
+    before.gs20_checks = integrated.gs20_checks;
+    before.authentication_started = integrated.authentication_invocations;
+    before.authentication_completed =
+            integrated.authentication_invocations_completed;
+    before.authentication_accepted =
+            integrated.authentication_invocations_accepted;
+    before.de_linearization_challenges =
+            integrated.gs20_de_linearization_challenges;
+    before.dimension_reduction_challenges =
+            integrated.gs20_dimension_reduction_challenges;
+    before.randomization_logical_challenges =
+            integrated.gs20_randomization_logical_challenges;
+    before.randomization_raw_challenges =
+            integrated.gs20_randomization_raw_samples;
+    before.gs20_communication = integrated.gs20_communication;
+    before.verify_sharing = auth.verify_sharing_invocations;
+    before.check_key_setup = auth.key_establishment_runs;
+    before.check_key_runs = auth.check_key_runs;
+    before.base_sharing = auth.base_sharing_checks;
+    before.ordinary_tag_relations = integrated.ordinary_tag_nu_relations;
+    before.base_tag_relations = integrated.base_tag_nu_relations;
+    before.check_tag_challenges = auth.global_check_tag_challenges;
+    before.verify_sharing_communication = auth.verify_sharing_communication;
+    before.chunk_width_communication =
+            auth.base_field_ftag_chunk_width_agreement_communication;
+    before.key_establishment_communication =
+            auth.key_establishment_communication;
+    before.check_key_communication = auth.check_key_communication;
+    before.base_sharing_communication = auth.base_sharing_communication;
+    before.ordinary_tag_communication =
+            auth.ordinary_tag_generation_communication;
+    before.base_tag_communication = auth.base_tag_generation_communication;
+    before.check_tag_communication = auth.tag_checking_communication;
+
+    OutputGateReport report{};
+    report.valid = true;
+    report.invocation = integrated.output_gate_invocations;
+    report.kind = kind == 0 ? "unknown" : kind;
+
+    if (integrated.lifecycle == OrdinaryBatchLifecycle::failed)
+    {
+        integrated.failed_output_gates++;
+        report.failure = "fatal_lifecycle";
+        complete_output_gate_report(report, before);
+        if (not integrated.output_gate_test_second_attempt_active)
+            print_output_gate_report(report);
+        throw logic_error(
+                "AtlasGsz: external output attempted after fatal failure");
+    }
+    if (integrated.output_gate_active
+            || integrated.lifecycle == OrdinaryBatchLifecycle::checking_gs20
+            || integrated.lifecycle
+                    == OrdinaryBatchLifecycle::authenticating_sources)
+    {
+        integrated.recursive_output_gate_rejections++;
+        integrated.failed_output_gates++;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        integrated.output_gate_active = false;
+        report.failure = "recursive_output_gate";
+        report.recursion_rejected = true;
+        complete_output_gate_report(report, before);
+        print_output_gate_report(report);
+        throw logic_error(
+                "AtlasGsz: recursive external-output gate entry");
+    }
+
+    integrated.output_gate_active = true;
+    try
+    {
+        if ((output_gate_test_mode
+                        == "output-gate-retained-opening-only"
+                    || output_gate_test_mode
+                        == "output-gate-retained-opening-failure")
+                && not integrated
+                        .output_gate_test_retained_opening_injected)
+        {
+            local_mc_2t.stored_values.push_back(
+                    typename T::open_type{});
+            local_mc_2t.stored_secrets.push_back(T{});
+            integrated.output_gate_test_retained_opening_injected = true;
+        }
+
+        validate_external_output_state(false);
+        const bool empty_gate = x_verify.empty()
+                && local_mc_2t.stored_values.empty();
+        if (empty_gate)
+            integrated.empty_output_gates++;
+
+        const size_t gate_invocations_before =
+                integrated.output_gate_invocations;
+        if (not x_verify.empty())
+        {
+            integrated.output_triggered_residual_batches++;
+            const size_t communication_before = P.total_comm().sent;
+            try
+            {
+                request_check(VerificationBatchFlushReason::external_output);
+            }
+            catch (...)
+            {
+                integrated.output_gate_verification_communication +=
+                        P.total_comm().sent - communication_before;
+                throw;
+            }
+            integrated.output_gate_verification_communication +=
+                    P.total_comm().sent - communication_before;
+        }
+        if (integrated.output_gate_invocations != gate_invocations_before)
+            throw logic_error(
+                    "AtlasGsz: GS20/FTag caused recursive output-gate entry");
+
+        if (not local_mc_2t.stored_values.empty())
+        {
+            integrated.output_triggered_retained_opening_checks++;
+            const size_t communication_before = P.total_comm().sent;
+            try
+            {
+                check_opened_values();
+            }
+            catch (...)
+            {
+                integrated.output_gate_retained_opening_communication +=
+                        P.total_comm().sent - communication_before;
+                throw;
+            }
+            integrated.output_gate_retained_opening_communication +=
+                    P.total_comm().sent - communication_before;
+        }
+        validate_external_output_state(true);
+        integrated.output_gate_active = false;
+        report.passed = true;
+        complete_output_gate_report(report, before);
+        integrated.pending_output_gate_report = report;
+    }
+    catch (...)
+    {
+        auto failure = current_exception();
+        try
+        {
+            rethrow_exception(failure);
+        }
+        catch (const exception& e)
+        {
+            report.failure = e.what();
+        }
+        catch (...)
+        {
+            report.failure = "non_standard_exception";
+        }
+
+        integrated.output_gate_active = false;
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        integrated.failed_output_gates++;
+        integrated.pending_output_gate_report = OutputGateReport{};
+
+        const bool failure_mode = output_gate_test_mode
+                    == "output-gate-gs20-failure"
+                || output_gate_test_mode
+                    == "output-gate-authentication-rejection"
+                || output_gate_test_mode
+                    == "output-gate-retained-opening-failure";
+        if (failure_mode
+                && not integrated
+                        .output_gate_failure_second_attempt_checked)
+        {
+            integrated.output_gate_failure_second_attempt_checked = true;
+            integrated.output_gate_test_second_attempt_active = true;
+            const size_t communication_before = P.total_comm().sent;
+            const size_t challenges_before =
+                    integrated.gs20_de_linearization_challenges
+                    + integrated.gs20_dimension_reduction_challenges
+                    + integrated.gs20_randomization_logical_challenges
+                    + integrated.gs20_randomization_raw_samples
+                    + auth.global_check_tag_challenges;
+            const size_t authentication_before =
+                    integrated.authentication_invocations;
+            bool rejected = false;
+            try
+            {
+                before_external_output(kind);
+            }
+            catch (...)
+            {
+                rejected = true;
+            }
+            const size_t challenges_after =
+                    integrated.gs20_de_linearization_challenges
+                    + integrated.gs20_dimension_reduction_challenges
+                    + integrated.gs20_randomization_logical_challenges
+                    + integrated.gs20_randomization_raw_samples
+                    + auth.global_check_tag_challenges;
+            report.second_attempt_communication =
+                    P.total_comm().sent - communication_before;
+            report.second_attempt_challenges =
+                    challenges_after - challenges_before;
+            report.second_attempt_authentication =
+                    integrated.authentication_invocations
+                    - authentication_before;
+            integrated.output_gate_test_second_attempt_active = false;
+            if (not rejected || report.second_attempt_communication != 0
+                    || report.second_attempt_challenges != 0
+                    || report.second_attempt_authentication != 0)
+                report.failure += ":fatal_retry_mutated_state";
+        }
+        complete_output_gate_report(report, before);
+        print_output_gate_report(report);
+        rethrow_exception(failure);
+    }
+}
+
+template<class T>
+void AtlasGsz<T>::reject_external_output(const char* kind)
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    const bool recursive = integrated.output_gate_active;
+    integrated.output_gate_invocations++;
+    integrated.failed_output_gates++;
+    if (recursive)
+        integrated.recursive_output_gate_rejections++;
+    integrated.output_gate_active = false;
+    integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+    integrated.pending_output_gate_report = OutputGateReport{};
+
+    OutputGateReport report{};
+    report.valid = true;
+    report.invocation = integrated.output_gate_invocations;
+    report.kind = kind == 0 ? "unknown" : kind;
+    report.failure = "stage1_path_rejected_before_secret_access";
+    report.recursion_rejected = recursive;
+    print_output_gate_report(report);
+    throw logic_error(
+            string("AtlasGsz: Stage-1 rejects external secret path: ")
+            + report.kind);
+}
+
+template<class T>
+void AtlasGsz<T>::note_external_output_released(size_t count)
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    auto& report = integrated.pending_output_gate_report;
+    if (not report.valid || not report.passed)
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: external output completed without a successful gate");
+    }
+    report.revealed_outputs = count;
+    integrated.released_external_outputs += count;
+    print_output_gate_report(report);
+    report = OutputGateReport{};
+}
+
+template<class T>
+void AtlasGsz<T>::external_output_failed(const char*) noexcept
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    integrated.output_gate_active = false;
+    integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+    integrated.failed_output_gates++;
+    integrated.pending_output_gate_report = OutputGateReport{};
+}
+
+template<class T>
+void AtlasGsz<T>::finalize_normal_boundary()
+{
+    auto& integrated = integrated_ordinary_batch_state;
+    if (integrated.output_gate_active)
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw logic_error(
+                "AtlasGsz: normal finalization entered during output gate");
+    }
+    try
+    {
+        const bool had_work = not x_verify.empty()
+                || not local_mc_2t.stored_values.empty();
+        const size_t communication_before = P.total_comm().sent;
+        PreprocessingReleaseSnapshot before{};
+        before.gs20_checks = integrated.gs20_checks;
+        before.authentication_started =
+                integrated.authentication_invocations;
+        before.authentication_completed =
+                integrated.authentication_invocations_completed;
+        before.authentication_accepted =
+                integrated.authentication_invocations_accepted;
+        before.de_linearization_challenges =
+                integrated.gs20_de_linearization_challenges;
+        before.dimension_reduction_challenges =
+                integrated.gs20_dimension_reduction_challenges;
+        before.randomization_logical_challenges =
+                integrated.gs20_randomization_logical_challenges;
+        before.randomization_raw_challenges =
+                integrated.gs20_randomization_raw_samples;
+        before.gs20_communication = integrated.gs20_communication;
+        before.verify_sharing =
+                optimistic_authentication_state.verify_sharing_invocations;
+        before.check_key_setup =
+                optimistic_authentication_state.key_establishment_runs;
+        before.check_key_runs =
+                optimistic_authentication_state.check_key_runs;
+        before.base_sharing =
+                optimistic_authentication_state.base_sharing_checks;
+        before.ordinary_tag_relations =
+                integrated.ordinary_tag_nu_relations;
+        before.base_tag_relations = integrated.base_tag_nu_relations;
+        before.check_tag_challenges = optimistic_authentication_state
+                .global_check_tag_challenges;
+        before.verify_sharing_communication =
+                optimistic_authentication_state
+                        .verify_sharing_communication;
+        before.chunk_width_communication =
+                optimistic_authentication_state
+                        .base_field_ftag_chunk_width_agreement_communication;
+        before.key_establishment_communication =
+                optimistic_authentication_state
+                        .key_establishment_communication;
+        before.check_key_communication =
+                optimistic_authentication_state.check_key_communication;
+        before.base_sharing_communication =
+                optimistic_authentication_state
+                        .base_sharing_communication;
+        before.ordinary_tag_communication =
+                optimistic_authentication_state
+                        .ordinary_tag_generation_communication;
+        before.base_tag_communication = optimistic_authentication_state
+                .base_tag_generation_communication;
+        before.check_tag_communication =
+                optimistic_authentication_state.tag_checking_communication;
+        validate_preprocessing_release_state(false);
+        check();
+        check_opened_values();
+        validate_preprocessing_release_state(true);
+
+        if (not had_work && integrated.released_external_outputs != 0
+                && not output_gate_test_mode.empty()
+                && (integrated.gs20_checks != before.gs20_checks
+                    || integrated.authentication_invocations
+                            != before.authentication_started
+                    || P.total_comm().sent != communication_before))
+            throw logic_error(
+                    "AtlasGsz: termination repeated an output-triggered finalization");
+
+        if (output_gate_test_mode
+                    == "output-gate-no-output-finalization")
+        {
+            if (had_work)
+            {
+                if (integrated.normal_finalization_nonempty_seen)
+                    throw logic_error(
+                            "AtlasGsz: duplicate nonempty normal finalization");
+                integrated.normal_finalization_nonempty_seen = true;
+                OutputGateReport report{};
+                report.valid = true;
+                report.passed = true;
+                report.kind = "normal_finalization";
+                complete_output_gate_report(report, before);
+                report.verification_communication = 0;
+                report.retained_opening_communication = 0;
+                report.total_gate_communication = 0;
+                report.normal_finalization_communication =
+                        P.total_comm().sent - communication_before;
+                integrated.normal_finalization_report = report;
+            }
+            else if (integrated.normal_finalization_nonempty_seen
+                    && not integrated
+                            .normal_finalization_duplicate_reported)
+            {
+                integrated.normal_finalization_duplicate_reported = true;
+                if (integrated.gs20_checks != before.gs20_checks
+                        || integrated.authentication_invocations
+                                != before.authentication_started
+                        || P.total_comm().sent != communication_before)
+                    throw logic_error(
+                            "AtlasGsz: empty termination finalization changed protocol state");
+                print_output_gate_report(
+                        integrated.normal_finalization_report);
+            }
+        }
+    }
+    catch (...)
+    {
+        integrated.lifecycle = OrdinaryBatchLifecycle::failed;
+        throw;
+    }
+}
+
 template <class T>
 inline void AtlasGsz<T>::maybe_check()
 {
@@ -2190,67 +2844,108 @@ inline void AtlasGsz<T>::maybe_check()
 template<class T>
 void AtlasGsz<T>::validate_partial_mult_transcript_coverage() const
 {
-#ifndef NDEBUG
-    assert(x_verify.size() == y_verify.size());
-    assert(x_verify.size() == z_verify.size());
-    assert(not partial_mult_transcripts.empty());
+    auto malformed = [] (const char* reason) {
+        throw logic_error(
+                string("AtlasGsz: malformed verification transcript coverage: ")
+                + reason);
+    };
+    if (x_verify.size() != y_verify.size()
+            || x_verify.size() != z_verify.size())
+        malformed("verification vector size mismatch");
+    if (x_verify.empty() || partial_mult_transcripts.empty())
+        malformed("empty verification vector or transcript set");
 
     int batch_king = partial_mult_transcripts.front().transcript.king;
     size_t expected_offset = 0;
     for (const auto& record : partial_mult_transcripts)
     {
-        assert(record.length > 0);
-        assert(record.transcript.king == batch_king);
-        assert(record.has_king_evidence == (P.my_num() == batch_king));
-        assert(record.offset == expected_offset);
-        assert(record.offset + size_t(record.length) <= x_verify.size());
+        if (record.length <= 0)
+            malformed("non-positive transcript length");
+        if (record.transcript.king != batch_king)
+            malformed("mixed king identity");
+        if (record.has_king_evidence != (P.my_num() == batch_king))
+            malformed("king evidence ownership mismatch");
+        if (record.offset != expected_offset
+                || size_t(record.length) > x_verify.size() - record.offset)
+            malformed("non-canonical transcript coordinate coverage");
 
         T product = T{0};
         for (int j = 0; j < record.length; j++)
             product += x_verify.at(record.offset + j)
                     * y_verify.at(record.offset + j);
 
-        assert(record.transcript.e_2t
-                == product + record.transcript.r_2t);
-        assert(record.transcript.e_t
-                - record.transcript.r_t
-                == z_verify.at(record.offset));
+        if (record.transcript.e_2t
+                != product + record.transcript.r_2t)
+            malformed("degree-2t masked-product relation mismatch");
+        if (record.transcript.e_t - record.transcript.r_t
+                != z_verify.at(record.offset))
+            malformed("degree-t output relation mismatch");
         if (not record.transcript.special_sharing_support.empty())
         {
             const auto& support =
                     record.transcript.special_sharing_support;
-            assert(support.size()
-                    == size_t(ShamirMachine::s().threshold + 1));
-            assert(is_sorted(support.begin(), support.end()));
-            assert(adjacent_find(support.begin(), support.end())
-                    == support.end());
-            assert(find(support.begin(), support.end(), batch_king)
-                    != support.end());
-            assert(support.front() >= 0);
-            assert(support.back() < P.num_players());
+            if (support.size()
+                        != size_t(ShamirMachine::s().threshold + 1)
+                    || not is_sorted(support.begin(), support.end())
+                    || adjacent_find(support.begin(), support.end())
+                        != support.end()
+                    || find(support.begin(), support.end(), batch_king)
+                        == support.end()
+                    || support.front() < 0
+                    || support.back() >= P.num_players())
+                malformed("invalid special-sharing support");
             if (find(support.begin(), support.end(), P.my_num())
-                    == support.end())
-                assert(record.transcript.e_t == T{0});
+                        == support.end()
+                    && record.transcript.e_t != T{0})
+                malformed("non-support party retained a special share");
         }
+        const auto& decomposition =
+                record.transcript.r_decomposition;
+        if (decomposition.dealer_components.size()
+                    != size_t(P.num_players())
+                || decomposition.own_dealer_evidence.r_t_shares.size()
+                    != size_t(P.num_players())
+                || decomposition.own_dealer_evidence.r_2t_shares.size()
+                    != size_t(P.num_players()))
+            malformed("double-sharing decomposition shape mismatch");
+        T decomposed_r_t = decomposition.validated_residual.r_t;
+        T decomposed_r_2t = decomposition.validated_residual.r_2t;
+        for (const auto& component : decomposition.dealer_components)
+        {
+            decomposed_r_t += component.r_t;
+            decomposed_r_2t += component.r_2t;
+        }
+        if (decomposed_r_t != record.transcript.r_t
+                || decomposed_r_2t != record.transcript.r_2t
+                || decomposition.own_dealer_evidence.r_t_shares.at(
+                        P.my_num())
+                    != decomposition.dealer_components.at(
+                            P.my_num()).r_t
+                || decomposition.own_dealer_evidence.r_2t_shares.at(
+                        P.my_num())
+                    != decomposition.dealer_components.at(
+                            P.my_num()).r_2t)
+            malformed("double-sharing decomposition value mismatch");
         validate_double_sharing_decomposition(
-                record.transcript.r_decomposition,
+                decomposition,
                 record.transcript.r_t,
                 record.transcript.r_2t);
 
         if (record.has_king_evidence)
         {
-            assert(record.king_evidence.king == batch_king);
-            assert(record.king_evidence.received_e_2t.size()
-                    == size_t(P.num_players()));
-            assert(record.king_evidence.distributed_e_t.size()
-                    == size_t(P.num_players()));
+            if (record.king_evidence.king != batch_king
+                    || record.king_evidence.received_e_2t.size()
+                        != size_t(P.num_players())
+                    || record.king_evidence.distributed_e_t.size()
+                        != size_t(P.num_players()))
+                malformed("malformed king evidence");
         }
 
         expected_offset += record.length;
     }
 
-    assert(expected_offset == x_verify.size());
-#endif
+    if (expected_offset != x_verify.size())
+        malformed("incomplete coordinate coverage");
 }
 
 template<class T>
@@ -4665,6 +5360,8 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
     const size_t communication_before = P.total_comm().sent;
     const uint64_t next_batch_id_before = auth.next_batch_id;
     const size_t batch_count_before = auth.dealer_batches.size();
+    const size_t nu_count_before = auth.nu_material.size();
+    const size_t holder_tag_count_before = auth.holder_tags.size();
     const size_t invocation_count_before = auth.global_invocations.size();
     const uint64_t next_invocation_id_before =
             auth.next_global_invocation_id;
@@ -5407,6 +6104,18 @@ void AtlasGsz<T>::run_tentative_double_rand_adapter_test_hook(
              << (expected_success
                     ? " status=authenticated"
                     : " status=RecoveryNotImplemented") << endl;
+    }
+
+    // The isolated one-shot adapter hook has already validated and reported
+    // every by-value result. Retire only its batch-local test records so the
+    // production output boundary can subsequently verify the still-pending
+    // GS20 transcript without mistaking test inventory for live work.
+    if (expected_success)
+    {
+        auth.dealer_batches.resize(batch_count_before);
+        auth.nu_material.resize(nu_count_before);
+        auth.holder_tags.resize(holder_tag_count_before);
+        auth.global_invocations.resize(invocation_count_before);
     }
 
     if (not expected_success)
@@ -15593,6 +16302,13 @@ void AtlasGsz<T>::init(Preprocessing<T>& prep, typename T::MAC_Check& MC) {
                 // The independently owned preprocessing branch executes the
                 // focused checks at its explicit release boundary.
             }
+            else if (mode.rfind("output-gate-", 0) == 0)
+            {
+                if (not output_gate_test_mode.empty())
+                    throw logic_error(
+                            "AtlasGsz: output-gate mode initialized twice");
+                output_gate_test_mode = mode;
+            }
             else if (mode.rfind("honest-batch-integration", 0) == 0)
             {
                 if (not honest_batch_integration_test_mode.empty())
@@ -16264,6 +16980,8 @@ void AtlasGsz<T>::print_integrated_batch_report(
             return "explicit-residual";
         case VerificationBatchFlushReason::preprocessing_release:
             return "preprocessing-release";
+        case VerificationBatchFlushReason::external_output:
+            return "external-output";
         case VerificationBatchFlushReason::destructor:
             return "destructor";
         case VerificationBatchFlushReason::none:
@@ -16943,6 +17661,10 @@ void AtlasGsz<T>::check()
         int bad_verify_dealer = -1;
         if (honest_batch_integration_test_mode
                 == "honest-batch-integration-auth-rejection")
+            bad_verify_dealer = 0;
+        if (output_gate_test_mode
+                == "output-gate-authentication-rejection"
+                && integrated.output_gate_active)
             bad_verify_dealer = 0;
         bool authentication_communication_recorded = false;
         size_t auth_communication = 0;
@@ -17889,6 +18611,8 @@ void AtlasGsz<T>::randomization()
 
     if (honest_batch_integration_test_mode
                     == "honest-batch-integration-gs20-failure"
+            || (output_gate_test_mode == "output-gate-gs20-failure"
+                    && integrated_ordinary_batch_state.output_gate_active)
             || integrated_ordinary_batch_state
                     .inject_unsupported_gs20_failure)
         ultimate_z += typename T::open_type(1);
@@ -18108,9 +18832,7 @@ inline void AtlasGsz<T>::check_opened_values()
         random_coeffs[i] = random_coeffs[i - 1] * r;
     }
     auto value_combined = std::inner_product(values.begin(), values.end(), random_coeffs.begin(), T{0});
-    values.clear();
     auto secret_combined = std::inner_product(secrets.begin(), secrets.end(), random_coeffs.begin(), T{0});
-    secrets.clear();
 
     // gf2n has no POpen for single element
     malicious_mc.init_open(P, 1);
@@ -18118,9 +18840,16 @@ inline void AtlasGsz<T>::check_opened_values()
     malicious_mc.exchange(P);
     auto secret_combined_open = malicious_mc.finalize_open();
 
+    if (integrated_ordinary_batch_state.output_gate_active
+            && output_gate_test_mode
+                    == "output-gate-retained-opening-failure")
+        value_combined += typename T::open_type(1);
+
     if (value_combined != secret_combined_open) {
         throw mac_fail("AtlasGsz: check_opened_values failed");
     }
+    values.clear();
+    secrets.clear();
 }
 
 #endif /* PROTOCOLS_ATLASGSZ_HPP_ */

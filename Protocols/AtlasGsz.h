@@ -889,6 +889,7 @@ private:
         eligibility_boundary,
         explicit_test_residual,
         preprocessing_release,
+        external_output,
         destructor,
     };
 
@@ -972,6 +973,48 @@ private:
         uint64_t persistent_key_epoch = 0;
     };
 
+    struct OutputGateReport
+    {
+        bool valid = false;
+        bool passed = false;
+        size_t invocation = 0;
+        string kind;
+        string failure;
+        size_t revealed_outputs = 0;
+        size_t gs20_checks = 0;
+        size_t authentication_started = 0;
+        size_t authentication_completed = 0;
+        size_t authentication_accepted = 0;
+        size_t gs20_de_linearization_challenges = 0;
+        size_t gs20_dimension_reduction_challenges = 0;
+        size_t gs20_randomization_logical_challenges = 0;
+        size_t gs20_randomization_raw_challenges = 0;
+        size_t check_tag_challenges = 0;
+        size_t verify_sharing = 0;
+        size_t check_key_setup = 0;
+        size_t check_key_runs = 0;
+        size_t base_sharing = 0;
+        size_t ordinary_tag_relations = 0;
+        size_t base_tag_relations = 0;
+        size_t gs20_communication = 0;
+        size_t verify_sharing_communication = 0;
+        size_t check_key_setup_communication = 0;
+        size_t check_key_run_communication = 0;
+        size_t base_sharing_communication = 0;
+        size_t ordinary_tag_communication = 0;
+        size_t base_tag_communication = 0;
+        size_t check_tag_communication = 0;
+        size_t verification_communication = 0;
+        size_t retained_opening_communication = 0;
+        size_t total_gate_communication = 0;
+        size_t normal_finalization_communication = 0;
+        size_t second_attempt_communication = 0;
+        size_t second_attempt_challenges = 0;
+        size_t second_attempt_authentication = 0;
+        bool recursion_rejected = false;
+        bool multi_worker_rejected = false;
+    };
+
     struct IntegratedOrdinaryBatchState
     {
         OrdinaryBatchLifecycle lifecycle = OrdinaryBatchLifecycle::idle;
@@ -1009,6 +1052,23 @@ private:
         size_t preprocessing_release_test_released_items = 0;
         bool preprocessing_release_test_opening_injected = false;
         bool preprocessing_release_test_failure_reported = false;
+        bool output_gate_active = false;
+        bool output_gate_test_retained_opening_injected = false;
+        bool output_gate_failure_second_attempt_checked = false;
+        bool output_gate_test_second_attempt_active = false;
+        bool normal_finalization_nonempty_seen = false;
+        bool normal_finalization_duplicate_reported = false;
+        OutputGateReport normal_finalization_report;
+        size_t output_gate_invocations = 0;
+        size_t empty_output_gates = 0;
+        size_t output_triggered_residual_batches = 0;
+        size_t failed_output_gates = 0;
+        size_t output_triggered_retained_opening_checks = 0;
+        size_t output_gate_verification_communication = 0;
+        size_t output_gate_retained_opening_communication = 0;
+        size_t recursive_output_gate_rejections = 0;
+        size_t released_external_outputs = 0;
+        OutputGateReport pending_output_gate_report;
         size_t gs20_checks = 0;
         // A started invocation is counted immediately before entering the
         // source authenticator. Completed and accepted remain separate.
@@ -2049,6 +2109,7 @@ private:
     bool tentative_double_rand_capture_test_hook_ran = false;
     string tentative_double_rand_adapter_test_mode;
     string honest_batch_integration_test_mode;
+    string output_gate_test_mode;
     bool honest_batch_integration_test_hook_ran = false;
     SeededPRNG optimistic_authentication_prng;
     ShamirInput<T> optimistic_authentication_input;
@@ -2244,6 +2305,10 @@ private:
             size_t coordinate_count);
     bool verification_batch_is_eligible_ordinary() const;
     void request_check(VerificationBatchFlushReason reason);
+    void validate_external_output_state(bool after_output_gate) const;
+    void print_output_gate_report(const OutputGateReport& report) const;
+    void complete_output_gate_report(OutputGateReport& report,
+            const PreprocessingReleaseSnapshot& before) const;
     void validate_preprocessing_release_state(bool after_release) const;
     void print_preprocessing_release_report(
             size_t generated_items,
@@ -2683,6 +2748,17 @@ public:
     // makes newly generated material consumable. The item count is used only
     // for cumulative release diagnostics.
     void before_preprocessing_release(size_t generated_items = 0);
+
+    // Stage-1 semantic output boundary. These entry points are called only
+    // from VM output dispatch, never from internal openings or checks.
+    void before_external_output(const char* kind);
+    void reject_external_output(const char* kind);
+    void note_external_output_released(size_t count);
+    void external_output_failed(const char* kind) noexcept;
+
+    // Processor/tape completion owns normal finalization. Threshold-triggered
+    // request_check() deliberately remains a verification-only flush.
+    void finalize_normal_boundary();
 
     // GSZ20 verification
     void check();

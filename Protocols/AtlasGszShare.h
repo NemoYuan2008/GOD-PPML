@@ -24,6 +24,8 @@ class AtlasGszShare : public ShamirShare<T>
     typedef ShamirShare<T> super;
 
 public:
+    static constexpr bool atlas_gsz_stage_one_output_policy = true;
+
     typedef AtlasGsz<This> Protocol;
     typedef ShamirInput<This> Input;
     typedef IndirectShamirMC<This> MAC_Check;

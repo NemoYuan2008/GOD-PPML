@@ -68,7 +68,7 @@
     X(MOVSB, PROC.movsb(INST)) \
     X(TRANS, T::trans(PROC, IMM, EXTRA)) \
     X(BITB, PROC.random_bit(S0)) \
-    X(REVEAL, T::reveal_inst(PROC, EXTRA)) \
+    X(REVEAL, Proc.before_mixed_domain_secret_output("gc_secret_reveal"); T::reveal_inst(PROC, EXTRA)) \
     X(PRINTREGSIGNED, PROC.print_reg_signed(IMM, R0)) \
     X(PRINTREGB, PROC.print_reg(R0, IMM, SIZE)) \
     X(PRINTREGPLAINB, PROC.print_reg_plain(C0)) \

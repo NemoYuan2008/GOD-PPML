@@ -103,6 +103,10 @@ public:
 
     void reveal(const vector<int>& args);
 
+    // Stand-alone GC has no owning prime protocol. The combined arithmetic
+    // Processor provides the Stage-1 mixed-domain rejection with this name.
+    void before_mixed_domain_secret_output(const char*) {}
+
     template<int = 0>
     void convcbit2s(const BaseInstruction& instruction);
 

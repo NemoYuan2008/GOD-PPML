@@ -66,7 +66,8 @@ honestly, including real computation and communication for:
 - authenticated source handles;
 - checkpoint derivations, sealing, and promotion;
 - continuation to later segments;
-- final output gating.
+- production semantic output gating and normal processor-boundary
+  finalization.
 
 Operations that always execute in an honest run must not be represented only
 by metadata, because their communication and running time are part of the
@@ -284,8 +285,48 @@ communication.
 `AtlasGsz::~AtlasGsz()` is non-throwing and communication-free. `BitPrep` does
 not invoke destructor-time `check()` for protocols exposing the explicit
 release API. Main online-protocol checking remains owned by the processor/tape
-`Proc.check()` path. This is a preprocessing prerequisite only; no application
-output gate is implemented.
+`Proc.check()` path.
+
+The production runtime now has an optimistic, fail-stop Stage-1 semantic
+output boundary owned by the exact local prime AtlasGsz instance:
+
+- prime public `OPEN` gates before opening communication;
+- prime `PRIVATEOUTPUT` gates before mask acquisition, secret copying, or
+  output preparation;
+- every nonempty residual runs the existing GS20 verification, and an eligible
+  ordinary scalar/dot residual then runs exactly one existing source-only
+  authentication invocation;
+- the exact `r_t`, direct `e_t`, and derived `z_t` bindings and successful
+  batch-local cleanup are validated before output proceeds;
+- retained degree-`2t` openings are checked after residual verification;
+- an empty gate performs zero communication, randomness, GS20 checks,
+  authentication invocations, and challenges;
+- direct prime/GF2N share printing, secret sockets, explicit share-file output,
+  and `Machine::run_function` are rejected before secret access, packing,
+  persistence, or host transfer;
+- AtlasGsz arithmetic-to-GC `SPLIT` is unsupported: `AtlasGszShare` has no
+  usable `split()`, `ShareInterface::has_split` is false, and its generic
+  fallback throws. The runtime rejects fail-closed before reading or copying
+  the prime secret or reaching that fallback. Do not classify this conversion
+  as implemented mixed-circuit support;
+- GC and GF2N secret reveal remain unsupported for Stage 1 and are rejected
+  before their reveal/opening operations. Already-clear output is not gated
+  again;
+- exactly one online arithmetic worker is supported. `CALL_TAPE` and
+  sequential tapes on worker 0 remain supported;
+- normal processor/tape `Proc.check()` boundaries finalize residual
+  verification and then retained openings, including no-output programs;
+- automatic `Machine::run` memory serialization is internal per-party
+  persistence, not an authenticated checkpoint or Stage-1 recovery/restart
+  mechanism;
+- AtlasGsz destruction remains non-throwing and communication-free.
+
+Any gate, GS20, authentication, binding, or retained-opening failure is fatal
+and fail-stop. A second output attempt performs no further verification,
+authentication, challenges, or communication. There are no checkpoints from
+this lifecycle, recovery, rollback, replay, relay, retry, `Analyze-Sharing`,
+localization, `Corr`/`Disp` mutation, or multi-worker execution. This is the
+optimistic Stage-1 path, not complete GOD.
 
 This automatic ordinary-batch lifecycle is not a complete segment/checkpoint
 scheduler and must not be described as the complete GSZ20 authentication path.
@@ -296,7 +337,8 @@ The following honest-path items remain unimplemented:
    families, checkpoint derivation construction, and checkpoint creation;
 2. normal segment/checkpoint scheduler integration beyond eligible ordinary
    GS20 verification batches;
-3. final production output gating through that scheduler.
+3. integration of the existing runtime semantic output boundary with that
+   future segment/checkpoint scheduler and sealed checkpoints.
 
 Truncation, mul-public, virtual-transcript, compression-generated, and
 ultimate-tuple provenance remain deferred.
@@ -660,7 +702,8 @@ the user changes priorities, the expected next sequence is:
 
 1. form complete segment source collections and checkpoint derivations, then
    integrate authentication, sealing, and promotion;
-2. integrate normal segment continuation and final output gating.
+2. integrate normal segment continuation and connect the existing runtime
+   semantic output boundary to scheduler-sealed checkpoints.
 
 The next milestone must continue to use the king's existing real-dealer batch;
 it must not create a second logical dealer for the king.

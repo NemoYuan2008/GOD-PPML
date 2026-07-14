@@ -1159,7 +1159,6 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
         Proc.Procp.send_personal(start);
         return;
       case PRIVATEOUTPUT:
-        Proc.Procp.check();
         Proc.Procp.private_output(start);
         return;
       // Note: Fp version has different semantics for NOTC than GNOTC
@@ -1179,9 +1178,10 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
         sgf2n::shrsi(Proc2, *this);
         return;
       case OPEN:
-        Proc.Procp.POpen(*this);
+        Proc.Procp.external_POpen(*this);
         return;
       case GOPEN:
+        Proc.before_mixed_domain_secret_output("gf2n_secret_open");
         Proc.Proc2.POpen(*this);
         return;
       case MULS:
@@ -1279,9 +1279,11 @@ inline void Instruction::execute(Processor<sint, sgf2n>& Proc) const
         print(Proc.out, &Proc.read_Cp(r[0]));
         return;
       case PRINTREGPLAINS:
+        Proc.Procp.reject_external_output("direct_prime_secret_print");
         Proc.out << Proc.read_Sp(r[0]);
         return;
       case GPRINTREGPLAINS:
+        Proc.before_mixed_domain_secret_output("direct_gf2n_secret_print");
         Proc.out << Proc.read_S2(r[0]);
         return;
       case CONDPRINTPLAIN:
