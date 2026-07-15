@@ -17,6 +17,7 @@
 #include "Atlas.h"
 #include "AtlasConfig.h"
 
+#include <numeric>
 
 template<class T>
 Atlas<T>::~Atlas()
@@ -492,6 +493,53 @@ void Atlas<T>::initialize_reconstruction_factors()
 }
 
 template<class T>
+shared_ptr<const typename Atlas<T>::FixedKingInterpolationContext>
+Atlas<T>::build_fixed_king_interpolation_context(
+        int king, const vector<int>& support) const
+{
+    const int n = P.num_players();
+    const int t = ShamirMachine::s().threshold;
+    vector<bool> support_membership(n, false);
+    for (int party : support)
+        support_membership.at(party) = true;
+
+    vector<int> construction_points{-1};
+    for (int party = 0; party < n; party++)
+        if (not support_membership.at(party))
+            construction_points.push_back(party);
+    if (construction_points.size() != size_t(t + 1))
+        throw logic_error(
+                "Atlas fixed-king special-sharing interpolation has the wrong number of points");
+
+    vector<share_value_type> construction_coefficients(n);
+    for (int party : support)
+        construction_coefficients.at(party) =
+                Shamir<T>::get_rec_factors(
+                        construction_points, party).front();
+
+    vector<vector<share_value_type>> support_evaluation_factors;
+    support_evaluation_factors.reserve(n);
+    for (int party = 0; party < n; party++)
+        support_evaluation_factors.push_back(
+                Shamir<T>::get_rec_factors(support, party));
+
+    auto support_reconstruction_factors =
+            Shamir<T>::get_rec_factors(support);
+    vector<int> received_points(n);
+    iota(received_points.begin(), received_points.end(), 0);
+    auto received_reconstruction_factors =
+            Shamir<T>::get_rec_factors(received_points);
+
+    return make_shared<const FixedKingInterpolationContext>(
+            n, t, king, support, std::move(support_membership),
+            std::move(construction_points),
+            std::move(construction_coefficients),
+            std::move(support_evaluation_factors),
+            std::move(support_reconstruction_factors),
+            std::move(received_reconstruction_factors));
+}
+
+template<class T>
 vector<int> Atlas<T>::canonical_fixed_king_special_sharing_support(
         int king) const
 {
@@ -514,6 +562,8 @@ template<class T>
 void Atlas<T>::validate_fixed_king_special_sharing_support(
         int king, const vector<int>& support) const
 {
+    if (fixed_king_interpolation_audit_enabled_)
+        fixed_king_interpolation_audit_.support_validation_calls++;
     int t = ShamirMachine::s().threshold;
     if (king < 0 || king >= P.num_players())
         throw invalid_argument(
@@ -573,24 +623,23 @@ Atlas<T>::make_fixed_king_special_sharing(
         const share_value_type& secret,
         const vector<int>& support) const
 {
+    FixedKingInterpolationAuditTimer timer(
+            fixed_king_interpolation_audit_enabled_,
+            fixed_king_interpolation_audit_
+                    .sharing_construction_nanoseconds);
+    if (fixed_king_interpolation_audit_enabled_)
+        fixed_king_interpolation_audit_.sharing_construction_calls++;
     validate_fixed_king_special_sharing_support(fixed_king, support);
-
-    vector<int> interpolation_points{-1};
-    for (int party = 0; party < P.num_players(); party++)
-        if (find(support.begin(), support.end(), party) == support.end())
-            interpolation_points.push_back(party);
-    if (interpolation_points.size()
-            != size_t(ShamirMachine::s().threshold + 1))
+    const auto* context = fixed_king_interpolation_context_if_matches(
+            fixed_king, support);
+    if (context == 0)
         throw logic_error(
-                "Atlas fixed-king special-sharing interpolation has the wrong number of points");
+                "Atlas fixed-king interpolation context does not match the active configuration");
 
     vector<share_value_type> sharing(P.num_players(), share_value_type{});
     for (int party : support)
-    {
-        auto factors = Shamir<T>::get_rec_factors(
-                interpolation_points, party);
-        sharing.at(party) = secret * factors.front();
-    }
+        sharing.at(party) = secret
+                * context->construction_coefficients.at(party);
     return sharing;
 }
 
@@ -614,11 +663,16 @@ typename Atlas<T>::share_value_type Atlas<T>::reconstruct_distributed_e_t(
 {
     assert(sharing.size() == size_t(P.num_players()));
     validate_fixed_king_special_sharing_support(fixed_king, support);
+    const auto* context = fixed_king_interpolation_context_if_matches(
+            fixed_king, support);
+    if (context == 0)
+        throw logic_error(
+                "Atlas fixed-king reconstruction context does not match the active configuration");
 
     share_value_type res{};
-    auto factors = Shamir<T>::get_rec_factors(support);
     for (size_t i = 0; i < support.size(); i++)
-        res += sharing.at(support.at(i)) * factors.at(i);
+        res += sharing.at(support.at(i))
+                * context->support_reconstruction_factors.at(i);
     return res;
 }
 
@@ -627,8 +681,19 @@ void Atlas<T>::validate_fixed_king_special_sharing_evidence(
         const PartialMultTranscript& transcript,
         const KingPartialMultEvidence& evidence) const
 {
+    FixedKingInterpolationAuditTimer timer(
+            fixed_king_interpolation_audit_enabled_,
+            fixed_king_interpolation_audit_
+                    .evidence_validation_nanoseconds);
+    if (fixed_king_interpolation_audit_enabled_)
+        fixed_king_interpolation_audit_.evidence_validation_calls++;
     validate_fixed_king_special_sharing_support(
             transcript.king, transcript.special_sharing_support);
+    const auto* context = fixed_king_interpolation_context_if_matches(
+            transcript.king, transcript.special_sharing_support);
+    if (context == 0)
+        throw logic_error(
+                "Atlas fixed-king evidence context does not match the active configuration");
     if (P.my_num() != transcript.king || evidence.king != transcript.king)
         throw logic_error(
                 "Atlas fixed-king special-sharing evidence has the wrong owner");
@@ -639,17 +704,15 @@ void Atlas<T>::validate_fixed_king_special_sharing_evidence(
 
     for (int party = 0; party < P.num_players(); party++)
     {
-        const bool in_support = find(
-                transcript.special_sharing_support.begin(),
-                transcript.special_sharing_support.end(), party)
-                != transcript.special_sharing_support.end();
+        const bool in_support =
+                context->support_membership.at(party);
         if (not in_support
                 && evidence.distributed_e_t.at(party) != share_value_type{})
             throw logic_error(
                     "Atlas fixed-king special sharing is nonzero outside its support");
 
-        auto factors = Shamir<T>::get_rec_factors(
-                transcript.special_sharing_support, party);
+        const auto& factors =
+                context->support_evaluation_factors.at(party);
         share_value_type expected{};
         for (size_t i = 0;
                 i < transcript.special_sharing_support.size(); i++)
@@ -944,10 +1007,14 @@ void Atlas<T>::set_fixed_king(int king)
     if (king < 0 || king >= P.num_players())
         throw std::out_of_range("invalid Atlas fixed king");
     assert(next_partial_mult_transcript == pending_partial_mult_operations.size());
+    auto support = canonical_fixed_king_special_sharing_support(king);
+    auto context = build_fixed_king_interpolation_context(king, support);
     fixed_king_enabled = true;
     fixed_king = king;
-    fixed_king_special_sharing_support =
-            canonical_fixed_king_special_sharing_support(king);
+    fixed_king_special_sharing_support = std::move(support);
+    fixed_king_interpolation_context_ = std::move(context);
+    if (fixed_king_interpolation_audit_enabled_)
+        fixed_king_interpolation_audit_.contexts_constructed++;
 }
 
 template<class T>
@@ -961,7 +1028,34 @@ void Atlas<T>::set_fixed_king_special_sharing_support(
         throw logic_error(
                 "Atlas special-sharing support cannot change during an operation batch");
     validate_fixed_king_special_sharing_support(fixed_king, support);
+    auto context = build_fixed_king_interpolation_context(
+            fixed_king, support);
     fixed_king_special_sharing_support = support;
+    fixed_king_interpolation_context_ = std::move(context);
+    if (fixed_king_interpolation_audit_enabled_)
+        fixed_king_interpolation_audit_.contexts_constructed++;
+}
+
+template<class T>
+const typename Atlas<T>::FixedKingInterpolationContext*
+Atlas<T>::fixed_king_interpolation_context_if_matches(
+        int king, const vector<int>& support) const
+{
+    const auto* context = fixed_king_interpolation_context_.get();
+    if (context == 0 || context->num_players != P.num_players()
+            || context->threshold != ShamirMachine::s().threshold
+            || context->king != king || context->support != support)
+        return 0;
+    if (fixed_king_interpolation_audit_enabled_)
+        fixed_king_interpolation_audit_.context_reuses++;
+    return context;
+}
+
+template<class T>
+typename Atlas<T>::FixedKingInterpolationAuditSnapshot
+Atlas<T>::fixed_king_interpolation_audit_snapshot() const
+{
+    return fixed_king_interpolation_audit_;
 }
 
 template<class T>

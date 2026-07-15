@@ -70,11 +70,19 @@ private:
 
         ~RuntimeAuditTimer()
         {
+            finish();
+        }
+
+        void finish()
+        {
             if (enabled)
+            {
                 elapsed_nanoseconds += uint64_t(
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
                                 std::chrono::steady_clock::now() - started)
                                 .count());
+                enabled = false;
+            }
         }
     };
 
@@ -100,6 +108,10 @@ private:
         uint64_t promote_checkpoint_nanoseconds = 0;
         uint64_t memory_estimation_nanoseconds = 0;
         uint64_t cleanup_nanoseconds = 0;
+        uint64_t capture_concrete_e_t_validation_nanoseconds = 0;
+        uint64_t candidate_finalization_nanoseconds = 0;
+        uint64_t frozen_batch_construction_nanoseconds = 0;
+        uint64_t integrated_close_nanoseconds = 0;
 
         uint64_t authenticated_handle_exists_calls = 0;
         uint64_t authenticated_handle_linear_comparisons = 0;
@@ -112,6 +124,13 @@ private:
         uint64_t checkpoint_bytes_copied = 0;
         uint64_t memory_estimation_calls = 0;
         uint64_t memory_estimation_elements_traversed = 0;
+        uint64_t capture_concrete_e_t_validation_calls = 0;
+        uint64_t concrete_e_t_validation_calls = 0;
+        uint64_t tentative_candidate_validation_calls = 0;
+        uint64_t exact_batch_correspondence_validation_calls = 0;
+        uint64_t candidate_finalization_calls = 0;
+        uint64_t frozen_batch_construction_calls = 0;
+        uint64_t integrated_close_calls = 0;
         size_t memory_estimation_depth = 0;
     };
 

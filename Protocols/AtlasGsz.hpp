@@ -32,7 +32,8 @@ AtlasGsz<T>::AtlasGsz(Player& P, uint64_t base_field_ftag_chunk_width,
         runtime_audit_enabled_(audit_environment_flag_enabled(
                 "ATLAS_GSZ_RUNTIME_AUDIT")),
         memory_audit_enabled_(audit_environment_flag_enabled(
-                "ATLAS_GSZ_MEMORY_AUDIT")), honest(P),
+                "ATLAS_GSZ_MEMORY_AUDIT")),
+        honest(P, runtime_audit_enabled_),
         optimistic_authentication_input(0, P), P(P)
 {
     if (base_field_ftag_chunk_width_ == 0
@@ -235,8 +236,20 @@ bool AtlasGsz<T>::capture_completed_ordinary_double_rand(
     concrete_e_t_source.special_sharing_support =
             record.transcript.special_sharing_support;
     concrete_e_t_source.local_share = record.transcript.e_t;
-    if (not validate_tentative_concrete_e_t_source(concrete_e_t_source,
-            record_ordinal, operation_kind))
+    bool concrete_e_t_source_is_valid = false;
+    {
+        RuntimeAuditTimer timer(runtime_audit_enabled(),
+                runtime_audit_state
+                        .capture_concrete_e_t_validation_nanoseconds);
+        if (runtime_audit_enabled())
+            runtime_audit_state
+                    .capture_concrete_e_t_validation_calls++;
+        concrete_e_t_source_is_valid =
+                validate_tentative_concrete_e_t_source(
+                        concrete_e_t_source, record_ordinal,
+                        operation_kind);
+    }
+    if (not concrete_e_t_source_is_valid)
     {
         discard_tentative_double_rand_capture();
         return false;
@@ -298,6 +311,8 @@ bool AtlasGsz<T>::validate_tentative_concrete_e_t_source(
         size_t record_ordinal,
         OrdinaryDoubleRandOperationKind operation_kind) const
 {
+    if (runtime_audit_enabled())
+        runtime_audit_state.concrete_e_t_validation_calls++;
     if (record_ordinal >= partial_mult_transcripts.size())
         return false;
     const auto& record = partial_mult_transcripts.at(record_ordinal);
@@ -332,6 +347,11 @@ bool AtlasGsz<T>::validate_tentative_concrete_e_t_source(
     if (not contains_king
             || (not seen.at(P.my_num()) && source.local_share != T{}))
         return false;
+    const auto* interpolation_context =
+            honest.fixed_king_interpolation_context_if_matches(
+                    source.king, source.special_sharing_support);
+    if (interpolation_context == 0)
+        return false;
 
     const auto& reference = record.producer_reference;
     if (not reference.producer_provenance
@@ -358,8 +378,8 @@ bool AtlasGsz<T>::validate_tentative_concrete_e_t_source(
                     && evidence.distributed_e_t.at(party)
                             != typename Atlas<T>::share_value_type{})
                 return false;
-            auto factors = Shamir<T>::get_rec_factors(
-                    source.special_sharing_support, party);
+            const auto& factors = interpolation_context
+                    ->support_evaluation_factors.at(party);
             typename Atlas<T>::share_value_type expected{};
             for (size_t i = 0;
                     i < source.special_sharing_support.size(); i++)
@@ -373,15 +393,15 @@ bool AtlasGsz<T>::validate_tentative_concrete_e_t_source(
         typename Atlas<T>::share_value_type received_secret{};
         for (int party = 0; party < 2 * t + 1; party++)
             received_secret += evidence.received_e_2t.at(party)
-                    * Shamir<T>::get_rec_factor(party, 2 * t + 1);
+                    * interpolation_context
+                            ->received_reconstruction_factors.at(party);
         typename Atlas<T>::share_value_type distributed_secret{};
-        const auto reconstruction = Shamir<T>::get_rec_factors(
-                source.special_sharing_support);
         for (size_t i = 0;
                 i < source.special_sharing_support.size(); i++)
             distributed_secret += evidence.distributed_e_t.at(
                     source.special_sharing_support.at(i))
-                    * reconstruction.at(i);
+                    * interpolation_context
+                            ->support_reconstruction_factors.at(i);
         typename Atlas<T>::share_value_type local_e_t = source.local_share;
         if (received_secret != distributed_secret
                 || evidence.distributed_e_t.at(source.king) != local_e_t)
@@ -394,6 +414,8 @@ template<class T>
 bool AtlasGsz<T>::validate_tentative_double_rand_candidate(
         const TentativeDoubleRandCaptureCandidate& candidate) const
 {
+    if (runtime_audit_enabled())
+        runtime_audit_state.tentative_candidate_validation_calls++;
     const size_t n = P.num_players();
     if (n == 0 || candidate.consumed_outputs.empty()
             || candidate.producer_records.empty()
@@ -674,6 +696,9 @@ template<class T>
 bool AtlasGsz<T>::validate_exact_ordinary_batch_correspondence(
         const TentativeDoubleRandCaptureCandidate& candidate) const
 {
+    if (runtime_audit_enabled())
+        runtime_audit_state
+                .exact_batch_correspondence_validation_calls++;
     if (x_verify.empty() || x_verify.size() != y_verify.size()
             || x_verify.size() != z_verify.size()
             || partial_mult_transcripts.empty()
@@ -950,6 +975,10 @@ template<class T>
 unique_ptr<typename AtlasGsz<T>::FrozenOrdinaryBatch>
 AtlasGsz<T>::freeze_finalized_tentative_double_rand_candidate()
 {
+    RuntimeAuditTimer timer(runtime_audit_enabled(),
+            runtime_audit_state.frozen_batch_construction_nanoseconds);
+    if (runtime_audit_enabled())
+        runtime_audit_state.frozen_batch_construction_calls++;
     auto& capture = tentative_double_rand_capture_state;
     const auto* candidate = capture.finalized_candidate.get();
     if (capture.active || candidate == 0
@@ -1208,6 +1237,10 @@ AtlasGsz<T>::merge_verified_ordinary_segment_candidates()
 template<class T>
 bool AtlasGsz<T>::finalize_tentative_double_rand_capture()
 {
+    RuntimeAuditTimer timer(runtime_audit_enabled(),
+            runtime_audit_state.candidate_finalization_nanoseconds);
+    if (runtime_audit_enabled())
+        runtime_audit_state.candidate_finalization_calls++;
     auto& state = tentative_double_rand_capture_state;
     if (not state.active || state.finalized_candidate
             || state.consumptions.empty())
@@ -1486,6 +1519,12 @@ void AtlasGsz<T>::maybe_run_special_e_t_test(
         fail("local e_t is nonzero outside support");
     if (record.has_king_evidence != (P.my_num() == transcript.king))
         fail("king-evidence ownership is incorrect");
+    const auto* interpolation_context =
+            honest.fixed_king_interpolation_context_if_matches(
+                    transcript.king,
+                    transcript.special_sharing_support);
+    if (interpolation_context == 0)
+        fail("fixed-king interpolation context is absent or mismatched");
 
     if (record.has_king_evidence)
     {
@@ -1498,17 +1537,15 @@ void AtlasGsz<T>::maybe_run_special_e_t_test(
 
         for (int party = 0; party < P.num_players(); party++)
         {
-            const bool in_support = find(
-                    transcript.special_sharing_support.begin(),
-                    transcript.special_sharing_support.end(), party)
-                    != transcript.special_sharing_support.end();
+            const bool in_support = interpolation_context
+                    ->support_membership.at(party);
             if (not in_support
                     && evidence.distributed_e_t.at(party)
                             != typename Atlas<T>::share_value_type{})
                 fail("king evidence is nonzero outside support");
 
-            auto factors = Shamir<T>::get_rec_factors(
-                    transcript.special_sharing_support, party);
+            const auto& factors = interpolation_context
+                    ->support_evaluation_factors.at(party);
             typename Atlas<T>::share_value_type expected{};
             for (size_t i = 0;
                     i < transcript.special_sharing_support.size(); i++)
@@ -1522,15 +1559,15 @@ void AtlasGsz<T>::maybe_run_special_e_t_test(
         typename Atlas<T>::share_value_type received_secret{};
         for (int party = 0; party < 2 * t + 1; party++)
             received_secret += evidence.received_e_2t.at(party)
-                    * Shamir<T>::get_rec_factor(party, 2 * t + 1);
+                    * interpolation_context
+                            ->received_reconstruction_factors.at(party);
         typename Atlas<T>::share_value_type distributed_secret{};
-        auto reconstruction = Shamir<T>::get_rec_factors(
-                transcript.special_sharing_support);
         for (size_t i = 0;
                 i < transcript.special_sharing_support.size(); i++)
             distributed_secret += evidence.distributed_e_t.at(
                     transcript.special_sharing_support.at(i))
-                    * reconstruction.at(i);
+                    * interpolation_context
+                            ->support_reconstruction_factors.at(i);
         typename Atlas<T>::share_value_type local_e_t = transcript.e_t;
         if (received_secret != distributed_secret
                 || evidence.distributed_e_t.at(transcript.king) != local_e_t)
@@ -2131,6 +2168,10 @@ void AtlasGsz<T>::close_ordinary_online_segment()
     if (segment.lifecycle == OrdinaryOnlineSegmentLifecycle::idle
             || segment.lifecycle == OrdinaryOnlineSegmentLifecycle::promoted)
         return;
+    RuntimeAuditTimer integrated_close_timer(runtime_audit_enabled(),
+            runtime_audit_state.integrated_close_nanoseconds);
+    if (runtime_audit_enabled())
+        runtime_audit_state.integrated_close_calls++;
     if (runtime_audit_enabled()
             && runtime_audit_state.ordinary_online_started)
     {
@@ -2445,6 +2486,7 @@ void AtlasGsz<T>::close_ordinary_online_segment()
         integrated.logical_segments_promoted++;
     }
     integrated.latest_batch = report;
+    integrated_close_timer.finish();
     print_runtime_audit_summary();
     print_communication_audit_batch(report);
     if (not honest_batch_integration_test_mode.empty())
@@ -2768,23 +2810,38 @@ void AtlasGsz<T>::validate_current_virtual_transcript() const
         int t = ShamirMachine::s().threshold;
         typename Atlas<T>::share_value_type received_secret(0);
         typename Atlas<T>::share_value_type distributed_secret(0);
-
-        for (int i = 0; i < 2 * t + 1; i++)
-            received_secret +=
-                    current_virtual_king_evidence.received_e_2t.at(i)
-                    * Shamir<T>::get_rec_factor(i, 2 * t + 1);
-
         vector<int> reconstruction_support =
                 current_virtual_transcript.special_sharing_support;
         if (reconstruction_support.empty())
             for (int i = 0; i < t + 1; i++)
                 reconstruction_support.push_back(i);
-        auto distributed_factors = Shamir<T>::get_rec_factors(
-                reconstruction_support);
+        const auto* interpolation_context =
+                honest.fixed_king_interpolation_context_if_matches(
+                        king, reconstruction_support);
+        for (int i = 0; i < 2 * t + 1; i++)
+            received_secret +=
+                    current_virtual_king_evidence.received_e_2t.at(i)
+                    * (interpolation_context
+                            ? interpolation_context
+                                    ->received_reconstruction_factors.at(i)
+                            : Shamir<T>::get_rec_factor(i, 2 * t + 1));
+        vector<typename Atlas<T>::share_value_type>
+                fallback_distributed_factors;
+        const vector<typename Atlas<T>::share_value_type>*
+                distributed_factors = 0;
+        if (interpolation_context)
+            distributed_factors = &interpolation_context
+                    ->support_reconstruction_factors;
+        else
+        {
+            fallback_distributed_factors = Shamir<T>::get_rec_factors(
+                    reconstruction_support);
+            distributed_factors = &fallback_distributed_factors;
+        }
         for (size_t i = 0; i < reconstruction_support.size(); i++)
             distributed_secret += current_virtual_king_evidence
                     .distributed_e_t.at(reconstruction_support.at(i))
-                    * distributed_factors.at(i);
+                    * distributed_factors->at(i);
 
         assert(received_secret == distributed_secret);
 
@@ -17189,6 +17246,8 @@ void AtlasGsz<T>::print_runtime_audit_summary() const
     if (not runtime_audit_enabled())
         return;
     const auto& audit = runtime_audit_state;
+    const auto fixed_king_audit =
+            honest.fixed_king_interpolation_audit_snapshot();
     const auto& report = ordinary_online_segment_collector.report;
     cout << "ATLAS_GSZ_RUNTIME_AUDIT"
          << " party=" << P.my_num()
@@ -17226,6 +17285,42 @@ void AtlasGsz<T>::print_runtime_audit_summary() const
          << " memory_estimation_ns="
          << audit.memory_estimation_nanoseconds
          << " cleanup_ns=" << audit.cleanup_nanoseconds
+         << " fixed_king_sharing_construction_ns="
+         << fixed_king_audit.sharing_construction_nanoseconds
+         << " fixed_king_evidence_validation_ns="
+         << fixed_king_audit.evidence_validation_nanoseconds
+         << " capture_concrete_e_t_validation_ns="
+         << audit.capture_concrete_e_t_validation_nanoseconds
+         << " candidate_finalization_ns="
+         << audit.candidate_finalization_nanoseconds
+         << " frozen_batch_construction_ns="
+         << audit.frozen_batch_construction_nanoseconds
+         << " integrated_close_ns="
+         << audit.integrated_close_nanoseconds
+         << " interpolation_contexts_constructed="
+         << fixed_king_audit.contexts_constructed
+         << " interpolation_context_reuses="
+         << fixed_king_audit.context_reuses
+         << " fixed_king_support_validation_calls="
+         << fixed_king_audit.support_validation_calls
+         << " fixed_king_sharing_construction_calls="
+         << fixed_king_audit.sharing_construction_calls
+         << " fixed_king_evidence_validation_calls="
+         << fixed_king_audit.evidence_validation_calls
+         << " capture_concrete_e_t_validation_calls="
+         << audit.capture_concrete_e_t_validation_calls
+         << " concrete_e_t_validation_calls="
+         << audit.concrete_e_t_validation_calls
+         << " tentative_candidate_validation_calls="
+         << audit.tentative_candidate_validation_calls
+         << " exact_batch_correspondence_validation_calls="
+         << audit.exact_batch_correspondence_validation_calls
+         << " candidate_finalization_calls="
+         << audit.candidate_finalization_calls
+         << " frozen_batch_construction_calls="
+         << audit.frozen_batch_construction_calls
+         << " integrated_close_calls="
+         << audit.integrated_close_calls
          << " authenticated_handle_exists_calls="
          << audit.authenticated_handle_exists_calls
          << " authenticated_handle_linear_comparisons="
@@ -18414,22 +18509,39 @@ void AtlasGsz<T>::dimension_reduction()
         int t = ShamirMachine::s().threshold;
         typename Atlas<T>::share_value_type evidence_1_received_secret(0);
         typename Atlas<T>::share_value_type evidence_1_distributed_secret(0);
-        for (int i = 0; i < 2 * t + 1; i++)
-            evidence_1_received_secret +=
-                    evidence_1.received_e_2t.at(i)
-                    * Shamir<T>::get_rec_factor(i, 2 * t + 1);
         vector<int> reconstruction_support =
                 transcript_1.special_sharing_support;
         if (reconstruction_support.empty())
             for (int i = 0; i < t + 1; i++)
                 reconstruction_support.push_back(i);
-        auto reconstruction = Shamir<T>::get_rec_factors(
-                reconstruction_support);
+        const auto* interpolation_context =
+                honest.fixed_king_interpolation_context_if_matches(
+                        batch_king, reconstruction_support);
+        for (int i = 0; i < 2 * t + 1; i++)
+            evidence_1_received_secret +=
+                    evidence_1.received_e_2t.at(i)
+                    * (interpolation_context
+                            ? interpolation_context
+                                    ->received_reconstruction_factors.at(i)
+                            : Shamir<T>::get_rec_factor(i, 2 * t + 1));
+        vector<typename Atlas<T>::share_value_type>
+                fallback_reconstruction;
+        const vector<typename Atlas<T>::share_value_type>*
+                reconstruction = 0;
+        if (interpolation_context)
+            reconstruction = &interpolation_context
+                    ->support_reconstruction_factors;
+        else
+        {
+            fallback_reconstruction = Shamir<T>::get_rec_factors(
+                    reconstruction_support);
+            reconstruction = &fallback_reconstruction;
+        }
         for (size_t i = 0; i < reconstruction_support.size(); i++)
             evidence_1_distributed_secret +=
                     evidence_1.distributed_e_t.at(
                             reconstruction_support.at(i))
-                    * reconstruction.at(i);
+                    * reconstruction->at(i);
         assert(evidence_1_received_secret
                 == evidence_1_distributed_secret);
     }

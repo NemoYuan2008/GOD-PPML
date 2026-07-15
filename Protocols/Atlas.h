@@ -10,8 +10,11 @@
 
 #include "Tools/Bundle.h"
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 
 /**
@@ -23,6 +26,55 @@ class Atlas : public ProtocolBase<T>
 {
 public:
     typedef typename T::open_type share_value_type;
+
+    struct FixedKingInterpolationContext
+    {
+        const int num_players;
+        const int threshold;
+        const int king;
+        const vector<int> support;
+        const vector<bool> support_membership;
+        const vector<int> construction_points;
+        const vector<share_value_type> construction_coefficients;
+        const vector<vector<share_value_type>> support_evaluation_factors;
+        const vector<share_value_type> support_reconstruction_factors;
+        const vector<share_value_type> received_reconstruction_factors;
+
+        FixedKingInterpolationContext(int num_players, int threshold,
+                int king, vector<int> support,
+                vector<bool> support_membership,
+                vector<int> construction_points,
+                vector<share_value_type> construction_coefficients,
+                vector<vector<share_value_type>>
+                        support_evaluation_factors,
+                vector<share_value_type> support_reconstruction_factors,
+                vector<share_value_type> received_reconstruction_factors) :
+                num_players(num_players), threshold(threshold), king(king),
+                support(std::move(support)),
+                support_membership(std::move(support_membership)),
+                construction_points(std::move(construction_points)),
+                construction_coefficients(
+                        std::move(construction_coefficients)),
+                support_evaluation_factors(
+                        std::move(support_evaluation_factors)),
+                support_reconstruction_factors(
+                        std::move(support_reconstruction_factors)),
+                received_reconstruction_factors(
+                        std::move(received_reconstruction_factors))
+        {
+        }
+    };
+
+    struct FixedKingInterpolationAuditSnapshot
+    {
+        uint64_t contexts_constructed = 0;
+        uint64_t context_reuses = 0;
+        uint64_t support_validation_calls = 0;
+        uint64_t sharing_construction_calls = 0;
+        uint64_t sharing_construction_nanoseconds = 0;
+        uint64_t evidence_validation_calls = 0;
+        uint64_t evidence_validation_nanoseconds = 0;
+    };
 
     struct DealerDoubleSharingContribution
     {
@@ -108,6 +160,38 @@ private:
     vector<typename T::open_type> reconstruction;
     vector<typename T::open_type> reconstruction_t;
 
+    const bool fixed_king_interpolation_audit_enabled_;
+    shared_ptr<const FixedKingInterpolationContext>
+            fixed_king_interpolation_context_;
+    mutable FixedKingInterpolationAuditSnapshot
+            fixed_king_interpolation_audit_;
+
+    class FixedKingInterpolationAuditTimer
+    {
+        bool enabled;
+        uint64_t& elapsed_nanoseconds;
+        std::chrono::steady_clock::time_point started;
+
+    public:
+        FixedKingInterpolationAuditTimer(bool enabled,
+                uint64_t& elapsed_nanoseconds) :
+                enabled(enabled), elapsed_nanoseconds(elapsed_nanoseconds)
+        {
+            if (enabled)
+                started = std::chrono::steady_clock::now();
+        }
+
+        ~FixedKingInterpolationAuditTimer()
+        {
+            if (enabled)
+                elapsed_nanoseconds += uint64_t(
+                        std::chrono::duration_cast<
+                                std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count());
+        }
+    };
+
     int next_king, base_king;
     bool fixed_king_enabled = false;
     int fixed_king = 0;
@@ -146,6 +230,9 @@ private:
     void validate_double_sharing_material_provenance(
             const DoubleSharingMaterial& material) const;
     void initialize_reconstruction_factors();
+    shared_ptr<const FixedKingInterpolationContext>
+            build_fixed_king_interpolation_context(
+                    int king, const vector<int>& support) const;
     vector<int> canonical_fixed_king_special_sharing_support(
             int king) const;
     void validate_fixed_king_special_sharing_support(
@@ -176,9 +263,12 @@ public:
 
     Player& P;
 
-    Atlas(Player& P) :
+    Atlas(Player& P, bool fixed_king_interpolation_audit_enabled = false) :
             shamir(P), shamir2(P, 2 * ShamirMachine::s().threshold), oss(P),
-            oss2(P), next_king(0), base_king(0), resharing(0, P), P(P)
+            oss2(P),
+            fixed_king_interpolation_audit_enabled_(
+                    fixed_king_interpolation_audit_enabled),
+            next_king(0), base_king(0), resharing(0, P), P(P)
     {
     }
 
@@ -204,6 +294,11 @@ public:
     void set_fixed_king(int king);
     void set_fixed_king_special_sharing_support(
             const vector<int>& support);
+    const FixedKingInterpolationContext*
+            fixed_king_interpolation_context_if_matches(
+                    int king, const vector<int>& support) const;
+    FixedKingInterpolationAuditSnapshot
+            fixed_king_interpolation_audit_snapshot() const;
     const PartialMultTranscript& get_last_partial_mult_transcript() const;
     const DoubleSharingProducerReference&
         get_last_double_sharing_producer_reference() const;

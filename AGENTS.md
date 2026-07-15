@@ -3,20 +3,21 @@
 ## Project context
 
 This repository is an MP-SPDZ fork used to implement an honest-majority,
-\(n\)-party PPML protocol with guaranteed output delivery (GOD), by adapting
-the existing GS20/Atlas-based malicious-with-abort implementation toward
-GSZ20.
+\(n\)-party privacy-preserving machine-learning protocol with guaranteed output
+delivery (GOD). It adapts the existing GS20/Atlas malicious-with-abort PPML
+implementation toward the GSZ20 construction.
 
-The main implementation files are usually:
+The main implementation files are:
 
 - `Protocols/AtlasGsz.h`
 - `Protocols/AtlasGsz.hpp`
+- `Protocols/Atlas.h`
+- `Protocols/Atlas.hpp`
 
 Related files may include:
 
 - `Protocols/AtlasGszShare.h`
-- `Protocols/Atlas.h`
-- `Protocols/Atlas.hpp`
+- `Protocols/AtlasConfig.h`
 - `Protocols/Shamir.h`
 - `Protocols/Shamir.hpp`
 - `Protocols/ShamirInput.h`
@@ -24,22 +25,22 @@ Related files may include:
 - `Programs/Source/0-mul-input.py`
 - `Programs/Source/0-dot.py`
 - `Programs/Source/0-dot-input.py`
+- `Programs/Source/0-tentative-double-rand-capture.py`
+- `Programs/Source/0-honest-batch-integration.py`
+- `Programs/Source/1-net-a.py`
 
 Do not add a separate protocol implementation or broadly refactor unrelated
-MP-SPDZ code unless the milestone explicitly requests it.
+MP-SPDZ code unless the current milestone explicitly requires it.
 
-The main external references are:
+The local reference locations are:
 
-- GSZ20 paper: `~/papers/GSZ20.pdf`;
-- GOD-PPML LaTeX technical core: `~/papers/GOD-PPML-paper`;
-- original GS20/security-with-abort implementation:
-  `~/projects/Malicious-Scalable-PPML` (use the actual local path if the
-  checkout is elsewhere).
+- GSZ20 paper: `~/papers/GSZ20.pdf`
+- GOD-PPML LaTeX technical core: `~/papers/GOD-PPML-paper`
 
 ## Source-of-truth hierarchy
 
 When implementation choices affect terminology, protocol structure, ownership,
-batching, state transitions, or security claims, use the following hierarchy:
+batching, state transitions, or security claims, use this hierarchy:
 
 1. the current GOD-PPML LaTeX technical core;
 2. `GOD_CONTROL_PLANE_MAP.md`, the paper-to-code architecture contract;
@@ -51,30 +52,67 @@ batching, state transitions, or security claims, use the following hierarchy:
    independent semantic specification.
 
 Do not silently choose an answer for an issue marked unresolved in the
-technical core or control-plane contract. Report the ambiguity instead.
+technical core or control-plane contract. Report the ambiguity.
 
-## Protocol strategy
+## Current project status
 
-Implementation is divided into two stages.
+The repository currently implements an **optimistic honest-path vertical
+slice**, not a complete GOD protocol.
+
+The implemented production path covers one worker and one logical online
+segment containing supported ordinary scalar multiplications and dot products.
+It performs:
+
+1. ordinary Atlas computation;
+2. transcript and source-provenance capture;
+3. internal GS20 batch verification;
+4. segment-owned collection of successful frozen batches;
+5. one close-time global source authentication;
+6. authenticated-handle conversion;
+7. construction of exact public `r_t`, direct `e_t`, and
+   `z_t = e_t - r_t` bindings;
+8. one checkpoint candidate;
+9. checkpoint sealing and promotion;
+10. fail-stop termination if a required check rejects.
+
+This is an implementation of the optimistic execution path of the GOD
+protocol, including segment verification and one authenticated checkpoint. It
+must not be described as a complete GOD implementation.
+
+### Development freeze
+
+The communication-efficiency audit is complete, resolved, documented, and
+frozen. The residual-runtime profiling milestone is also complete, and the
+first measured runtime optimization—the immutable fixed-king interpolation
+context—has been accepted.
+
+Do not reopen any of the following unless a direct measurement or correctness
+error is demonstrated:
+
+- FTag-width optimization;
+- communication formulas or attribution;
+- logical segment count used by the completed audit;
+- the former quadratic authenticated-handle lookup regression;
+- the false “multi-second final destructor” hypothesis;
+- broad runtime instrumentation without a new, narrowly defined question.
+
+Do not propose or implement another optimization merely because adjacent code
+looks inefficient. A new optimization milestone requires a measured dominant
+cause, a narrow safety argument, and explicit authorization.
+
+## Stage strategy
 
 ### Stage 1: optimistic honest execution
 
-The current priority is the complete path executed when all parties behave
-honestly, including real computation and communication for:
+Stage 1 prioritizes real computation and communication on the path followed
+when all parties behave honestly. Operations that always execute in an honest
+run must not be represented only by metadata because their communication and
+runtime are part of the experiments.
 
-- segment evaluation;
-- multiplication and dot-product transcript collection;
-- virtual-transcript construction and segment verification;
-- dealer-source authentication;
-- checkpoint-tag generation and checking;
-- authenticated source handles;
-- checkpoint derivations, sealing, and promotion;
-- continuation to later segments;
-- final output gating.
-
-Operations that always execute in an honest run must not be represented only
-by metadata, because their communication and running time are part of the
-experiments.
+The current Stage-1 implementation is intentionally narrower than the final
+paper design. It supports one ordinary scalar/dot segment and one promoted
+checkpoint, but not normal continuation through multiple logical segments or
+final output gating.
 
 ### Stage 2: adversarial recovery
 
@@ -90,20 +128,14 @@ Unless a milestone explicitly requests them, do not implement:
 - complete `Refresh`/surgery recovery;
 - repeated adversarial failures and exclusion.
 
-Until Stage 2 exists, failures in the Stage-1 path must be fail-stop:
+Until Stage 2 exists, failures in the Stage-1 path are fail-stop:
 
 1. retain a clear failure class and relevant diagnostics;
 2. create no authenticated handles for a failed batch;
 3. do not seal or promote the affected checkpoint;
 4. do not clear the failure state;
-5. terminate with `RecoveryNotImplemented` or the repository’s equivalent;
+5. terminate with `RecoveryNotImplemented` or the repository equivalent;
 6. do not claim that recovery, rollback, or `Analyze-Sharing` succeeded.
-
-The implementation must not be described as a complete GOD implementation.
-Use terminology such as:
-
-> implementation of the optimistic execution path of the GOD protocol,
-> including segment verification and authenticated checkpoints.
 
 ## Mandatory provenance invariant
 
@@ -122,10 +154,12 @@ Never reverse this direction.
 In particular:
 
 - do not authenticate a derived checkpoint output as a newly dealt source;
-- do not authenticate a published failure snapshot after the failure;
-- do not create handles from rejected or merely planned authentication;
-- `VShare.Analyze` must eventually consume existing handles plus a derivation
-  and claims; it must not manufacture new authenticated sources.
+- do not authenticate a published failure snapshot after failure;
+- do not create handles from rejected, tentative, or merely planned
+  authentication;
+- `VShare.Analyze` must eventually consume existing authenticated handles plus
+  a public derivation and submitted claims;
+- `VShare.Analyze` must not manufacture new authenticated sources.
 
 A stable source handle is semantically:
 
@@ -133,365 +167,367 @@ A stable source handle is semantically:
 (batch_id, dealer_id, source_ordinal)
 ```
 
+Successful authentication certifies consistency of dealer-generated source
+sharings. It does not prove that a corrupt dealer sampled a uniformly random or
+otherwise externally prescribed secret.
+
 ## Current implementation boundary
 
-The repository contains working GS20/Atlas verification machinery, including
-multiplication and dot-product transcript collection, virtual-transcript
-construction, and the optimized ultimate-tuple success path.
+### GS20 and virtual-transcript machinery
 
-It also contains an opt-in, real, **global optimistic FTag vertical slice**,
-exercised through focused runtime hooks. The same authentication algorithm now
-has two component paths: a source-only path that atomically commits
-authenticated source handles without creating a checkpoint, and the existing
-checkpoint-coupled path that additionally validates derivations and promotes a
-checkpoint. The slice includes:
+The repository contains working GS20/Atlas verification machinery, including:
+
+- scalar multiplication and dot-product transcript collection;
+- de-linearization;
+- dimension reduction;
+- recursion and randomization;
+- virtual-transcript and fixed-king evidence propagation;
+- the optimized ultimate-tuple success opening;
+- failure evidence sufficient for the current fail-stop boundary.
+
+Virtual transcripts and fixed-king evidence are required by the GSZ20
+fault-localization architecture. They must not be removed merely to reduce
+runtime.
+
+### Producer provenance and ordinary source capture
+
+`Shamir::get_randoms()` exposes atomic producer provenance containing original
+unscaled dealer sources and exact public output derivations. Atlas pairs the
+degree-\(t\) and degree-\(2t\) records for buffered DoubleRand material.
+
+Each completed eligible Atlas scalar or dot operation exposes:
+
+- the consumed producer record;
+- the consumed producer-output ordinal;
+- the exact partial-multiplication transcript;
+- the fixed king;
+- the public special-sharing support;
+- king-only full-vector evidence where applicable.
+
+AtlasGsz captures this information into tentative ordinary candidates. Paired
+degree-\(2t\) provenance remains validation/evidence only; it is not
+authenticated as a degree-\(t\) source.
+
+### Fixed-king special sharing
+
+For the current optimistic no-dispute path:
+
+- the fixed king is party 0;
+- \(T=\{0,\ldots,t\}\) in canonical numeric order;
+- the special sharing `[e]^T_t` is zero outside \(T\);
+- construction consumes no fresh randomness;
+- the king retains the exact full distributed vector as private evidence.
+
+This is a Stage-1 deterministic support rule. It does **not** implement
+`Corr`/`Disp`-aware support selection or continued execution after the dispute
+state changes.
+
+### Immutable fixed-king interpolation context
+
+The accepted runtime optimization introduces an immutable
+`FixedKingInterpolationContext` owned by each `Atlas` instance.
+
+Its exact public identity is:
+
+```text
+(number of parties, Shamir threshold, fixed king, ordered support T)
+```
+
+The standard evaluation-point mapping is `party + 1`; the existing Shamir
+helper uses public point `-1` to represent zero.
+
+The context may contain only deterministic public interpolation data:
+
+- the ordered support and support-membership table;
+- special-sharing construction points and coefficients;
+- the support-basis evaluation matrix;
+- support reconstruction factors;
+- all-party degree-\(2t\) reconstruction factors.
+
+The context must never contain:
+
+- secret shares;
+- concrete operation-specific `e_t` values;
+- transcripts or king evidence;
+- authenticated handles or derivations;
+- FTag keys, masks, or tags;
+- a cached “validation succeeded” result;
+- any protocol-state transition.
+
+All existing validation calls remain mandatory. Reuse of interpolation factors
+must not reduce support/order, degree, reconstruction, represented-secret,
+local-binding, concrete-`e_t`, producer, candidate, frozen-batch, checkpoint,
+derivation, or handle validation counts.
+
+The context is rebuilt by `set_fixed_king()` or
+`set_fixed_king_special_sharing_support()`. Construction of the replacement
+context must complete before it becomes active. Do not claim that
+Corr/Disp-aware invalidation has been implemented: future dispute-aware support
+selection must explicitly pass the new supported configuration through the
+setter and must be designed as a Stage-2 milestone.
+
+Do not replace this instance-owned immutable context with a process-global
+mutable cache.
+
+### Global optimistic source authentication
+
+The repository contains a real global optimistic FTag source-authentication
+slice with:
 
 - authoritative ordered dealer-source batches;
-- restricted `e = 1` dealer Verify-Sharing over each exact unpadded source
-  batch, executed before key and tag work;
-- restricted `e = 1` consistency checking for each transient `B`-component
-  BaseSharing before any `check_mask=true` tag material is generated;
-- a configurable, session-immutable base-field FTag batch width `B`, defaulting
-  to `4` and overridable with `ATLAS_GSZ_FTAG_CHUNK_WIDTH`; semantically
-  `B` is GSZ20's `ell`, the number of base-field source sharings in one
-  FTag batch. Because the current realization fixes `e=1`, it also satisfies
-  `q=ell/e=B`. It is not an extension degree and the implementation does not
-  perform extension-field packing. The code default is retained for focused
-  tests only and is not acceptable for large communication experiments; every
-  reported experiment must state the explicit width;
+- restricted \(e=1\) dealer Verify-Sharing over each exact unpadded source
+  batch;
+- restricted \(e=1\) consistency checking for each transient BaseSharing;
+- a configurable, session-immutable base-field FTag width `B`, defaulting
+  to `4` unless explicitly overridden;
 - one reusable verifier-holder `mu` key epoch;
-- restricted `e = 1` Check-Key with a fresh uniform twisted mask `rho`;
-- a newly and independently uniformly sampled `nu` for each
-  batch/chunk/verifier/holder relation; accidental equality between
-  independently sampled field elements is allowed and is not reuse;
-- real twisted-sharing MPC tag computation;
+- restricted \(e=1\) Check-Key with a fresh public-protocol mask;
+- a fresh independent `nu` for every batch/chunk/verifier/holder relation;
+- real twisted-sharing tag computation;
 - holder-only tag reconstruction;
-- one global all-dealer/all-batch Check-Tag challenge and aggregate check for
-  the exact pending dealer-source batches required by one checkpoint;
-- canonical ascending dealer order and the uniform exponent layout
-  `position(r,k) = r * (W + 1) + k`, with one checked BaseSharing at `k=0`
-  and only real source chunks at `k=1,...,w_r`;
-- one aggregate `B`-vector and one aggregate tag scalar per holder-to-verifier
-  relation, with zero permitted for the shared Protocol-27 challenge;
-- one compact Protocol-27 decision per verifier (`ok` or that verifier's
-  smallest rejected holder), broadcast in one decision round; the public
-  payload is not a vector of verifier-holder Boolean results;
-- authenticated source handles assigned only after success;
-- an independently invocable source-only handle-commit path using
-  `checkpoint_id == 0` as the explicit no-checkpoint sentinel;
-- public linear checkpoint derivations over those handles;
-- unsealed checkpoint candidates that seal and promote only after validation;
-- fail-stop `RecoveryNotImplemented` behavior on authentication failure.
+- one global all-dealer/all-batch Check-Tag identity;
+- canonical ascending dealer order;
+- the uniform exponent layout
+  `position(r,k) = r * (W + 1) + k`;
+- one checked BaseSharing contribution at `k=0`;
+- only real source chunks at `k=1,...,w_r`;
+- one aggregate `B`-vector and one aggregate tag scalar per
+  holder-to-verifier relation;
+- one compact Protocol-27 decision per verifier;
+- atomic source-handle publication only after global success.
 
-The producer side also exposes neutral, atomic provenance for each completed
-`Shamir::get_randoms()` call and pairs the degree-`t`/degree-`2t` records for
-buffered Atlas DoubleRand materials. This records original unscaled dealer
-sources and exact public hyper-matrix derivations. Each completed concrete
-Atlas multiplication or dot-product-family operation now exposes the exact
-consumed material's shared producer record and producer output ordinal to
-AtlasGsz, which retains that private-process reference in its real wrapper
-record. This transfer does not create tentative capture state, dealer batches,
-authentication, handles, derivations over handles, FTag chunks, checkpoints,
-or scheduler state.
+This implementation is restricted to:
 
-The fixed-king ordinary scalar-multiplication and dot-product path now
-constructs the exact special sharing `[e]^T_t`: for the current optimistic
-no-dispute king 0, `T={0,...,t}` in canonical numeric order, every share
-outside `T` is zero, and the construction consumes no randomness. The
-concrete transcript retains this public support and the king retains the exact
-full distributed vector as private evidence. The opt-in tentative adapter now
-captures and authenticates this concrete `e_t` source for ordinary scalar and
-dot operations. This does not implement `Corr`/`Disp`-aware support selection
-or continued execution.
+```text
+F = K = F_p
+p = 2^61 - 1
+e = 1
+```
 
-AtlasGsz also contains an opt-in tentative DoubleRand source-capture vertical
-slice for completed ordinary scalar multiplication and ordinary dot-product
-wrapper records. One focused round assigns producer-record ordinals by
-completed-operation encounter order, rejects duplicate exact consumed outputs,
-deduplicates whole degree-`t` dealer source groups, aggregates one original
-local source share per real dealer in deterministic producer/group order, and
-forms temporary derivations over candidate-local source references for each
-consumed `r_t`. Each consumed output also retains one narrow concrete `e_t`
-source record containing the real king, public support, and local source share,
-cross-checked against the exact retained real wrapper record and king-only
-evidence. Paired degree-`2t` provenance remains validation/evidence only. The
-tentative candidate can be finalized atomically, inspected, and discarded.
+It is base-field chunking, not extension-field packing.
 
-The repository now also contains one opt-in, consuming adapter from that exact
-finalized candidate to the existing source-only authentication path. After a
-complete local preflight, it copies one ordered source sequence into one
-`DealerSourceBatchRecord` per real dealer, claims the candidate, atomically
-appends the complete ascending-dealer batch set, advances `next_batch_id` once,
-and invokes `authenticate_source_batches()` exactly once. On success it returns
-a value receipt mapping
-`(producer_record_ordinal, input_generation_group_ordinal, dealer)` to the exact
-authenticated handle, in producer/group/dealer order, plus an ascending-dealer
-`(dealer, batch_id, source_count)` summary. The receipt contains public numeric
-identities only and is not a persistent mapping registry.
+The source-only authentication path commits authenticated source handles and
+does not itself create a checkpoint. The segment owner separately converts
+handles, builds checkpoint derivations, validates them, and promotes the
+checkpoint.
 
-The DoubleRand candidate table remains equal-width with `q` sources per real
-dealer. During adapter preflight only, the real king's one prospective batch is
-extended by the captured `e_t` sources in capture order, at ordinals
-`q,...,q+m-1`; other real dealers retain exactly `q` sources. There is no
-second king batch, synthetic dealer, padding source, or second authentication
-invocation.
+### Ordinary one-segment integration
 
-While the adapter's stack-local claimed candidate is still alive, it also
-converts every captured degree-`t` `r_t` derivation into an ordered
-`LinearDerivation` over the exact committed handles. The complete result shape,
-coefficients, and numeric term-to-receipt indices are allocated and validated
-before candidate claim or authentication. Handles are assigned only after the
-existing source-only authentication commits, followed by direct authoritative
-batch validation and a local equality check against the captured `actual_r_t`.
-The converted values are returned by value in the adapter receipt; there is no
-persistent derivation or checkpoint registry. The receipt also returns one
-direct authenticated king-source handle per captured operation; it does not
-wrap `e_t` in a one-term derivation. For each captured ordinary scalar or dot
-operation, the receipt additionally returns the exact ordered handle-based
-derivation `Delta_z = (1, h_e) - Delta_r`. This is a by-value receipt result:
-it creates no new source, handle, checkpoint, or persistent registry.
+Eligible ordinary scalar and dot operations follow:
 
-The capture alone still creates no dealer batch or batch ID, authenticated
-source handle, FTag chunk, authentication invocation, checkpoint, or scheduler
-state. Only the opt-in adapter consumes the finalized candidate and enters the
-source-only authentication path. Malformed preflight discards the candidate
-before any authentication mutation or execution. Authentication rejection
-retains the registered diagnostic records and fail-stop evidence, creates no
-handles, and does not permit reuse or retry.
+```text
+freeze/preflight
+    -> internal GS20 check
+    -> collect successful frozen batch
+    -> repeat as needed
+    -> logical segment close
+    -> one source-only authentication invocation
+    -> handle conversion and binding validation
+    -> one checkpoint candidate
+    -> seal and promote
+```
 
-Eligible ordinary scalar-multiplication and ordinary dot-product operations
-are now integrated through one explicit logical online segment. The existing
-`AtlasConfig::max_before_check` / `maybe_check()` / `check()` lifecycle remains
-an internal GS20 memory/verification boundary only. Each successfully verified
-ordinary candidate is transferred into one segment-owned collector without
-authentication. At segment close, one communication-free structural preflight
-deduplicates exact whole DoubleRand producer groups, reads each producer
-group's actual output count, forms one ordered source sequence per real dealer,
-and appends every direct concrete `e_t` source to king 0's existing dealer
-sequence. The collector then invokes the existing global source-only
-authentication exactly once.
+`AtlasConfig::max_before_check` remains an internal GS20
+memory/verification boundary. It counts `x_verify` coordinates rather than
+high-level operations. One dot product is one captured operation and one
+concrete king `e_t` source even when its coordinate length crosses or
+overshoots the threshold.
 
-After authentication success, the exact `r_t`, direct `e_t`, and `z_t`
-bindings are validated against committed handles. The ordered ordinary `z_t`
-live-outs form one checkpoint candidate, which seals and promotes only after
-all derivations resolve. Successful cleanup retires internal verification
-state, tentative producer/candidate state, receipt-local mappings, fresh `nu`,
-holder tags, and the successful global-invocation presentation. Authenticated
-dealer batches/handles, the promoted checkpoint, reusable checked `mu` keys,
-their epoch, agreed FTag width, monotonic IDs, PRNG state, and cumulative public
-counters persist.
+The segment collector:
+
+- preserves completed-operation order;
+- rejects duplicate consumed producer outputs;
+- deduplicates exact whole producer groups;
+- reads each producer group’s actual output count;
+- constructs one authoritative real-dealer source sequence per party;
+- appends concrete king `e_t` sources to king 0’s existing real-dealer batch;
+- never creates a second logical dealer or synthetic dealer for the king.
+
+After authentication success, the implementation validates:
+
+- every committed source handle;
+- every `r_t` derivation;
+- every direct `e_t` handle;
+- every `z_t = e_t - r_t` derivation;
+- the exact checkpoint candidate.
+
+The checkpoint is sealed and promoted only after all required validations
+succeed.
+
+### Cleanup and retained state
+
+Successful close removes transient state such as:
+
+- internal verification transcripts;
+- tentative producer/candidate state;
+- successful frozen batch owners;
+- fresh `nu`;
+- holder tags;
+- invocation-local presentations;
+- receipt-local mappings.
+
+It retains:
+
+- authenticated dealer batches and source handles;
+- the promoted checkpoint and its public derivations;
+- the reusable checked `mu` epoch;
+- the agreed FTag width;
+- monotonic IDs and PRNG state;
+- cumulative public communication counters.
+
+The true post-close owned-member teardown is small and is not an optimization
+target.
+
+### Unsupported and deferred operation families
 
 Unsupported operation families remain GS20-only and force an eligible ordinary
-batch boundary before entering. `max_before_check` still counts `x_verify`
-coordinates rather than operations, so a single dot product can cross or
-overshoot it while producing one captured operation and one concrete king
-`e_t` source. Focused integration tests use a test-only effective threshold
-and an explicit segment close after the final residual flush. Destructor-time
-close remains only a fallback for workloads without a scheduler hook and is
-not a production pre-output gate.
+batch boundary before entering.
 
-This one-worker, one-segment ordinary lifecycle is not a complete
-segment/checkpoint scheduler and must not be described as the complete GSZ20
-authentication path.
+Not yet implemented or integrated:
 
-The following honest-path items remain unimplemented:
+- more than one logical online segment;
+- a general segment scheduler;
+- final output gating;
+- complete input provenance;
+- complete truncation/MultTrunc provenance;
+- checkpoint live-outs for deferred operation families;
+- mul-public source provenance and live-outs;
+- virtual-transcript-, compression-, or ultimate-tuple-generated source
+  provenance;
+- real `Analyze-Sharing`;
+- localization, rollback, retry, and continued execution after faults.
 
-1. segment-wide source collection and checkpoint live-outs for deferred
-   operation families;
-2. continuation across more than one logical segment and normal scheduler
-   integration;
-3. final production output gating through that scheduler.
+The real AtlasPrep mul-public branch is verified through the existing GS20-only
+path, but it is not authenticated into the ordinary segment checkpoint.
 
-Truncation, mul-public, virtual-transcript, compression-generated, and
-ultimate-tuple provenance remain deferred.
+Legacy authentication, recovery, and Analyze metadata skeletons remain in the
+code. They are not authoritative production provenance. Do not build new
+cryptographic execution on an incorrect legacy abstraction merely to minimize
+a diff.
 
-The current ordinary collector merges the king's PartialMult-dealt degree-`t`
-`e_t` sources with that same real party's other dealer sources and must remain
-free of any second logical dealer for the king.
+## Frozen communication audit
 
-Legacy authentication, recovery, and Analyze-related metadata skeletons remain
-in the code. They are not authoritative production provenance. Do not build
-new cryptographic execution on an incorrect legacy abstraction merely to
-minimize a diff.
+The completed communication audit used `Programs/Source/1-net-a` with:
 
+- 29,696 captured ordinary scalar operations;
+- one logical segment;
+- \(F=K=\mathbb F_{2^{61}-1}\);
+- \(e=1\);
+- finite-optimal FTag width chosen separately for each party count;
+- exact authentication-byte accounting;
+- zero unattributed authentication communication;
+- comparison against the original GS20 repository.
 
-## Communication audit status: resolved and frozen
+For the audited endpoint widths:
 
-The protocol-to-code communication audit and the matched experiment matrix are
-complete. The communication discrepancy is explained, all authentication
-phases agree with the corrected finite implementation formula exactly in
-bytes, and every audited honest run completed one accepted authentication
-invocation and one sealed/promoted checkpoint with zero unattributed
-authentication traffic.
+```text
+n=3:  B=320
+n=15: B=397
+```
 
-### Matched comparison definition
-
-Use only like-for-like communication figures:
-
-- `Data sent` is one party's local sent payload;
-- `Global data sent` is the sum of all parties' sent payloads;
-- all reported MB values below are decimal MB (`10^6` bytes);
-- one `Mersenne<61>` field element is serialized as exactly eight bytes;
-- SSL/certificate setup is excluded because MP-SPDZ communication accounting is
-  reset before program execution;
-- preprocessing and protocol-finalization communication are included;
-- the current GOD and original GS20 runs use identical program source,
-  schedules, seven scheduled bytecodes, and binary input;
-- communication and runtime experiments use clean `-O3` builds, retain
-  `-Werror`, keep assertions enabled, and do not define `NDEBUG`.
-
-The old `12.2587 MB` value is the **party-0** counter of the original
-15-party GS20 run. The matching original **global** counter is `31.5270 MB`.
-Do not compare party-local and global figures.
-
-At 15 parties with the exact finite-optimal width `B=397`, the resolved global
-reconciliation is:
+At \(n=15\):
 
 ```text
 original GS20 global                 31.527000 MB
 pre-authentication protocol drift     1.930860 MB
 authentication                       21.471240 MB
-------------------------------------------------
 current GOD global                   54.929100 MB
 ```
 
-The remaining legacy-footer uncertainty is only rounding at approximately the
-hundred-byte scale and is consistent with zero. It is not an unexplained
-protocol cost.
-
-### Exact finite implementation formula
-
-For one logical segment and one reusable key epoch, define:
+The identity
 
 ```text
-K = n(n-1)
-L = K(3n-5) + (n-1)
-Q = sum_d ceil(source_count_d / B)
+31.527000 + 1.930860 + 21.471240 = 54.929100 MB
 ```
 
-The exact authentication communication is:
+is the accepted global reconciliation.
+
+The current audited global totals are:
 
 ```text
-E_V  = 6nK
-E_K  = K[(n-2)B + n^2 - n + 14]
-E_O  = LQ
-E_BS = n[6K + t(B+4)]
-E_BT = nL
-E_CT = K(B+7)
-
-bytes_auth = 8(E_V + E_K + E_O + E_BS + E_BT + E_CT)
+n=3:  4.611330 MB
+n=15: 54.929100 MB
 ```
 
-The `+4` in `E_BS` accounts for the actual 32-byte pairwise `ShamirInput`
-seed. The older `t(B+1)` expression is obsolete.
+At \(n=15\), authentication is exactly 21,471,240 bytes. The audit reports zero
+unattributed authentication communication.
 
-### Exact finite-optimal widths and measured communication
+Do not confuse party-0 communication with global communication. Do not reopen
+the communication result unless runtime or correctness work reveals a direct
+measurement error.
 
-The following widths are the unique minima for the actual public dealer source
-counts of `Programs/Source/1-net-a`, which contains 29,696 captured ordinary
-scalar operations in one logical segment:
+## Runtime profiling and accepted optimization
 
-| n | optimal B | Q | exact auth MB | GOD global MB | original GS20 global MB | GOD / GS20 |
-|---:|---:|---:|---:|---:|---:|---:|
-| 3  | 320 | 186 | 0.080832 | 4.611330 | 4.287950 | 1.075x |
-| 5  | 372 | 160 | 0.553600 | 9.814340 | 8.764670 | 1.120x |
-| 7  | 386 | 154 | 1.766352 | 15.817000 | 13.289800 | 1.190x |
-| 9  | 413 | 144 | 4.087584 | 22.961200 | 17.836500 | 1.287x |
-| 11 | 387 | 154 | 7.887880 | 31.607500 | 22.395200 | 1.411x |
-| 13 | 382 | 156 | 13.564512 | 42.147700 | 26.960700 | 1.563x |
-| 15 | 397 | 150 | 21.471240 | 54.929100 | 31.527000 | 1.742x |
+### Profiling conclusion
 
-`B=448` is no longer the recommended 15-party width. It produces
-`22.107792 MB` of authentication; switching to `B=397` saves only
-`0.636552 MB`, about `1.15%` of the whole run. Width selection is therefore a
-small finite optimization, not a mechanism that closes the authentication gap.
-The production code still has no automatic selector; experiments must pass the
-chosen public width explicitly.
+The matched profiling comparison used:
 
-### Protocol conclusions that are now settled
+- original GS20 commit
+  `6d7bc9bdd81b6088e5ebe18eed02db6c83c9588c`;
+- pre-authentication GOD commit
+  `8bfd3006eaea92ce9773e42d8e5521f6bfc5f8f6`;
+- current pre-optimization GOD implementation commit
+  `cc9cd574b3e0ec495c8d5864bce15d663b643f4a`.
 
-- `B=ell`; because `e=1`, `q=ell/e=B` numerically. `B` is not an extension
-  degree.
-- Extension-field packing is not the missing bandwidth optimization. It changes
-  representation and soundness-field size, but not the base-field-equivalent
-  vector payload by itself.
-- GSZ20 Protocol 25 genuinely performs work for every real
-  `dealer x chunk x verifier x holder` relation. The measured ordinary tag
-  traffic is not duplicate authentication or per-wire tagging.
-- The dominant finite 15-party authentication terms are Key/Check-Key and
-  ordinary SingleTagComp work. Removing them would weaken or change the
-  selected FTag construction.
-- The current code invokes Verify-Sharing per dealer, while Protocol 37
-  describes segment-level Verify-Sharing. The current BaseSharing realization
-  also performs concrete per-dealer consistency work. These remain fidelity
-  questions but together are too small to explain the observed scaling.
-- Protocol 24 calls Check-Key once per segment even when `mu` is reused. The
-  current one-segment implementation cannot be extrapolated to a complete
-  multi-segment Protocol-37 execution.
-- The `O(n^2)` segment partition is relevant to both retry bounds and the
-  paper's asymptotic substitution, but naively applying it to this small
-  benchmark would repeat large fixed costs and increase communication.
-- GSZ20's `5.5+epsilon` statement ignores terms independent of the circuit.
-  This 29,696-operation benchmark is not in the finite amortization regime at
-  large `n`; the matrix does not contradict the theorem.
+The old quadratic authenticated-handle lookup regression did not recur:
+audited runs recorded zero linear-search comparisons.
 
-Communication development is now frozen. Do not redesign FTag, remove
-security-critical messages, split the current workload into `n^2` segments,
-or add deferred operation families merely to improve these benchmark numbers.
-Any future communication change must have a new protocol argument and an
-independently reviewed security rationale.
+The apparent multi-second `AtlasGsz` destructor hotspot was inclusive time
+from the destructor invoking segment close. True final owned-member teardown
+was about 14 ms at \(n=15\) and is not a runtime target.
 
-### Runtime status: separate and unresolved
+The remaining overhead was traced primarily to repeated fixed-king public
+interpolation-factor construction and repeated use of those factors in
+evidence/candidate paths, with non-king parties waiting at existing exchanges
+and challenges for king-side local work.
 
-The earlier quadratic runtime regression has been fixed and must not be
-reopened. A separate residual runtime gap remains in matched `-O3`, no-audit,
-local-loopback runs:
+### Accepted immutable-context optimization
 
-| n | GOD total s | measured authentication s | original GS20 total s | GOD / GS20 |
-|---:|---:|---:|---:|---:|
-| 3  | 0.454911 | 0.006575 | 0.059198 | 7.685x |
-| 5  | 0.726236 | 0.018943 | 0.094561 | 7.680x |
-| 7  | 1.091400 | 0.045094 | 0.140741 | 7.755x |
-| 9  | 1.676180 | 0.113706 | 0.197001 | 8.508x |
-| 11 | 2.327500 | 0.224830 | 0.287721 | 8.089x |
-| 13 | 3.585240 | 0.519745 | 0.396986 | 9.031x |
-| 15 | 4.992670 | 0.845295 | 0.518964 | 9.620x |
+The accepted optimization precomputes only the invariant public fixed-king
+interpolation data described above. It preserves all validation calls,
+communication, randomness, protocol state, source provenance, handle counts,
+derivation counts, checkpoint counts, and the ultimate-tuple opening.
 
-These are single-run characterization measurements, not paper-ready timing
-statistics. Authentication timing comes from audited runs while total timing
-comes from no-audit runs, so do not subtract them as exact phase accounting.
-The residual gap may arise from provenance capture, transcript handling,
-object construction, validation, checkpoint bookkeeping, or other local work;
-it has not yet been profiled.
+For `1-net-a`, party-0 audited validation counts remained:
 
-The next technical milestone is **analysis-first runtime profiling**, not an
-optimization patch:
-
-1. repeat the `n=3` and `n=15` points with warm-ups and multiple measured runs;
-2. report medians and dispersion, not one-shot values;
-3. compare the current HEAD, the last pre-authentication control commit, and
-   the original GS20 checkout under identical `-O3` conditions;
-4. profile with audit modes disabled;
-5. attribute time to authentication, provenance capture, producer grouping,
-   derivation construction, handle validation, checkpoint promotion, GS20
-   verification, and framework overhead;
-6. make no protocol or source change until a dominant cost is identified.
-
-### Build configuration and NDEBUG
-
-For matched communication or runtime experiments use:
-
-```sh
-make clean
-make -j6 OPTIM=-O3 atlas-gsz-party.x
-conda run -n pytorch ./compile.py 1-net-a
+```text
+fixed-sharing constructions                 29,808
+fixed-evidence validations                  29,808
+capture-time concrete-e_t validations       29,696
+all concrete-e_t validations                89,088
+candidate validations                            8
+exact batch-correspondence validations           4
+candidate finalizations/freezes                  4 / 4
+integrated closes                                1
+linear handle-search comparisons                 0
+contexts constructed                             1
+context reuses                             178,680
 ```
 
-Keep `NDEBUG` undefined and retain `-Werror`. The repository is not currently
-`NDEBUG`-clean: defining it causes unused-variable errors, and suppressing
-those errors produced a `FIXINPUT` failure. Treat NDEBUG compatibility as a
-separate deferred release-engineering issue. Assertions are local computation
-and must not be used to explain network communication.
+Accepted diagnostic reductions at \(n=15\) included:
+
+```text
+fixed-sharing construction       163.452 ms -> 12.123 ms
+fixed-evidence validation        226.420 ms -> 28.678 ms
+capture concrete-e_t validation  296.176 ms -> 12.074 ms
+frozen-batch construction        225.591 ms -> 44.782 ms
+integrated close                1305.026 ms -> 1080.601 ms
+```
+
+The accepted fair, audit-disabled comparison was:
+
+```text
+n=3:  0.437448 s -> 0.391224 s  (10.57% improvement)
+n=15: 4.201140 s -> 3.457350 s  (17.70% improvement)
+```
+
+These values compare the unmodified pre-optimization current implementation
+against the optimized working tree in one matched experiment matrix. Do not
+combine them arithmetically with timings from a different profiling matrix.
+
+The remaining runtime cost is distributed. Candidate finalization and
+integrated close remain substantial, but no further optimization is currently
+authorized.
 
 ## Critical implementation constraints
 
@@ -503,8 +539,8 @@ It must:
 
 1. use `malicious_mc.POpen()` to open only `(alpha, beta, gamma)`;
 2. return immediately when `alpha * beta == gamma`;
-3. call `broadcast_local_shares(ultimate_tuple)` only after that optimized
-   check fails.
+3. call `broadcast_local_shares(ultimate_tuple)` only after the optimized check
+   fails.
 
 Do not restore unconditional publication of the complete virtual transcript.
 
@@ -515,7 +551,7 @@ Production state must respect protocol ownership:
 - verifier \(P_v\) owns clear long-term `mu_(v->i)`;
 - verifier \(P_v\) owns freshly sampled per-batch/chunk `nu`;
 - holder \(P_i\) owns the reconstructed tag;
-- non-holder parties retain only the local twisted shares needed for MPC;
+- non-holder parties retain only local twisted shares needed for MPC;
 - ordinary production records must not co-locate clear `mu`, clear `nu`,
   holder tag, and holder source-share vectors.
 
@@ -526,40 +562,37 @@ private authentication material.
 
 - Reuse one `mu_(v->i)` vector across batches and successful segments in the
   same key epoch.
-- Never regenerate `mu` per wire, dealer batch, checkpoint, or segment unless
-  a later, explicitly specified key-rotation rule requires it.
+- Never regenerate `mu` per wire, source, dealer batch, checkpoint, or segment
+  unless a later explicitly specified key-rotation rule requires it.
 - Independently sample fresh `nu` for every authenticated dealer-batch chunk
   and applicable verifier-holder relation.
-- Accidental equality between independent `nu` samples is allowed. Reuse means
-  reusing the same randomness instance or material record for another batch or
-  chunk.
-- Authentication instances must scale with batch chunks, not with
-  `wire × verifier × holder`.
-- The current global checker covers one source-batch authentication invocation,
-  either source-only or checkpoint-coupled, while `Corr` and `Disp` remain
-  empty. Do not call this focused optimistic vertical slice the complete GSZ20
-  `TAG` protocol.
-- For `m` dealers and `W=max_r w_r`, the global polynomial identity has
-  maximum degree at most `m * (W + 1) - 1`. Concrete soundness depends on
-  `p=2^61-1` and union bounds over all verifier-holder relations and
-  invocations; do not claim arbitrary kappa-bit soundness.
+- Accidental equality between independent `nu` samples is allowed.
+- Authentication must scale with source-batch chunks, not with
+  `wire x verifier x holder`.
+- Do not call the current optimistic no-dispute slice the complete GSZ20 `TAG`
+  protocol.
+- For `m` dealers and `W=max_r w_r`, the global Check-Tag polynomial has
+  maximum degree at most `m*(W+1)-1`.
+- Concrete soundness uses \(p=2^{61}-1\) and must be union-bounded over all
+  verifier-holder relations and invocations. Do not claim arbitrary
+  \(\kappa\)-bit soundness.
 
 ### Communication and randomness discipline
 
-Do not add new production communication, opening, broadcast, exchange,
-send/receive, or randomness calls unless the milestone explicitly requires
-real protocol execution that needs them.
+Do not add production communication, openings, broadcasts, exchanges,
+send/receive operations, or randomness unless the milestone explicitly
+requires them.
 
-When a milestone authorizes new communication:
+When new communication is authorized:
 
 - use normal MP-SPDZ networking/accounting paths;
-- preserve protocol message ordering;
-- explain the ownership and destination of each message class;
+- preserve message ordering;
+- explain ownership and destination of each message class;
 - ensure the cost appears in communication measurements;
-- avoid debug broadcasts that leak private values;
-- keep failure-only diagnostic publication off the honest path.
+- avoid debug broadcasts that reveal private values;
+- keep failure-only publication off the honest path.
 
-Avoid new uses of the following unless justified by the milestone:
+Avoid new uses of the following unless explicitly justified:
 
 - `POpen`
 - `Broadcast_Receive`
@@ -571,17 +604,34 @@ Avoid new uses of the following unless justified by the milestone:
 ### State and architecture discipline
 
 - Prefer one authoritative record plus small transient results.
-- Do not add another chain of plan/readiness/attempt/receipt metadata unless it
-  is genuinely required for real execution.
-- Use IDs and references rather than copying the same identity graph into many
-  records.
-- A checkpoint ID alone does not make a checkpoint sealed.
-- A checkpoint becomes sealed only after all referenced derivations resolve to
-  authenticated source handles and all required checks succeed.
+- Use IDs and references rather than copying the same identity graph into
+  multiple stores.
+- Do not add another metadata-only
+  plan/readiness/attempt/receipt pipeline without real execution need.
+- A checkpoint ID does not imply sealing.
+- Seal only after every referenced derivation resolves to authenticated source
+  handles and all required checks succeed.
 - Failed, pending, or incomplete checkpoints remain unsealed and unpromoted.
-- Do not silently mix logical segment identity with retry-attempt identity in
-  new code.
+- Do not mix logical-segment identity with retry-attempt identity in new code.
 - Do not clear retained failure evidence merely to make a later check pass.
+- Do not bypass a validation merely because the same invariant was validated at
+  an earlier ownership boundary.
+- Do not cache validation results in the interpolation context.
+
+### Build configuration
+
+Production comparisons must use:
+
+- `-O3`;
+- assertions enabled;
+- `-Werror` retained;
+- `NDEBUG` undefined.
+
+Do not define `NDEBUG`. A prior experiment showed that doing so changed
+runtime behavior and caused input-reading failure. That issue is deferred and
+is not part of the current baseline.
+
+Audit modes must be disabled for fair experiment timing.
 
 ## Workflow rules
 
@@ -593,22 +643,22 @@ git rev-parse HEAD
 ```
 
 If the working tree is not clean, stop and report unless the milestone
-explicitly says to continue from the current staged or unstaged patch.
+explicitly says to continue from the current patch.
 
-Never reset, stash, discard, stage, unstage, commit, amend, or rewrite history
-unless explicitly instructed.
+Never reset, stash, discard, stage, unstage, commit, amend, clean, or rewrite
+history unless explicitly instructed.
 
 Before changing code:
 
 1. inspect the relevant current implementation;
-2. identify the exact paper protocol being realized;
+2. identify the exact paper procedure being realized;
 3. state which existing helpers will be reused;
-4. state what real communication/randomness will be introduced;
+4. state what communication and randomness will change;
 5. state the expected failure semantics;
 6. give a concise implementation plan.
 
 Prefer small, reviewable, milestone-sized diffs. Modify only files permitted by
-the milestone. Explain before touching any additional file.
+the milestone. Explain before touching an additional file.
 
 Do not commit changes unless explicitly asked.
 
@@ -618,19 +668,19 @@ After editing, run at least:
 
 ```sh
 git diff --check
-make -j6 atlas-gsz-party.x
+make -j6 OPTIM=-O3 atlas-gsz-party.x
 ```
 
-If there are staged changes, also run:
+If staged changes exist, also run:
 
 ```sh
 git diff --cached --check
 ```
 
-Compile a program again when switching test programs because `compile.py`
-overwrites the previous program input.
+Compile again when switching test programs because `compile.py` overwrites the
+active program artifacts.
 
-Typical smoke-test workflow:
+### Ordinary smoke tests
 
 ```sh
 conda run -n pytorch ./compile.py 0-mul-input
@@ -643,19 +693,7 @@ conda run -n pytorch ./compile.py 0-dot-input
 ./Scripts/atlas-gsz.sh 0-dot-input
 ```
 
-Use the repository’s supported party-count convention, for example:
-
-```sh
-./Scripts/atlas-gsz.sh -N 5 0-dot
-```
-
-or, where the current script/test setup uses it:
-
-```sh
-PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
-```
-
-Expected ordinary output for `0-mul-input`:
+Expected `0-mul-input` output:
 
 ```text
 63
@@ -663,7 +701,7 @@ Expected ordinary output for `0-mul-input`:
 396
 ```
 
-Expected output for `0-dot` and `0-dot-input`, allowing tiny fixed-point drift:
+Expected `0-dot` and `0-dot-input` output, allowing tiny fixed-point drift:
 
 ```text
 30
@@ -676,50 +714,28 @@ Expected output for `0-dot` and `0-dot-input`, allowing tiny fixed-point drift:
 [1, 4, 9]
 ```
 
-Focused producer-provenance and optimistic-authentication hooks:
+Use the repository-supported party-count convention, for example:
 
 ```sh
-ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=producer-provenance PLAYERS=5 \
+./Scripts/atlas-gsz.sh -N 5 0-dot
+```
 
+or:
 
-ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-mul-input
-ATLAS_GSZ_AUTH_TEST=consumed-provenance-transfer PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-dot
+```sh
+PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
+```
 
-conda run -n pytorch ./compile.py 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-preflight-rejections PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-preflight-rejections PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-auth-rejection PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-auth-rejection PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-gs20-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-gs20-failure PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-unsupported-gs20-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-unsupported-gs20-failure PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-nested-preprocessing PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-nested-preprocessing PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-fixed-king PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration-fixed-king PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+### Focused fixed-king and provenance tests
 
+```sh
 conda run -n pytorch ./compile.py 0-tentative-double-rand-capture
+
+ATLAS_GSZ_AUTH_TEST=special-e-t PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+ATLAS_GSZ_AUTH_TEST=special-e-t PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
+
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-capture PLAYERS=5 \
@@ -729,136 +745,139 @@ ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-honest PLAYERS=3 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
 ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-honest PLAYERS=5 \
     ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-malformed PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-malformed PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-e-t-malformed PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-e-t-malformed PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-verify-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-verify-failure PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-tag-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=tentative-double-rand-adapter-tag-failure PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-
-ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=honest PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
-
-ATLAS_GSZ_AUTH_TEST=source-only-honest PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=source-only-honest PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=source-only-verify-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=source-only-verify-failure PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=source-only-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=source-only-failure PLAYERS=5 \
-    ./Scripts/atlas-gsz.sh 0-dot
-
-ATLAS_GSZ_FTAG_CHUNK_WIDTH=5 ATLAS_GSZ_AUTH_TEST=honest PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-
-ATLAS_GSZ_AUTH_TEST=verify-failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=verify-failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
-
-ATLAS_GSZ_AUTH_TEST=base-failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=base-failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
-
-ATLAS_GSZ_AUTH_TEST=failure PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=failure PLAYERS=5 ./Scripts/atlas-gsz.sh 0-dot
-
-ATLAS_GSZ_AUTH_TEST=singleton-honest PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=ordinary-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=base-contribution-failure PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=duplicate-batch PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=duplicate-dealer PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=omission PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=missing-chunk PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=duplicate-chunk PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
-ATLAS_GSZ_AUTH_TEST=epoch-mismatch PLAYERS=3 ./Scripts/atlas-gsz.sh 0-dot
 ```
 
-The dedicated tentative-capture workload has six genuine ordinary operations:
-three scalar multiplications alternating with three dot products. It is used
-instead of `0-dot` for the focused 3- and 5-party capture checks because one
-DoubleRand source group contains `n` outputs while current `0-dot` has only
-four eligible ordinary operations. Ordinary and focused communication for the
-dedicated workload must match exactly at the same party count.
+The dedicated capture workload contains three scalar multiplications alternating
+with three dot products over distinct private inputs.
 
-The failure-mode families are expected to terminate nonzero after
-reporting their focused PASS state and the fail-stop
-`RecoveryNotImplemented` boundary. They must create no authenticated handles
-and must not seal or promote the affected checkpoint.
+### Focused one-segment integration tests
 
-The three Check-Tag presentation failures are distinct: `ordinary-failure`
-changes sigma at a real ordinary-source contribution (using an explicit
-test-only `lambda=1` override only if its sampled challenge is zero),
-`base-contribution-failure` changes sigma at the BaseSharing contribution,
-and `failure` changes only the final aggregate holder tag. Honest execution
-always uses the sampled zero-permitted challenge without an override.
+```sh
+conda run -n pytorch ./compile.py 0-honest-batch-integration
+
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-fixed-king PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+ATLAS_GSZ_AUTH_TEST=honest-batch-integration-fixed-king PLAYERS=5 \
+    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+```
+
+The broader focused family also includes:
+
+- `honest-batch-integration-preflight-rejections`;
+- `honest-batch-integration-auth-rejection`;
+- `honest-batch-integration-gs20-failure`;
+- `honest-batch-integration-unsupported-gs20-failure`;
+- `honest-batch-integration-nested-preprocessing`;
+- tentative-adapter malformed and failure modes;
+- source-only and checkpoint-coupled Verify-Sharing, BaseSharing, Check-Tag,
+  omission, duplicate, and epoch-mismatch tests.
+
+Expected failure modes terminate nonzero after reporting the focused PASS state
+and the fail-stop `RecoveryNotImplemented` boundary. They must create no
+authenticated handles and must not seal or promote the affected checkpoint.
+
+### `1-net-a` correctness and experiment run
+
+Compile:
+
+```sh
+conda run -n pytorch ./compile.py 1-net-a
+```
+
+Run with all audit/test hooks disabled. Examples:
+
+```sh
+env -u ATLAS_GSZ_COMM_AUDIT \
+    -u ATLAS_GSZ_RUNTIME_AUDIT \
+    -u ATLAS_GSZ_MEMORY_AUDIT \
+    -u ATLAS_GSZ_AUTH_TEST \
+    ATLAS_GSZ_FTAG_CHUNK_WIDTH=320 PLAYERS=3 \
+    ./Scripts/atlas-gsz.sh 1-net-a
+
+env -u ATLAS_GSZ_COMM_AUDIT \
+    -u ATLAS_GSZ_RUNTIME_AUDIT \
+    -u ATLAS_GSZ_MEMORY_AUDIT \
+    -u ATLAS_GSZ_AUTH_TEST \
+    ATLAS_GSZ_FTAG_CHUNK_WIDTH=397 PLAYERS=15 \
+    ./Scripts/atlas-gsz.sh 1-net-a
+```
+
+### Audit modes
+
+Communication audit:
+
+```sh
+ATLAS_GSZ_COMM_AUDIT=1 \
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=397 \
+PLAYERS=15 ./Scripts/atlas-gsz.sh 1-net-a
+```
+
+Runtime audit:
+
+```sh
+ATLAS_GSZ_RUNTIME_AUDIT=1 \
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=397 \
+PLAYERS=15 ./Scripts/atlas-gsz.sh 1-net-a
+```
+
+Audit output is diagnostic only. Do not use audit-enabled total runtime as the
+fair performance result.
+
+Runtime-audit reporting may include only public timings, counts, sizes, and
+configuration. It must not print shares, keys, masks, tags, or other private
+authentication material.
 
 ## Near-term milestones
 
-The communication audit, finite-width matrix, and global GS20 comparison are
-resolved and frozen. The current ordinary one-segment honest path is suitable
-for communication experiments under the exact scope stated above. Do not add
-multiple segments, final output gating, deferred operation families, or a new
-FTag construction as part of the runtime investigation.
+The current implementation and the accepted interpolation-context optimization
+may be frozen for experiments.
 
-The immediate sequence is:
+No further runtime optimization is the default next step. If the user later
+authorizes another measured optimization, candidate finalization and
+owned-derivation construction are the remaining profiled areas, but they must
+be split into a narrow safe cause before modification.
 
-1. commit a documentation-only closure that records the resolved communication
-   accounting and removes stale claims;
-2. open a fresh runtime-profiling milestone;
-3. collect repeated, matched `-O3` measurements and profile the current,
-   pre-authentication-control, and original GS20 builds;
-4. identify one dominant local-computation cost before proposing any code
-   change;
-5. keep every later optimization small, independently reviewable, and
-   communication-neutral unless explicitly justified otherwise.
+If protocol development resumes, the expected Stage-1 sequence is:
 
-The broader Stage-1 implementation targets—deferred operation-family
-provenance, multiple logical segments, scheduler continuation, and final
-output gating—remain frozen until explicitly resumed. Any later source
-collector work must continue to use the king's existing real-dealer batch and
-must not create a second logical dealer for the king.
+1. add deferred operation-family provenance and checkpoint live-outs;
+2. integrate continuation across more than one logical segment;
+3. implement final production output gating;
+4. only then begin explicitly scoped Stage-2 recovery work.
+
+The next milestone must continue to use the king’s existing real-dealer batch;
+it must not create a second logical dealer for the king.
+
+Keep each milestone independently reviewable. Do not pull later work into an
+earlier pass merely because adjacent code is available.
 
 ## Reporting
 
-The final report for a coding pass should include:
+A coding-pass report must include:
 
 - initial `HEAD`;
 - initial and final `git status --short`;
 - files changed;
-- concise summary of the real protocol behavior added;
-- exact communication, randomness, and ownership changes;
-- how batching and key reuse are preserved;
+- concise summary of real protocol behavior changed;
+- exact communication and randomness changes;
+- ownership and lifetime changes;
+- batching and key-reuse preservation;
+- validation-count preservation where relevant;
 - failure semantics;
 - exact build and test commands and results;
+- fair timing methodology for performance changes;
 - `git diff --check` result;
 - diffstat;
 - explicit deferred limitations;
-- confirmation that the optimized ultimate-tuple success path remains intact.
+- confirmation that the optimized ultimate-tuple path remains intact;
+- confirmation that nothing was staged or committed unless explicitly asked.
 
-For a runtime-analysis pass, also report warm-up policy, repetition count,
-per-run samples, median, dispersion, profiler/tool configuration, matched
-build identities, and the attributed dominant call paths. Do not present
-single-run local-loopback timings as paper-ready performance claims.
-
-Do not print the full Git diff unless requested. The user will inspect the diff
+Do not print the full Git diff unless requested. The user will inspect it
 separately.
 
 Do not claim full GOD security or complete protocol support from a focused
-vertical slice or opt-in test hook.
+vertical slice, one-segment honest path, or opt-in test hook.
