@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# DO NOT RUN THIS SCRIPT HERE.
+# It is intended to be run in the dev-scripts directory in MP-SPDZ repository.
+
 set -u
 set -o pipefail
 
