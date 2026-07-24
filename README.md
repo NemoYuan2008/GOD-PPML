@@ -1,241 +1,157 @@
-# GOD-PPML MP-SPDZ implementation sources
+# GOD-PPML
 
-This archive contains selected files from an MP-SPDZ fork used to implement an
-honest-majority, \(n\)-party PPML protocol with guaranteed output delivery.
+This is the artifact repository for the GOD-PPML paper. It is a substantial
+modification of the [MP-SPDZ](https://github.com/data61/MP-SPDZ) framework.
+This README explains how to build the artifact and reproduce the paper's
+inference experiments.
 
-The implementation adapts an existing GS20/Atlas malicious-with-abort PPML
-implementation toward GSZ20.
+The artifact implements inference for the three neural networks evaluated in
+the paper: Networks A, B, and C.
 
-## Authoritative accompanying documents
+## Setup
 
-Implementation choices should remain aligned with:
+A macOS or Linux machine is required. The code has been tested on macOS 15 and
+Ubuntu 22.04.
 
-1. `GOD-PPML-technical-core.zip`
-2. `GOD_CONTROL_PLANE_MAP.md`
-3. `GSZ20.pdf`
-4. `GS20.pdf`
-5. `TDSC.pdf`
+### Installing C++ library dependencies
 
-The central provenance direction is:
-
-```text
-dealer-generated source batches
-    -> authentication
-    -> authenticated source handles
-    -> public linear checkpoint derivations
-```
-
-Derived checkpoint outputs and published failure snapshots are not new
-dealer-generated sources and must not be authenticated as such.
-
-## Current implementation
-
-The current code implements an **optimistic honest-path vertical slice**, not a
-complete GOD protocol.
-
-For one worker and one logical online segment containing supported ordinary
-scalar multiplications and dot products, it provides:
-
-- ordinary Atlas computation and transcript capture;
-- GS20 batched verification and virtual transcripts;
-- exact fixed-king special sharings `[e]^T_t`;
-- producer-side DoubleRand source provenance;
-- one segment-owned collector across internal GS20 batches;
-- one close-time global source-authentication invocation;
-- authenticated source handles;
-- exact handle-based `r_t` derivations;
-- direct authenticated `e_t` handles;
-- exact `z_t = e_t - r_t` derivations;
-- one sealed and promoted checkpoint;
-- fail-stop `RecoveryNotImplemented` behavior on faults.
-
-The current path uses fixed king 0 and deterministic no-dispute support
-`T={0,...,t}`. Corr/Disp-aware support selection, retry, rollback, and
-continued execution after faults are not implemented.
-
-## Accepted fixed-king runtime optimization
-
-The code now contains an immutable `FixedKingInterpolationContext` owned by
-each Atlas instance.
-
-Its identity is:
-
-```text
-(number of parties, Shamir threshold, fixed king, ordered support T)
-```
-
-It caches only deterministic public interpolation data:
-
-- support membership and ordering;
-- special-sharing construction coefficients;
-- support-basis evaluation factors;
-- support reconstruction factors;
-- all-party degree-\(2t\) reconstruction factors.
-
-It does not cache shares, `e_t` values, evidence, handles, derivations, FTag
-material, protocol state, or validation results. All previous validations still
-execute.
-
-The context is rebuilt when the fixed king or the current supported set is
-reset. This does not claim that future Corr/Disp-aware support selection has
-already been implemented.
-
-## Source authentication
-
-The optimistic source-authentication slice uses:
-
-```text
-F = K = F_p
-p = 2^61 - 1
-e = 1
-```
-
-This is base-field chunking, not extension-field packing.
-
-It includes:
-
-- exact dealer Verify-Sharing;
-- checked transient BaseSharing;
-- reusable verifier-holder `mu` keys;
-- fresh per-batch/chunk/verifier/holder `nu`;
-- real twisted-sharing FTag computation;
-- one global all-dealer/all-batch Check-Tag identity;
-- authenticated handles committed only after complete success;
-- checkpoint derivations built from those committed handles.
-
-The base-field FTag width `B` is session-immutable and defaults to `4` unless
-explicitly overridden. Experiments must explicitly use the width selected for
-the audited party count.
-
-## Frozen communication result
-
-For `Programs/Source/1-net-a`, the completed communication audit used:
-
-- 29,696 captured ordinary operations;
-- one logical segment;
-- exact authentication-byte accounting;
-- zero unattributed authentication communication.
-
-Audited endpoint widths and totals:
-
-```text
-n=3:  B=320, global total 4.611330 MB
-n=15: B=397, global total 54.929100 MB
-```
-
-At \(n=15\):
-
-```text
-original GS20 global                 31.527000 MB
-pre-authentication protocol drift     1.930860 MB
-authentication                       21.471240 MB
-current GOD global                   54.929100 MB
-```
-
-The communication result is frozen unless a direct measurement error is found.
-
-## Runtime result
-
-Matched profiling showed that the former apparent multi-second destructor
-hotspot was mostly segment-close time. True final member teardown was about
-14 ms at \(n=15\).
-
-The accepted immutable interpolation-context optimization preserved protocol
-behavior, communication, provenance, handles, derivations, checkpoints, and all
-validation counts.
-
-Fair, audit-disabled `1-net-a` timing improved from:
-
-```text
-n=3:  0.437448 s -> 0.391224 s  (10.57%)
-n=15: 4.201140 s -> 3.457350 s  (17.70%)
-```
-
-No further runtime optimization is currently selected.
-
-## Main files
-
-- `Protocols/AtlasGsz.h`, `Protocols/AtlasGsz.hpp`:
-  GS20/GOD verification, source authentication, ordinary segment collection,
-  handle conversion, checkpoint creation, auditing, and fail-stop behavior.
-- `Protocols/Atlas.h`, `Protocols/Atlas.hpp`:
-  Atlas multiplication, fixed-king special sharing and evidence, and the
-  immutable public interpolation context.
-- `Protocols/AtlasGszShare.h`:
-  share type and protocol wiring.
-- `Protocols/AtlasConfig.h`:
-  protocol configuration.
-- selected Shamir/input/opening helpers:
-  producer provenance and supporting MP-SPDZ behavior.
-- `Programs/Source/`:
-  focused smoke, provenance, authentication, integration, and `1-net-a`
-  workloads.
-
-## Build and basic tests
-
-From the full repository root:
+On Ubuntu, run:
 
 ```sh
-make -j6 OPTIM=-O3 atlas-gsz-party.x
-
-conda run -n pytorch ./compile.py 0-mul-input
-./Scripts/atlas-gsz.sh 0-mul-input
-
-conda run -n pytorch ./compile.py 0-dot
-./Scripts/atlas-gsz.sh 0-dot
-
-conda run -n pytorch ./compile.py 0-dot-input
-./Scripts/atlas-gsz.sh 0-dot-input
+sudo apt-get install automake build-essential clang cmake git libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-thread-dev libgmp-dev libntl-dev libsodium-dev libssl-dev libtool python3
 ```
 
-Focused fixed-king and one-segment integration examples:
+On macOS, first install [Homebrew](https://brew.sh), then run:
 
 ```sh
-conda run -n pytorch ./compile.py 0-tentative-double-rand-capture
-ATLAS_GSZ_AUTH_TEST=special-e-t PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-tentative-double-rand-capture
-
-conda run -n pytorch ./compile.py 0-honest-batch-integration
-ATLAS_GSZ_AUTH_TEST=honest-batch-integration PLAYERS=3 \
-    ./Scripts/atlas-gsz.sh 0-honest-batch-integration
+brew install openssl boost libsodium gmp
 ```
 
-Compile and run `1-net-a` fairly with audit/test hooks disabled:
+### Installing Python dependencies
+
+Inference requires `numpy`. Install it with `pip` or `conda`, for example:
 
 ```sh
-conda run -n pytorch ./compile.py 1-net-a
-
-env -u ATLAS_GSZ_COMM_AUDIT \
-    -u ATLAS_GSZ_RUNTIME_AUDIT \
-    -u ATLAS_GSZ_MEMORY_AUDIT \
-    -u ATLAS_GSZ_AUTH_TEST \
-    ATLAS_GSZ_FTAG_CHUNK_WIDTH=397 PLAYERS=15 \
-    ./Scripts/atlas-gsz.sh 1-net-a
+pip3 install numpy torch
 ```
 
-Use `-O3`, retain `-Werror`, keep assertions enabled, and leave `NDEBUG`
-undefined.
+Obtaining the accuracy result additionally requires PyTorch. For example:
 
-Detailed workflow, focused failure tests, frozen invariants, and coding rules
-are in `AGENTS.md`.
+```sh
+pip3 install torch torchvision
+```
 
-## Not yet implemented
+### Building the code
 
-- more than one logical online segment;
-- a general segment scheduler;
-- final production output gating;
-- complete input, truncation, MultTrunc, or preprocessing provenance;
-- checkpoint live-outs for deferred operation families;
-- mul-public and compression-generated source provenance;
-- real `Analyze-Sharing`;
-- Corr/Disp mutation and dispute-aware support selection;
-- localization, rollback, retry, and continued execution after faults.
+From the root of the project directory, run:
 
-## Archive scope
+```sh
+make atlas-gsz-party.x
+```
 
-This is a selected source archive rather than the complete repository. It may
-omit `.git`, build products, generated files, and unrelated MP-SPDZ sources.
+Parallel compilation can reduce the build time, for example:
 
-Some selected archives flatten paths: protocol files correspond to
-`Protocols/`, and files under `Programs/` correspond to
-`Programs/Source/` in the complete repository.
+```sh
+make -j8 atlas-gsz-party.x
+```
+
+### Generating SSL certificates
+
+Communication between the parties is encrypted, so a one-time SSL certificate
+setup is required. From the root of the project directory, run:
+
+```sh
+./Scripts/setup-ssl.sh <number-of-parties>
+```
+
+`<number-of-parties>` is the maximum number of parties that you plan to use.
+For example, the following command generates certificates sufficient for
+experiments with up to 15 parties:
+
+```sh
+./Scripts/setup-ssl.sh 15
+```
+
+## Reproducing the inference results
+
+Run all commands in this section from the root of the project directory.
+
+The commands below launch all parties on one local machine. The paper's
+experiments used two machines. See
+[Notes for reproducing the results](#notes-for-reproducing-the-results) for
+details that primarily affect running time.
+
+### Example: Network A with five parties
+
+First compile Network A:
+
+```sh
+./compile.py 1-net-a --budget 1000000
+```
+
+Then run the GOD-PPML protocol with five parties:
+
+```sh
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=372 \
+    ./Scripts/atlas-gsz.sh -N 5 1-net-a
+```
+
+The program prints execution and communication statistics when it finishes.
+
+### General command
+
+Compile the desired inference program:
+
+```sh
+./compile.py <program> --budget 1000000
+```
+
+`<program>` must be one of:
+
+- `1-net-a` for Network A;
+- `1-net-b` for Network B;
+- `1-net-c` for Network C.
+
+Then run it with the desired number of parties:
+
+```sh
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=372 \
+    ./Scripts/atlas-gsz.sh -N <number-of-parties> <program>
+```
+
+For example, to run Network C with 15 parties:
+
+```sh
+./compile.py 1-net-c --budget 1000000
+ATLAS_GSZ_FTAG_CHUNK_WIDTH=372 \
+    ./Scripts/atlas-gsz.sh -N 15 1-net-c
+```
+
+The network definitions are in `Programs/Source/1-net-a.py`,
+`Programs/Source/1-net-b.py`, and `Programs/Source/1-net-c.py`.
+
+### Notes for reproducing the results
+
+- The paper's experiments used `--budget 1000000` when compiling each
+  network. Compiling `1-net-c` can take about one minute. A smaller budget
+  reduces compilation memory usage but can increase the MPC round count and
+  execution time. See the MP-SPDZ documentation on
+  [high round counts and slow WAN execution](https://mp-spdz.readthedocs.io/en/latest/troubleshooting.html#high-number-of-rounds-or-slow-wan-execution).
+- Keep `ATLAS_GSZ_FTAG_CHUNK_WIDTH=372` set for every invocation of
+  `./Scripts/atlas-gsz.sh` so that the authentication batching matches the
+  paper's experiment configuration.
+- Runtime depends on the network environment, machine specifications, and the
+  batching parameters in `Protocols/AtlasConfig.h`. Use the repository's
+  committed configuration when reproducing the reported results.
+- Compiling a network replaces the previous program. Rerun `compile.py` when
+  switching networks.
+
+## Reproducing the accuracy result
+
+The accuracy experiment evaluates the complete MNIST test set and may take
+some time. PyTorch must be installed.
+
+```sh
+./compile.py 3-acc-a
+./Scripts/atlas-gsz.sh -N 3 3-acc-a
+```
